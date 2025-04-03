@@ -43,14 +43,15 @@ pub fn texture_to_vert_colors(mesh: &pars3d::Mesh, scene: &pars3d::Scene) -> par
         .textures_by_kind(pars3d::mesh::TextureKind::Diffuse)
         .next()
         .expect("No diffuse texture?");
-    let diff_img = diff_tex.image.as_ref().expect("No diffuse image?");
+    let diff_img = diff_tex.image.as_ref().expect("No diffuse image?").flipv();
     for &[u, v] in &mesh.uv[0] {
-        let rgb = image::imageops::sample_bilinear(diff_img, u % 1., v % 1.).unwrap();
+        let rgb = image::imageops::sample_bilinear(&diff_img, u, v).unwrap();
         let [r, g, b, _a] = rgb.0.map(|c| c as F / 255.);
         out.vert_colors.push([r, g, b]);
     }
 
-    for (fi, f) in mesh.f.iter().enumerate() {
+    for (_fi, f) in mesh.f.iter().enumerate() {
+        /*
         let Some(mati) = mesh.mat_for_face(fi) else {
             continue;
         };
@@ -65,11 +66,12 @@ pub fn texture_to_vert_colors(mesh: &pars3d::Mesh, scene: &pars3d::Scene) -> par
         let Some(ref diff_img) = diff_tex.image else {
             continue;
         };
+        */
 
         sample(
             &mesh,
             f,
-            diff_img,
+            &diff_img,
             &mut out.f,
             &mut out.v,
             &mut out.vert_colors,
@@ -118,6 +120,10 @@ impl AABB<i32, 2> {
         let [hx, hy] = self.max;
         (ly..=hy).flat_map(move |y| (lx..=hx).map(move |x| [x, y]))
     }
+    pub fn expand_by(&mut self, v: i32) {
+      self.min = self.min.map(|val| val - v);
+      self.max = self.max.map(|val| val + v);
+    }
 }
 
 pub fn sample(
@@ -135,12 +141,13 @@ pub fn sample(
     // TODO should these have -1?
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
-    let iaabb = aabb.round_to_i32();
+    let mut iaabb = aabb.round_to_i32();
+    iaabb.expand_by(1);
     let uv_f = f.map_kind(|v| mesh.uv[0][v]);
     let v_f = f.map_kind(|v| mesh.v[v]);
     let mut vert_map = BTreeMap::new();
     for c in iaabb.iter_coords() {
-        let cf = c.map(|v| v as F);
+        let cf = c.map(|v| v as F + 0.5);
         let cf = [cf[0] / w as F, cf[1] / h as F];
         let bary = uv_f.barycentric(cf);
         // small epsilon to handle points which are very close to edges.
@@ -149,15 +156,13 @@ pub fn sample(
             // outside the triangle
             continue;
         }
-        // clamp two separate times, once for position once for uv
-        // This has a small offset from tri edges to make it sharper
-        let clamped_bary = bary.map(|v| v.clamp(1e-5, 1. - 1e-5));
-        let sum = clamped_bary.into_iter().sum::<F>();
-        let clamped_bary = clamped_bary.map(|v| v / sum);
-
-        let [u, v] = uv_f.from_barycentric(clamped_bary);
+        let [u, v] = uv_f.from_barycentric(bary);
         // compute color
-        let rgba = image::imageops::sample_nearest(diff_img, u % 1., v % 1.).unwrap();
+        let u = u % 1.;
+        let u = if u < 0. { 1. + u } else { u };
+        let v = v % 1.;
+        let v = if v < 0. { 1. + v } else { v };
+        let rgba = image::imageops::sample_bilinear(diff_img, u, v).unwrap();
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
 
         // this is 0-1 so vertices align across edges

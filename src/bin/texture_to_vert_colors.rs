@@ -5,10 +5,14 @@ use std::collections::BTreeMap;
 
 type F = f32;
 
+/// A utility for converting a mesh with texture into a mesh with vertex colors without
+/// drop in visual quality.
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
+    /// Input mesh path.
     #[arg(long, short)]
     input: String,
+    /// Output mesh path (PLY).
     #[arg(long, short)]
     output: String,
 }
@@ -22,7 +26,7 @@ pub fn main() {
         let new_mesh = texture_to_vert_colors(mesh, &scene);
         out_scene.meshes[mi] = new_mesh;
     }
-    pars3d::save(args.output, &scene).expect("Failed to save output");
+    pars3d::save(args.output, &out_scene).expect("Failed to save output");
 }
 
 pub fn texture_to_vert_colors(mesh: &pars3d::Mesh, scene: &pars3d::Scene) -> pars3d::Mesh {
@@ -137,15 +141,30 @@ pub fn sample(
     let mut vert_map = BTreeMap::new();
     for c in iaabb.iter_coords() {
         let cf = c.map(|v| v as F);
+        let cf = [cf[0] / w as F, cf[1] / h as F];
         let bary = uv_f.barycentric(cf);
-        if !bary.iter().all(|v| (0.0..=1.0).contains(v)) {
+        // small epsilon to handle points which are very close to edges.
+        const EPS: F = 8e-3;
+        if !bary.iter().all(|v| (-EPS..=(1. + EPS)).contains(v)) {
             // outside the triangle
             continue;
         }
-        let new_vert = v_f.from_barycentric(bary);
+        // clamp two separate times, once for position once for uv
+        // This has a small offset from tri edges to make it sharper
+        let clamped_bary = bary.map(|v| v.clamp(1e-5, 1. - 1e-5));
+        let sum = clamped_bary.into_iter().sum::<F>();
+        let clamped_bary = clamped_bary.map(|v| v / sum);
+
+        let [u, v] = uv_f.from_barycentric(clamped_bary);
         // compute color
-        let rgba = image::imageops::interpolate_bilinear(diff_img, cf[0] % 1., cf[1] % 1.).unwrap();
+        let rgba = image::imageops::sample_nearest(diff_img, u % 1., v % 1.).unwrap();
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
+
+        // this is 0-1 so vertices align across edges
+        let clamped_bary = bary.map(|v| v.clamp(0., 1.));
+        let sum = clamped_bary.into_iter().sum::<F>();
+        let clamped_bary = clamped_bary.map(|v| v / sum);
+        let new_vert = v_f.from_barycentric(clamped_bary);
 
         let vi = out_verts.len();
         out_verts.push(new_vert);
@@ -156,21 +175,21 @@ pub fn sample(
     // compute faces for each new vertex
     for (&[u, v], &vi) in vert_map.iter() {
         // TODO determine if this is +1 or -1?
-        let up = vert_map.get(u, v + 1);
-        let left = vert_map.get(u + 1, v);
-        let upleft = vert_map.get(u + 1, v + 1);
+        let up = vert_map.get(&[u, v + 1]).copied();
+        let left = vert_map.get(&[u + 1, v]).copied();
+        let upleft = vert_map.get(&[u + 1, v + 1]).copied();
         let new_face = match (up, upleft, left) {
             (None, None, None) => {
                 /* TODO should form triangle with corners? */
                 continue;
             }
-            (Some(u), Some(ul), Some(l)) => FaceKind::Quad([vi, u, ul, l]),
+            (Some(u), Some(ul), Some(l)) => FaceKind::Quad([l, ul, u, vi]),
             // All triples are a triangle
-            (Some(u), None, Some(l)) => FaceKind::Tri([vi, u, l]),
-            (Some(u), Some(ul), None) => FaceKind::Tri([vi, u, ul]),
-            (None, Some(ul), Some(l)) => FaceKind::Tri([vi, ul, l]),
+            (Some(u), None, Some(l)) => FaceKind::Tri([l, u, vi]),
+            (Some(u), Some(ul), None) => FaceKind::Tri([ul, u, vi]),
+            (None, Some(ul), Some(l)) => FaceKind::Tri([l, ul, vi]),
             // All doubles are steep triangles along the edge (handled elsewhere)
-            (Some(u), None, None) | (None, Some(ul), None) | (None, None, Some(l)) => continue,
+            (Some(_), None, None) | (None, Some(_), None) | (None, None, Some(_)) => continue,
         };
         out_faces.push(new_face);
     }

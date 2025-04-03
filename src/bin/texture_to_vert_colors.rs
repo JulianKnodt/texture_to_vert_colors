@@ -3,7 +3,7 @@ use pars3d::FaceKind;
 use pars3d::image::{self, DynamicImage, GenericImageView};
 use std::collections::BTreeMap;
 
-type F = f32;
+use texture_to_vert_colors::F;
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
 /// drop in visual quality.

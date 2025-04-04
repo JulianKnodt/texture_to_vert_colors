@@ -1,7 +1,7 @@
 use std::array::from_fn;
 use std::ops::{Add, Mul, Neg, Sub};
 
-use super::{dot, F, sub, kmul, normalize, length};
+use super::{F, dot, kmul, length, normalize, sub};
 
 pub const fn sum_up_to<const N: usize>() -> usize {
     N * (N + 1) / 2

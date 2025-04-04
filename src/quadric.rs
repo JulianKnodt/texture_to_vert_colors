@@ -1,5 +1,5 @@
 use super::sym::SymMatrix3;
-use super::{add, dot, kmul, sub, F};
+use super::{F, add, dot, kmul, sub};
 
 use core::array::from_fn;
 use core::ops::{Add, AddAssign, Mul, MulAssign};
@@ -225,7 +225,6 @@ impl Quadric<0> {
 }
 
 impl<const N: usize> Quadric<N> {
-    /// the normal should be scaled by the area
     pub fn new_plane(v: [F; 3], n: [F; 3], area: F) -> Self {
         let a = SymMatrix3::outer(n);
         let dist = -dot(n, v);
@@ -245,12 +244,15 @@ impl<const N: usize> Quadric<N> {
             dv: area * c / 3.,
         }
     }
+    pub fn new_from_bary([b0, b1]: [F; 2], area: F) -> Self {
+        let b2 = 1. - b0 - b1;
+        Self::new_plane([b0, b1, b2], [0., 0., 1.], area)
+    }
 
     pub fn n_attribs<const V: usize>(
         [nx, ny, nz]: [F; 3],
         points: [[F; 3]; V],
         attribs: [[F; N]; V],
-
 
         weights: AttrWeights<N>,
     ) -> Self
@@ -326,9 +328,11 @@ impl<const N: usize> Quadric<N> {
         }
         pn[np] = [nx, ny, nz, 0.];
         let r = least_sq::dyn_mgs_qr(&mut pn, &mut q_buf);
-        assert!(q_buf
-            .iter()
-            .all(|col| col.iter().copied().all(F::is_finite)));
+        assert!(
+            q_buf
+                .iter()
+                .all(|col| col.iter().copied().all(F::is_finite))
+        );
         assert!(r.iter().all(|col| col.iter().copied().all(F::is_finite)));
 
         let gd: [[F; 4]; N] = from_fn(|i| {
@@ -377,12 +381,7 @@ impl<const N: usize> Quadric<N> {
         }
     }
     /// Compute cost with attributes
-    pub fn cost_attrib(
-        &self,
-        v: [F; 3],
-        attrs: [F; N],
-        ws: AttrWeights<N>,
-    ) -> F {
+    pub fn cost_attrib(&self, v: [F; 3], attrs: [F; N], ws: AttrWeights<N>) -> F {
         let mut a_v = self.a.vec_mul(v);
         for i in 0..N {
             a_v = sub(a_v, kmul(attrs[i] * ws.ws[i], self.g[i]));
@@ -434,11 +433,7 @@ impl<const N: usize> Quadric<N> {
         Some(kmul(denom, numer))
     }
 
-    pub fn attributes(
-        &self,
-        p: [F; 3],
-        ws: AttrWeights<N>,
-    ) -> [F; N] {
+    pub fn attributes(&self, p: [F; 3], ws: AttrWeights<N>) -> [F; N] {
         let attrs = from_fn(|i| {
             let w = ws.ws[i];
             if w <= 0. {

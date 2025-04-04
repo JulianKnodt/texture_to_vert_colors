@@ -1,5 +1,5 @@
 use super::sym::SymMatrix3;
-use super::{kmul, quat_to_mat, F};
+use super::{F, kmul, quat_to_mat};
 
 #[inline]
 fn approx_givens_quat(a11: F, a12: F, a22: F) -> [F; 2] {

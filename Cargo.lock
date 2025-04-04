@@ -369,6 +369,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "least_sq"
+version = "0.1.0"
+source = "git+https://github.com/JulianKnodt/qr_lst_sq.git#ccc499c9b3ab0fd68994a71b37d53d8fe480399e"
+
+[[package]]
 name = "lebe"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -408,6 +413,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "pars3d"
 version = "0.1.0"
+source = "git+https://github.com/JulianKnodt/pars3d#705359f80f54f3a48be454a8fee4af3f0dacf8cc"
 dependencies = [
  "gltf",
  "gltf-json",
@@ -547,6 +553,7 @@ name = "texture_to_vert_colors"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "least_sq",
  "pars3d",
 ]
 

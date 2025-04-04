@@ -11,5 +11,5 @@ pub mod svd;
 
 pub mod sym;
 
-// pub mod quadric;
-
+// represent each vertex as 2D barycentric and merge them together
+pub mod quadric;

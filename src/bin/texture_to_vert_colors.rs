@@ -121,8 +121,8 @@ impl AABB<i32, 2> {
         (ly..=hy).flat_map(move |y| (lx..=hx).map(move |x| [x, y]))
     }
     pub fn expand_by(&mut self, v: i32) {
-      self.min = self.min.map(|val| val - v);
-      self.max = self.max.map(|val| val + v);
+        self.min = self.min.map(|val| val - v);
+        self.max = self.max.map(|val| val + v);
     }
 }
 

@@ -15,21 +15,28 @@ pub struct Args {
     /// Output mesh path (PLY).
     #[arg(long, short)]
     output: String,
+
+    #[arg(long, short = 'k', default_value_t = SampleKind::Exact)]
+    sample_kind: SampleKind,
 }
 
 pub fn main() {
     let args = Args::parse();
-    let scene = pars3d::load(args.input).expect("Failed to parse input");
+    let scene = pars3d::load(&args.input).expect("Failed to parse input");
     let mut out_scene = scene.clone();
     for (mi, mesh) in scene.meshes.iter().enumerate() {
         assert!(!mesh.uv[0].is_empty());
-        let new_mesh = texture_to_vert_colors(mesh, &scene);
+        let new_mesh = texture_to_vert_colors(mesh, &scene, &args);
         out_scene.meshes[mi] = new_mesh;
     }
     pars3d::save(args.output, &out_scene).expect("Failed to save output");
 }
 
-pub fn texture_to_vert_colors(mesh: &pars3d::Mesh, scene: &pars3d::Scene) -> pars3d::Mesh {
+pub fn texture_to_vert_colors(
+    mesh: &pars3d::Mesh,
+    scene: &pars3d::Scene,
+    args: &Args,
+) -> pars3d::Mesh {
     let mut out = pars3d::Mesh::new_geometry(mesh.v.clone(), vec![]);
     out.n = mesh.n.clone();
 
@@ -50,7 +57,10 @@ pub fn texture_to_vert_colors(mesh: &pars3d::Mesh, scene: &pars3d::Scene) -> par
         out.vert_colors.push([r, g, b]);
     }
 
-    for (_fi, f) in mesh.f.iter().enumerate() {
+    let mut locked_buf = vec![true; out.v.len()];
+    let mut edge_map = BTreeMap::new();
+
+    for (fi, f) in mesh.f.iter().enumerate() {
         /*
         let Some(mati) = mesh.mat_for_face(fi) else {
             continue;
@@ -68,14 +78,28 @@ pub fn texture_to_vert_colors(mesh: &pars3d::Mesh, scene: &pars3d::Scene) -> par
         };
         */
 
-        sample(
-            &mesh,
-            f,
-            &diff_img,
-            &mut out.f,
-            &mut out.v,
-            &mut out.vert_colors,
-        );
+        match args.sample_kind {
+            SampleKind::Approx => sample(
+                &mesh,
+                f,
+                &diff_img,
+                &mut out.f,
+                &mut out.v,
+                &mut out.vert_colors,
+                &mut locked_buf,
+            ),
+            SampleKind::Exact => sample_exact(
+                &mesh,
+                f,
+                fi,
+                &diff_img,
+                &mut out.f,
+                &mut out.v,
+                &mut out.vert_colors,
+                &mut locked_buf,
+                &mut edge_map,
+            ),
+        }
     }
     out
 }
@@ -133,11 +157,13 @@ pub fn sample(
     out_faces: &mut Vec<FaceKind>,
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
+    lock_buf: &mut Vec<bool>,
 ) {
     let mut aabb = AABB::<F, 2>::new();
     for uv in f.as_slice().iter().map(|&vi| mesh.uv[0][vi]) {
         aabb.add_point(uv);
     }
+    // For each vert, lock it if it's on a triangle boundary;
     // TODO should these have -1?
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
@@ -146,6 +172,8 @@ pub fn sample(
     let uv_f = f.map_kind(|v| mesh.uv[0][v]);
     let v_f = f.map_kind(|v| mesh.v[v]);
     let mut vert_map = BTreeMap::new();
+
+    let _curr_start = out_verts.len();
     for c in iaabb.iter_coords() {
         let cf = c.map(|v| v as F + 0.5);
         let cf = [cf[0] / w as F, cf[1] / h as F];
@@ -156,6 +184,7 @@ pub fn sample(
             // outside the triangle
             continue;
         }
+        let locked = bary.iter().any(|v| !(EPS..=(1. - EPS)).contains(v));
         let [u, v] = uv_f.from_barycentric(bary);
         // compute color
         let u = u % 1.;
@@ -175,6 +204,7 @@ pub fn sample(
         out_verts.push(new_vert);
         out_colors.push([r, g, b]);
         assert!(vert_map.insert(c, vi).is_none());
+        lock_buf.push(locked);
     }
 
     // compute faces for each new vertex
@@ -199,3 +229,146 @@ pub fn sample(
         out_faces.push(new_face);
     }
 }
+
+pub fn sample_exact(
+    mesh: &pars3d::Mesh,
+    f: &FaceKind,
+    fi: usize,
+    diff_img: &DynamicImage,
+    out_faces: &mut Vec<FaceKind>,
+    out_verts: &mut Vec<[F; 3]>,
+    out_colors: &mut Vec<[F; 3]>,
+    lock_buf: &mut Vec<bool>,
+    // For each (face, edge) pair, store vertices along the edge.
+    edge_map: &mut BTreeMap<(usize, [usize; 2]), Vec<usize>>,
+) {
+    let mut aabb = AABB::<F, 2>::new();
+    let f_slice = f.as_slice();
+    for uv in f_slice.iter().map(|&vi| mesh.uv[0][vi]) {
+        aabb.add_point(uv);
+    }
+    // For each vert, lock it if it's on a triangle boundary;
+    // TODO should these have -1?
+    let (w, h) = diff_img.dimensions();
+    aabb.scale_by(w as F, h as F);
+    let mut iaabb = aabb.round_to_i32();
+    iaabb.expand_by(1);
+    let uv_f = f.map_kind(|v| mesh.uv[0][v]);
+    let v_f = f.map_kind(|v| mesh.v[v]);
+
+    // for each pixel, what vertices are associated with it?
+    let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
+
+    const EPS: F = 1e-2;
+    let _curr_start = out_verts.len();
+    for c in iaabb.iter_coords() {
+        let [u, v] = c.map(|v| v as F);
+
+        let cfs = [[u, v], [u + 1., v], [u + 1., v + 1.], [u, v + 1.]];
+
+        // check if any of the pixel corners are in the face, if not skip
+        let num_in_face = cfs
+            .iter()
+            .filter(|cf| {
+                uv_f.barycentric([cf[0] / w as F, cf[1] / h as F])
+                    .iter()
+                    .all(|&v| 0. <= v && v <= 1.)
+            })
+            .count();
+        if num_in_face < 3 {
+            continue;
+        }
+
+        let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
+        let [r, g, b] = {
+            let [tex_u, tex_v] = uv_f.from_barycentric(bary);
+            // compute color
+            let tex_u = tex_u % 1.;
+            let tex_u = if tex_u < 0. { 1. + tex_u } else { tex_u };
+            let tex_v = tex_v % 1.;
+            let tex_v = if tex_v < 0. { 1. + tex_v } else { tex_v };
+            let rgba = image::imageops::sample_bilinear(diff_img, tex_u, tex_v).unwrap();
+            let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
+            [r, g, b]
+        };
+
+        let cfs = [[u, v], [u + 1., v], [u + 1., v + 1.], [u, v + 1.]];
+        let new_verts = cfs.map(|cf| {
+            let cf = [cf[0] / w as F, cf[1] / h as F];
+            let bary = uv_f.barycentric(cf);
+            let on_edge = bary.iter().any(|v| (EPS..=(1. - EPS)).contains(v));
+
+            let (bary, nearest_edge) = if !on_edge || /* TODO temp */ true {
+                (bary, None)
+            } else {
+                // TODO compute nearest point on edge in perpendicular direction
+                /*
+                // nearest edge idx
+                let nei = bary
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| a.total_cmp(&b));
+                let e = [f_slice[nei], f_slice[(nei+1) % f_slice.len()]];
+                */
+                todo!();
+                #[allow(unreachable_code)]
+                (bary, Some([0, 0]))
+            };
+
+            let new_vert = v_f.from_barycentric(bary);
+
+            let vi = out_verts.len();
+            out_verts.push(new_vert);
+            out_colors.push([r, g, b]);
+            // if on edge, lock it for later simplification
+            lock_buf.push(on_edge);
+            if let Some([ne0, ne1]) = nearest_edge {
+                edge_map.entry((fi, [ne0, ne1])).or_default().push(vi);
+            }
+            vi
+        });
+        assert_eq!(pixel_map.insert(c, new_verts), None);
+        out_faces.push(FaceKind::Quad(new_verts));
+    }
+
+    for (&[u, v], &[l, r, _, ul]) in pixel_map.iter() {
+        // TODO turn these into checked subs?
+        let left = pixel_map.get(&[u - 1, v]);
+        if let Some(&[_, or, our, _]) = left {
+            out_faces.push(FaceKind::Quad([l, or, our, ul]));
+        }
+        let up = pixel_map.get(&[u, v - 1]);
+        if let Some(&[_, _, our, oul]) = up {
+            out_faces.push(FaceKind::Quad([l, r, our, oul]));
+        }
+        let upleft = pixel_map.get(&[u - 1, v - 1]);
+        match (upleft, up, left) {
+            (Some([_, ul_r, _, _]), Some([u_l, _, _, _]), Some([_, _, l_ur, _])) => {
+                out_faces.push(FaceKind::Quad([ul, *u_l, *ul_r, *l_ur]));
+            }
+            _ => {}
+        }
+    }
+}
+
+macro_rules! impl_display {
+  ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {
+    impl std::fmt::Display for $name {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use $name::*;
+            let s = match self {
+                $($kind => $disp,)+
+            };
+            write!(f, "{s}")
+        }
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SampleKind {
+    Approx,
+    Exact,
+}
+
+impl_display!(SampleKind, Approx => "approx", Exact => "exact");

@@ -292,7 +292,8 @@ pub fn sample_exact(
             [r, g, b]
         };
 
-        let cfs = [[u, v], [u + 1., v], [u + 1., v + 1.], [u, v + 1.]];
+        const DELTA: F = 0.8;
+        let cfs = [[u, v], [u + DELTA, v], [u + DELTA, v + DELTA], [u, v + DELTA]];
         let new_verts = cfs.map(|cf| {
             let cf = [cf[0] / w as F, cf[1] / h as F];
             let bary = uv_f.barycentric(cf);
@@ -328,28 +329,45 @@ pub fn sample_exact(
             vi
         });
         assert_eq!(pixel_map.insert(c, new_verts), None);
-        out_faces.push(FaceKind::Quad(new_verts));
+        //out_faces.push(FaceKind::Quad(new_verts));
     }
 
     for (&[u, v], &[l, r, _, ul]) in pixel_map.iter() {
         // TODO turn these into checked subs?
         let left = pixel_map.get(&[u - 1, v]);
+        /*
         if let Some(&[_, or, our, _]) = left {
-            out_faces.push(FaceKind::Quad([l, or, our, ul]));
+            out_faces.push(FaceKind::Quad([ul, our, or, l]));
         }
+        */
         let up = pixel_map.get(&[u, v - 1]);
+        /*
         if let Some(&[_, _, our, oul]) = up {
-            out_faces.push(FaceKind::Quad([l, r, our, oul]));
+            out_faces.push(FaceKind::Quad([oul, our, r, l]));
         }
+        */
         let upleft = pixel_map.get(&[u - 1, v - 1]);
         match (upleft, up, left) {
-            (Some([_, ul_r, _, _]), Some([u_l, _, _, _]), Some([_, _, l_ur, _])) => {
-                out_faces.push(FaceKind::Quad([ul, *u_l, *ul_r, *l_ur]));
+            (Some([_, a, _, _]), Some([b, _, _, _]), Some([_, _, c, _])) => {
+            //(Some([_, a, _, _]), Some([b, _, _, _]), Some([_, _, c, _])) => {
+                //out_faces.push(FaceKind::Quad([ul, *u_l, *ul_r, *l_ur]));
+                out_faces.push(FaceKind::Quad([*b, *a, *c, ul]));
             }
             _ => {}
         }
+        /*
+        */
     }
 }
+
+/*
+/// Utility function to move a barycentric coordinate closer to the center.
+fn bary_to_center(bs: [F; 3], t: F) -> [F; 3] {
+    let new_bs = bs.map(|b| b * (1. - t) + (b + 0.5) * t);
+    let sum = new_bs.iter().sum::<F>();
+    new_bs.map(|b| b / sum)
+}
+*/
 
 macro_rules! impl_display {
   ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {

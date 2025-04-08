@@ -105,7 +105,6 @@ pub fn texture_to_vert_colors(
     }
 
     // Zip edges together
-
     for ([e0, e1], face_verts) in edge_map {
         // nothing to be done in this case
         if face_verts.len() <= 1 {
@@ -121,16 +120,43 @@ pub fn texture_to_vert_colors(
             .max_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap())
             .unwrap();
 
-        let compute_t = |&vi| {
-            let p: [F; 3] = mesh.v[vi];
-            let t = (p[dim] - e0[dim]) / delta;
-            (p, t.clamp(0., 1.))
+        let compute_t = |&vi: &usize| {
+            let t = (mesh.v[vi][dim] - e0[dim]) / delta;
+            (vi, t.clamp(0., 1.))
         };
-        let mut v0s = vec![(e0, 0.), (e1, 1.)];
-        v0s.extend(face_verts[0].1.iter().map(compute_t));
 
-        let mut v1s = vec![(e0, 0.), (e1, 1.)];
-        v1s.extend(face_verts[1].1.iter().map(compute_t));
+        let (_f0, [ei00, ei01], verts0) = &face_verts[0];
+        let mut v0s = vec![(*ei00, 0.), (*ei01, 1.)];
+        v0s.extend(verts0.iter().map(compute_t));
+        v0s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        let (_f1, [ei10, ei11], verts1) = &face_verts[1];
+        let mut v1s = vec![(*ei10, 0.), (*ei11, 1.)];
+        v1s.extend(verts1.iter().map(compute_t));
+        v1s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        // iterate over both and add faces with the front
+        let mut v0s = v0s.iter().copied().peekable();
+        let mut v1s = v1s.iter().copied().peekable();
+
+        let mut v0_front: (usize, F) = v0s.next().unwrap();
+        let mut v1_front: (usize, F) = v1s.next().unwrap();
+
+        while let [Some(&(p0n, t0n)), Some(&(p1n, t1n))] = [v0s.peek(), v1s.peek()] {
+            assert!(t0n >= v0_front.1);
+            assert!(t1n >= v1_front.1);
+            // pick the nearest of the two
+            let t0_delta = t0n - v0_front.1;
+            let t1_delta = t1n - v1_front.1;
+
+            if t0_delta <= t1_delta {
+                out.f.push(FaceKind::Tri([p0n, v0_front.0, v1_front.0]));
+                v0_front = (p0n, t0n);
+            } else {
+                out.f.push(FaceKind::Tri([p1n, v0_front.0, v1_front.0]));
+                v1_front = (p1n, t1n);
+            }
+        }
     }
 
     out
@@ -271,8 +297,8 @@ pub fn sample_exact(
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
     lock_buf: &mut Vec<bool>,
-    // map from edge -> face -> vertices, which stores vertices along every half edge
-    edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
+    // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
+    edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, [usize; 2], Vec<usize>)>>,
 ) {
     let mut aabb = AABB::<F, 2>::new();
     let f_slice = f.as_slice();
@@ -360,14 +386,14 @@ pub fn sample_exact(
             out_colors.push([r, g, b]);
             // if on edge, lock it for later simplification
             lock_buf.push(on_edge);
-            if let Some([ne0, ne1]) = nearest_edge {
-                let [ne0, ne1] = [ne0, ne1].map(|vi| mesh.v[vi].map(F::to_bits));
-                let edge = std::cmp::minmax(ne0, ne1);
-                let face_verts = edge_map.entry(edge).or_default();
+            if let Some([nei0, nei1]) = nearest_edge {
+                let [ne0, ne1] = [nei0, nei1].map(|vi| (mesh.v[vi].map(F::to_bits), vi));
+                let [(ne0, nei0), (ne1, nei1)] = std::cmp::minmax(ne0, ne1);
+                let face_verts = edge_map.entry([ne0, ne1]).or_default();
                 if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
-                    fv.1.push(vi);
+                    fv.2.push(vi);
                 } else {
-                    face_verts.push((fi, vec![vi]));
+                    face_verts.push((fi, [nei0, nei1], vec![vi]));
                 }
             }
             vi

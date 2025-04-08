@@ -1,9 +1,11 @@
+#![feature(cmp_minmax)]
+
 use clap::Parser;
 use pars3d::FaceKind;
 use pars3d::image::{self, DynamicImage, GenericImageView};
 use std::collections::BTreeMap;
 
-use texture_to_vert_colors::F;
+use texture_to_vert_colors::{F, U};
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
 /// drop in visual quality.
@@ -101,6 +103,36 @@ pub fn texture_to_vert_colors(
             ),
         }
     }
+
+    // Zip edges together
+
+    for ([e0, e1], face_verts) in edge_map {
+        // nothing to be done in this case
+        if face_verts.len() <= 1 {
+            continue;
+        }
+        assert_eq!(face_verts.len(), 2, "TODO handle non-manifold case");
+        // Non manifold case may just be ok to ignore, not sure what to do there exactly.
+
+        let e0 = e0.map(F::from_bits);
+        let e1 = e1.map(F::from_bits);
+        let (dim, delta) = (0..3)
+            .map(|i| (i, e1[i] - e0[i]))
+            .max_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap())
+            .unwrap();
+
+        let compute_t = |&vi| {
+            let p: [F; 3] = mesh.v[vi];
+            let t = (p[dim] - e0[dim]) / delta;
+            (p, t.clamp(0., 1.))
+        };
+        let mut v0s = vec![(e0, 0.), (e1, 1.)];
+        v0s.extend(face_verts[0].1.iter().map(compute_t));
+
+        let mut v1s = vec![(e0, 0.), (e1, 1.)];
+        v1s.extend(face_verts[1].1.iter().map(compute_t));
+    }
+
     out
 }
 
@@ -239,8 +271,8 @@ pub fn sample_exact(
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
     lock_buf: &mut Vec<bool>,
-    // For each (face, edge) pair, store vertices along the edge.
-    edge_map: &mut BTreeMap<(usize, [usize; 2]), Vec<usize>>,
+    // map from edge -> face -> vertices, which stores vertices along every half edge
+    edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
 ) {
     let mut aabb = AABB::<F, 2>::new();
     let f_slice = f.as_slice();
@@ -264,19 +296,26 @@ pub fn sample_exact(
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
-        let cfs = [[u, v], [u + 1., v], [u + 1., v + 1.], [u, v + 1.]];
+        const DELTA: F = 0.999;
+        let cfs = [
+            [u, v],
+            [u + DELTA, v],
+            [u + DELTA, v + DELTA],
+            [u, v + DELTA],
+        ];
+        let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
 
         // check if any of the pixel corners are in the face, if not skip
-        let num_in_face = cfs
-            .iter()
-            .filter(|cf| {
-                uv_f.barycentric([cf[0] / w as F, cf[1] / h as F])
-                    .iter()
-                    .all(|&v| 0. <= v && v <= 1.)
-            })
-            .count();
-        if num_in_face < 3 {
-            continue;
+        let mut num_on_edge = 0;
+        let mut num_in_face = 0;
+        for cf in cfs {
+            let bary = uv_f.barycentric(cf);
+            num_in_face += bary.iter().all(|&v| 0. <= v && v <= 1.) as usize;
+            num_on_edge += bary.iter().any(|&v| v <= EPS || v >= 1. - EPS) as usize;
+        }
+        match (num_in_face, num_on_edge) {
+            (0, _) => continue,
+            (_, _) => {}
         }
 
         let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
@@ -292,14 +331,12 @@ pub fn sample_exact(
             [r, g, b]
         };
 
-        const DELTA: F = 0.8;
-        let cfs = [[u, v], [u + DELTA, v], [u + DELTA, v + DELTA], [u, v + DELTA]];
         let new_verts = cfs.map(|cf| {
-            let cf = [cf[0] / w as F, cf[1] / h as F];
             let bary = uv_f.barycentric(cf);
+            let bary = clamp_bary_to_tri(bary);
             let on_edge = bary.iter().any(|v| (EPS..=(1. - EPS)).contains(v));
 
-            let (bary, nearest_edge) = if !on_edge || /* TODO temp */ true {
+            let (bary, nearest_edge) = if !on_edge /* TODO temp */ || true {
                 (bary, None)
             } else {
                 // TODO compute nearest point on edge in perpendicular direction
@@ -324,50 +361,68 @@ pub fn sample_exact(
             // if on edge, lock it for later simplification
             lock_buf.push(on_edge);
             if let Some([ne0, ne1]) = nearest_edge {
-                edge_map.entry((fi, [ne0, ne1])).or_default().push(vi);
+                let [ne0, ne1] = [ne0, ne1].map(|vi| mesh.v[vi].map(F::to_bits));
+                let edge = std::cmp::minmax(ne0, ne1);
+                let face_verts = edge_map.entry(edge).or_default();
+                if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
+                    fv.1.push(vi);
+                } else {
+                    face_verts.push((fi, vec![vi]));
+                }
             }
             vi
         });
         assert_eq!(pixel_map.insert(c, new_verts), None);
-        //out_faces.push(FaceKind::Quad(new_verts));
+        out_faces.push(FaceKind::Quad(new_verts));
     }
 
     for (&[u, v], &[l, r, _, ul]) in pixel_map.iter() {
         // TODO turn these into checked subs?
         let left = pixel_map.get(&[u - 1, v]);
-        /*
+        let up = pixel_map.get(&[u, v - 1]);
         if let Some(&[_, or, our, _]) = left {
             out_faces.push(FaceKind::Quad([ul, our, or, l]));
         }
-        */
-        let up = pixel_map.get(&[u, v - 1]);
-        /*
         if let Some(&[_, _, our, oul]) = up {
             out_faces.push(FaceKind::Quad([oul, our, r, l]));
         }
-        */
         let upleft = pixel_map.get(&[u - 1, v - 1]);
-        match (upleft, up, left) {
-            (Some([_, a, _, _]), Some([b, _, _, _]), Some([_, _, c, _])) => {
-            //(Some([_, a, _, _]), Some([b, _, _, _]), Some([_, _, c, _])) => {
-                //out_faces.push(FaceKind::Quad([ul, *u_l, *ul_r, *l_ur]));
-                out_faces.push(FaceKind::Quad([*b, *a, *c, ul]));
+        let corner_face = match (upleft, up, left) {
+            (Some([_, _, a, _]), Some([_, _, _, b]), Some([_, c, _, _])) => {
+                FaceKind::Quad([l, *c, *a, *b])
             }
-            _ => {}
-        }
-        /*
-        */
+            (None, Some([_, _, _, b]), Some([_, c, _, _])) => FaceKind::Tri([l, *c, *b]),
+            (Some([_, _, a, _]), None, Some([_, c, _, _])) => FaceKind::Tri([l, *c, *a]),
+            (Some([_, _, a, _]), Some([_, _, _, b]), None) => FaceKind::Tri([l, *a, *b]),
+            (Some([_, _, _shared, _]), None, None) => {
+                /*
+                todo!(
+                    r#"It might be necessary to add triangles to adjacent
+                    faces here? Not sure
+                    if this will be ever hit."#
+                );
+                */
+                continue;
+            }
+            (None, None, None) => {
+                /* No faces to add */
+                continue;
+            }
+            _ => continue,
+        };
+        out_faces.push(corner_face);
     }
 }
 
-/*
-/// Utility function to move a barycentric coordinate closer to the center.
-fn bary_to_center(bs: [F; 3], t: F) -> [F; 3] {
-    let new_bs = bs.map(|b| b * (1. - t) + (b + 0.5) * t);
-    let sum = new_bs.iter().sum::<F>();
-    new_bs.map(|b| b / sum)
+/// Returns the barycentric coordinates in the triangle closest to bs
+fn clamp_bary_to_tri(bs: [F; 3]) -> [F; 3] {
+    if bs.iter().all(|b| (0.0..=1.0).contains(b)) {
+        return bs;
+    }
+    let new_bs = bs.map(|bs| bs.clamp(0., 1.));
+    let s = new_bs.iter().sum::<F>();
+    new_bs.map(|b| b / s)
 }
-*/
 
 macro_rules! impl_display {
   ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {

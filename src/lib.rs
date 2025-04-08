@@ -3,6 +3,7 @@
 #![feature(generic_arg_infer)]
 
 pub type F = f32;
+pub type U = u32;
 
 mod vec;
 pub use vec::*;

@@ -1,4 +1,5 @@
 #![feature(cmp_minmax)]
+#![feature(let_chains)]
 
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
@@ -54,6 +55,7 @@ pub fn texture_to_vert_colors(
     let diff_img = diff_tex.image.as_ref().expect("No diffuse image?").flipv();
 
     let mut edge_map = BTreeMap::new();
+    let mut out_bary = vec![];
 
     for (fi, f) in mesh.f.iter().enumerate() {
         /*
@@ -90,6 +92,7 @@ pub fn texture_to_vert_colors(
                 &mut out.f,
                 &mut out.v,
                 &mut out.vert_colors,
+                &mut out_bary,
                 &mut edge_map,
             ),
         }
@@ -136,32 +139,28 @@ pub fn texture_to_vert_colors(
         let mut v0_front: (usize, F) = v0s.next().unwrap();
         let mut v1_front: (usize, F) = v1s.next().unwrap();
 
-        let mut t0_acc = 0.;
-        let mut t1_acc = 0.;
+        // TODO replace this accumulation with picking the front that is closer to the opposite
+        // previous front.
         while let [Some(&(p0n, t0n)), Some(&(p1n, t1n))] = [v0s.peek(), v1s.peek()] {
             debug_assert!(t0n >= v0_front.1);
             debug_assert!(t1n >= v1_front.1);
-            // pick the nearest of the two
-            t0_acc += t0n - v0_front.1;
-            t1_acc += t1n - v1_front.1;
+            let t0_delta = (v0_front.1 - t1n).abs();
+            let t1_delta = (v1_front.1 - t0n).abs();
 
-            let new_face = if t0_acc <= t1_acc {
+            let new_face = if t0_delta >= t1_delta {
                 let new_face = FaceKind::Tri([v0_front.0, p0n, v1_front.0]);
                 v0_front = (p0n, t0n);
                 v0s.next().unwrap();
-                t1_acc = 0.;
                 new_face
             } else {
                 let new_face = FaceKind::Tri([v0_front.0, p1n, v1_front.0]);
                 v1_front = (p1n, t1n);
                 v1s.next().unwrap();
-                t0_acc = 0.;
                 new_face
             };
             out.f.push(new_face);
         }
 
-        /*
         while let Some((p0n, t)) = v0s.next() {
             out.f.push(FaceKind::Tri([v0_front.0, p0n, v1_front.0]));
             v0_front = (p0n, t);
@@ -170,7 +169,6 @@ pub fn texture_to_vert_colors(
             out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
             v1_front = (p1n, t);
         }
-        */
     }
 
     out
@@ -184,6 +182,7 @@ pub fn sample_exact(
     out_faces: &mut Vec<FaceKind>,
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
+    out_bary: &mut Vec<[F; 3]>,
     // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
 ) {
@@ -204,30 +203,16 @@ pub fn sample_exact(
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
 
-    let nearest_edge = |pos: [F; 3]| {
-        let bary = v_f.barycentric(pos);
-        let idx = bary
-            .iter()
-            .copied()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.total_cmp(&b))
-            .unwrap()
-            .0;
-        let [e0, e1] = std::array::from_fn(|i| f_slice[(idx + 1 + i) % f_slice.len()])
-            .map(|vi| mesh.v[vi].map(F::to_bits));
-        std::cmp::minmax(e0, e1)
-    };
-
     let _curr_start = out_verts.len();
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
-        const DELTA: F = 0.8;
+        const DELTA: F = 0.9;
         let cfs = [
-            [u, v],
-            [u + DELTA, v],
+            [u + (1. - DELTA), v + (1. - DELTA)],
+            [u + DELTA, v + (1. - DELTA)],
             [u + DELTA, v + DELTA],
-            [u, v + DELTA],
+            [u + (1. - DELTA), v + DELTA],
         ];
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
 
@@ -255,85 +240,92 @@ pub fn sample_exact(
             [r, g, b]
         };
 
-        let new_verts = cfs.map(|cf| v_f.from_barycentric(clamp_bary_to_tri(uv_f.barycentric(cf))));
+        let barys = cfs.map(|cf| clamp_bary_to_tri(uv_f.barycentric(cf)));
+        let new_verts = barys.map(|bary| v_f.from_barycentric(bary));
 
         if quad_area(new_verts).abs() < 1e-8 {
             continue;
         }
 
-        let new_verts = new_verts.map(|new_vert| {
+        let new_verts = std::array::from_fn(|i| {
+            let new_vert = new_verts[i];
             let vi = out_verts.len();
             out_verts.push(new_vert);
             out_colors.push(rgb);
+            out_bary.push(barys[i]);
 
             vi
         });
         assert_eq!(pixel_map.insert(c, new_verts), None);
         out_faces.push(FaceKind::Quad(new_verts));
     }
+    let nearest_edge = |bary: [F; 3]| {
+        let i = bary
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.total_cmp(&b))
+            .unwrap()
+            .0;
+        let [e0, e1] = std::array::from_fn(|j| f_slice[(j + i + 1) % f_slice.len()])
+            .map(|vi| mesh.v[vi].map(F::to_bits));
+        std::cmp::minmax(e0, e1)
+    };
+    let mut insert_to_edge_map = |vi, e| {
+        let face_verts = edge_map.entry(e).or_default();
+        if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
+            fv.1.push(vi);
+        } else {
+            face_verts.push((fi, vec![vi]));
+        }
+    };
 
-    for (&[u, v], &[ulv, urv, rv, lv]) in pixel_map.iter() {
+    for (&[u, v], verts) in pixel_map.iter() {
         // for each pixel need to check if any of its boundaries is on an edge
-        let lu = pixel_map.get(&[u - 1, v - 1]).is_some();
-        let ld = pixel_map.get(&[u - 1, v + 1]).is_some();
-        let ru = pixel_map.get(&[u + 1, v - 1]).is_some();
-        let rd = pixel_map.get(&[u + 1, v + 1]).is_some();
-        let l = pixel_map.get(&[u - 1, v]).is_some();
-        let r = pixel_map.get(&[u + 1, v]).is_some();
-        let d = pixel_map.get(&[u, v + 1]).is_some();
-        let u = pixel_map.get(&[u, v - 1]).is_some();
+        let cc_pixels = [
+            [u - 1, v],
+            [u - 1, v - 1],
+            [u, v - 1],
+            [u + 1, v - 1],
+            [u + 1, v],
+            [u + 1, v + 1],
+            [u, v + 1],
+            [u - 1, v + 1],
+        ];
+        for i in 0..cc_pixels.len() {
+            let c = cc_pixels[i];
+            let n = cc_pixels[(i + 1) % cc_pixels.len()];
 
-        let mut insert_to_edge_map = |vi| {
-            out_colors[vi] = [1.; 3];
-            let e = nearest_edge(out_verts[vi]);
-            let face_verts = edge_map.entry(e).or_default();
-            if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
-                fv.1.push(vi);
-            } else {
-                face_verts.push((fi, vec![vi]));
+            if pixel_map.contains_key(&c) || pixel_map.contains_key(&n) {
+                continue;
             }
-        };
+            let bary_of_uv = |[u, v]: [i32; 2]| {
+                uv_f.barycentric([(u as F + 0.5) / w as F, (v as F + 0.5) / h as F])
+            };
+            let c_edge = nearest_edge(bary_of_uv(c));
+            let n_edge = nearest_edge(bary_of_uv(n));
 
-        let mut match_aa = |c, cd, cu, d: bool, u: bool, dv, uv| match (c, cd, cu) {
-            (true, true, true) => {}
-            (false, false, false) => {
-                insert_to_edge_map(dv);
-                insert_to_edge_map(uv);
-            }
+            let prev = if i == 0 { 3 } else { ((i - 1) / 2) % 4 };
+            let idxs = [i / 2, ((i + 1) / 2) % 4, prev];
 
-            (true, false, false) => {
-                // TODO what to do here?
-            }
-            (false, true, false) => {} //insert_to_edge_map(dv),
-            (false, false, true) => {} //insert_to_edge_map(uv),
-
-            (false, true, true) => todo!("Shouldn't be possible (triangle is convex)?"),
-
-            (true, false, true) => {}
-            (true, true, false) => {}
-        };
-
-        match_aa(l, ld, lu, d, u, lv, ulv);
-        match_aa(r, rd, ru, d, u, rv, urv);
-
-        match_aa(d, rd, ld, l, r, rv, lv);
-        match_aa(u, ru, lu, l, r, urv, ulv);
-
-        /*
-        if let Some([nei0, nei1]) = nearest_edge {
-            let [ne0, ne1] = [nei0, nei1].map(|vi| mesh.v[vi].map(F::to_bits));
-            let edge = std::cmp::minmax(ne0, ne1);
-            let face_verts = edge_map.entry(edge).or_default();
-            if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
-                fv.1.push(vi);
-            } else {
-                face_verts.push((fi, vec![vi]));
+            for i in idxs {
+                insert_to_edge_map(verts[i], c_edge);
+                if n_edge != c_edge {
+                    insert_to_edge_map(verts[i], n_edge);
+                }
             }
         }
-        */
     }
 
-    for (&[u, v], &[l, r, _, ul]) in pixel_map.iter() {
+    for (&[u, v], &[l, r, ur, ul]) in pixel_map.iter() {
+        // check bottom right first
+
+        if !pixel_map.contains_key(&[u + 1, v + 1])
+            && let Some(&[_, _, _, a]) = pixel_map.get(&[u + 1, v])
+            && let Some(&[_, b, _, _]) = pixel_map.get(&[u, v + 1])
+        {
+            // TODO here add tri face.
+            out_faces.push(FaceKind::Tri([ur, a, b]));
+        }
         // TODO turn these into checked subs?
         let left = pixel_map.get(&[u - 1, v]);
         let up = pixel_map.get(&[u, v - 1]);
@@ -357,7 +349,6 @@ pub fn sample_exact(
                     faces here? Not sure
                     if this will be ever hit."#
                 );
-                continue;
             }
             (None, None, None) => {
                 /* No faces to add */

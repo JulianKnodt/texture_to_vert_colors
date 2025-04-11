@@ -6,7 +6,7 @@ use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, quad_area};
 use std::collections::BTreeMap;
 
-use texture_to_vert_colors::{F, U, dot, sub};
+use texture_to_vert_colors::{F, U, dot, length, sub};
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
 /// drop in visual quality.
@@ -55,6 +55,7 @@ pub fn texture_to_vert_colors(
     let diff_img = diff_tex.image.as_ref().expect("No diffuse image?").flipv();
 
     let mut edge_map = BTreeMap::new();
+    let mut vert_map = BTreeMap::new();
     let mut out_bary = vec![];
 
     for (fi, f) in mesh.f.iter().enumerate() {
@@ -93,13 +94,14 @@ pub fn texture_to_vert_colors(
                 &mut out.v,
                 &mut out.vert_colors,
                 &mut out_bary,
+                &mut vert_map,
                 &mut edge_map,
             ),
         }
     }
 
     // Zip edges together
-    for ([e0, e1], face_verts) in edge_map {
+    for ([e0_key, e1_key], face_verts) in edge_map {
         // nothing to be done in this case
         if face_verts.len() <= 1 {
             continue;
@@ -107,8 +109,8 @@ pub fn texture_to_vert_colors(
         assert_eq!(face_verts.len(), 2, "TODO handle non-manifold case");
         // Non manifold case may just be ok to ignore, not sure what to do there exactly.
 
-        let e0 = e0.map(F::from_bits);
-        let e1 = e1.map(F::from_bits);
+        let e0 = e0_key.map(F::from_bits);
+        let e1 = e1_key.map(F::from_bits);
         let e_dir = sub(e1, e0);
         let e_len_sq = dot(e_dir, e_dir);
         assert!(e_len_sq > 0., "{e_len_sq}");
@@ -122,15 +124,29 @@ pub fn texture_to_vert_colors(
             (vi, t.clamp(0., 1.))
         };
 
-        let (_f0, verts0) = &face_verts[0];
+        let (f0, verts0) = &face_verts[0];
         let mut v0s = verts0.iter().map(compute_t).collect::<Vec<_>>();
-        v0s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        v0s.dedup();
 
-        let (_f1, verts1) = &face_verts[1];
+        if let Some(fv) = vert_map.get(&e0_key) {
+            if let Some((_, corner)) = fv.iter().find(|fv| fv.0 == *f0) {
+                v0s.push((*corner, 0.));
+            }
+        }
+
+        v0s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        v0s.dedup_by_key(|v| v.0);
+
+        let (f1, verts1) = &face_verts[1];
         let mut v1s = verts1.iter().map(compute_t).collect::<Vec<_>>();
-        v1s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        v1s.dedup();
+
+        if let Some(fv) = vert_map.get(&e1_key) {
+            if let Some((_, corner)) = fv.iter().find(|fv| fv.0 == *f1) {
+                v1s.push((*corner, 1.));
+            }
+        }
+
+        v1s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        v1s.dedup_by_key(|v| v.0);
 
         // iterate over both and add faces with the front
         let mut v0s = v0s.iter().copied().peekable();
@@ -184,11 +200,13 @@ pub fn sample_exact(
     out_colors: &mut Vec<[F; 3]>,
     out_bary: &mut Vec<[F; 3]>,
     // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
+    vert_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
 ) {
+    const CHAN: usize = 0;
     let mut aabb = AABB::<F, 2>::new();
     let f_slice = f.as_slice();
-    for uv in f_slice.iter().map(|&vi| mesh.uv[0][vi]) {
+    for uv in f_slice.iter().map(|&vi| mesh.uv[CHAN][vi]) {
         aabb.add_point(uv);
     }
 
@@ -207,7 +225,7 @@ pub fn sample_exact(
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
-        const DELTA: F = 0.9;
+        const DELTA: F = 0.95;
         let cfs = [
             [u + (1. - DELTA), v + (1. - DELTA)],
             [u + DELTA, v + (1. - DELTA)],
@@ -259,13 +277,62 @@ pub fn sample_exact(
         assert_eq!(pixel_map.insert(c, new_verts), None);
         out_faces.push(FaceKind::Quad(new_verts));
     }
+
+    // --- Compute correspondence between original vertices and a single pixel corner.
+    for &vi in f_slice {
+        let vert_pos = mesh.v[vi];
+        let [u, v] = mesh.uv[CHAN][vi];
+
+        let u = ((u % 1.) * w as F - 0.5).floor() as i32;
+        let v = ((v % 1.) * h as F - 0.5).floor() as i32;
+
+        let mut nearest = ([0; 2], 0);
+        let mut best_dist = F::INFINITY;
+        for i in [-1, 0, 1] {
+            for j in [-1, 0, 1] {
+                let nu = u + i;
+                let nu = if nu >= 0 { nu } else { w as i32 + nu };
+                let nv = v + j;
+                let nv = if nv >= 0 { nv } else { h as i32 + nv };
+                let p = [nu, nv];
+                let Some(verts) = pixel_map.get(&p) else {
+                    continue;
+                };
+                for (i, &vi) in verts.iter().enumerate() {
+                    let v = out_verts[vi];
+                    let d = length(sub(v, vert_pos));
+                    if d < best_dist {
+                        nearest = (p, i);
+                        best_dist = d;
+                    }
+                }
+            }
+        }
+        assert!(best_dist.is_finite());
+
+        let (uv, i) = nearest;
+        let pv = &pixel_map[&uv];
+        let near_vert = pv[i];
+        out_colors[near_vert] = [0.; 3];
+        let fv = vert_map.entry(vert_pos.map(F::to_bits)).or_default();
+        assert!(!fv.iter().any(|fv| fv.0 == fi));
+        fv.push((fi, near_vert));
+
+        // also mark previous and next verts
+        let next = pv[(i + 1) % 4];
+        out_colors[next] = [1.; 3];
+
+        let prev = pv[if i == 0 { 3 } else { i - 1 }];
+        out_colors[prev] = [1.; 3];
+        todo!();
+    }
+
+    // --- utility for computing edges.
     let nearest_edge = |bary: [F; 3]| {
-        let i = bary
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.total_cmp(&b))
-            .unwrap()
-            .0;
+        if bary.iter().filter(|&&v| v < 0.).count() > 1 {
+            todo!();
+        }
+        let i = bary.iter().position(|&v| v < 0.).unwrap();
         let [e0, e1] = std::array::from_fn(|j| f_slice[(j + i + 1) % f_slice.len()])
             .map(|vi| mesh.v[vi].map(F::to_bits));
         std::cmp::minmax(e0, e1)
@@ -273,13 +340,19 @@ pub fn sample_exact(
     let mut insert_to_edge_map = |vi, e| {
         let face_verts = edge_map.entry(e).or_default();
         if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
-            fv.1.push(vi);
+            if !fv.1.contains(&vi) {
+                fv.1.push(vi);
+            }
         } else {
             face_verts.push((fi, vec![vi]));
         }
     };
 
+    // --- Computing nearest edge (if any) to each pixel
     for (&[u, v], verts) in pixel_map.iter() {
+        if true {
+            continue;
+        }
         // for each pixel need to check if any of its boundaries is on an edge
         let cc_pixels = [
             [u - 1, v],
@@ -316,6 +389,7 @@ pub fn sample_exact(
         }
     }
 
+    // --- Adding faces in between pixel quads
     for (&[u, v], &[l, r, ur, ul]) in pixel_map.iter() {
         // check bottom right first
 

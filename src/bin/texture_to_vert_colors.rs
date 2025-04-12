@@ -55,7 +55,7 @@ pub fn texture_to_vert_colors(
     let diff_img = diff_tex.image.as_ref().expect("No diffuse image?").flipv();
 
     let mut edge_map = BTreeMap::new();
-    let mut vert_map = BTreeMap::new();
+    let mut corner_map = BTreeMap::new();
     let mut out_bary = vec![];
 
     for (fi, f) in mesh.f.iter().enumerate() {
@@ -94,7 +94,7 @@ pub fn texture_to_vert_colors(
                 &mut out.v,
                 &mut out.vert_colors,
                 &mut out_bary,
-                &mut vert_map,
+                &mut corner_map,
                 &mut edge_map,
             ),
         }
@@ -111,6 +111,18 @@ pub fn texture_to_vert_colors(
 
         let e0 = e0_key.map(F::from_bits);
         let e1 = e1_key.map(F::from_bits);
+
+        let (f0, _) = &face_verts[0];
+        let swapped = mesh.f[*f0]
+            .edges()
+            .any(|e| e.map(|vi| mesh.v[vi]) == [e1, e0]);
+
+        let ([e0, e1], [e0_key, e1_key]) = if !swapped {
+            ([e1, e0], [e1_key, e0_key])
+        } else {
+            ([e0, e1], [e0_key, e1_key])
+        };
+
         let e_dir = sub(e1, e0);
         let e_len_sq = dot(e_dir, e_dir);
         assert!(e_len_sq > 0., "{e_len_sq}");
@@ -123,15 +135,21 @@ pub fn texture_to_vert_colors(
             assert!((0.0..=1.0).contains(&t), "{t}");
             (vi, t.clamp(0., 1.))
         };
+        macro_rules! add_key {
+            ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
+                if let Some(fv) = corner_map.get($key) {
+                    if let Some((_, corner)) = fv.iter().find(|fv| fv.0 == *$face) {
+                        $dst.push((*corner, $l));
+                    }
+                }
+            }};
+        }
 
         let (f0, verts0) = &face_verts[0];
         let mut v0s = verts0.iter().map(compute_t).collect::<Vec<_>>();
 
-        if let Some(fv) = vert_map.get(&e0_key) {
-            if let Some((_, corner)) = fv.iter().find(|fv| fv.0 == *f0) {
-                v0s.push((*corner, 0.));
-            }
-        }
+        add_key!(v0s, &e0_key, f0, 0.);
+        add_key!(v0s, &e1_key, f0, 1.);
 
         v0s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         v0s.dedup_by_key(|v| v.0);
@@ -139,11 +157,8 @@ pub fn texture_to_vert_colors(
         let (f1, verts1) = &face_verts[1];
         let mut v1s = verts1.iter().map(compute_t).collect::<Vec<_>>();
 
-        if let Some(fv) = vert_map.get(&e1_key) {
-            if let Some((_, corner)) = fv.iter().find(|fv| fv.0 == *f1) {
-                v1s.push((*corner, 1.));
-            }
-        }
+        add_key!(v1s, &e0_key, f1, 0.);
+        add_key!(v1s, &e1_key, f1, 1.);
 
         v1s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         v1s.dedup_by_key(|v| v.0);
@@ -200,7 +215,7 @@ pub fn sample_exact(
     out_colors: &mut Vec<[F; 3]>,
     out_bary: &mut Vec<[F; 3]>,
     // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
-    vert_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
+    corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
 ) {
     const CHAN: usize = 0;
@@ -278,8 +293,29 @@ pub fn sample_exact(
         out_faces.push(FaceKind::Quad(new_verts));
     }
 
+    // --- utility for nearest edge storage
+    let nearest_edge = |bary: [F; 3]| {
+        let i = bary.iter().position(|&v| v < 0.).unwrap();
+        let [e0, e1] = std::array::from_fn(|j| f_slice[(j + i + 1) % f_slice.len()])
+            .map(|vi| mesh.v[vi].map(F::to_bits));
+        std::cmp::minmax(e0, e1)
+    };
+
+    let mut insert_to_edge_map = |vi /* new vertex */, e /* original edge */| {
+        let face_verts = edge_map.entry(e).or_default();
+        if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
+            if !fv.1.contains(&vi) {
+                fv.1.push(vi);
+            }
+        } else {
+            face_verts.push((fi, vec![vi]));
+        }
+    };
+
     // --- Compute correspondence between original vertices and a single pixel corner.
-    for &vi in f_slice {
+    // This is only a vector since there are at most 3 vertices.
+    let mut corner_pixs = vec![];
+    for (f_idx, &vi) in f_slice.iter().enumerate() {
         let vert_pos = mesh.v[vi];
         let [u, v] = mesh.uv[CHAN][vi];
 
@@ -312,45 +348,38 @@ pub fn sample_exact(
 
         let (uv, i) = nearest;
         let pv = &pixel_map[&uv];
-        let near_vert = pv[i];
-        out_colors[near_vert] = [0.; 3];
-        let fv = vert_map.entry(vert_pos.map(F::to_bits)).or_default();
+        let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
         assert!(!fv.iter().any(|fv| fv.0 == fi));
-        fv.push((fi, near_vert));
+        fv.push((fi, pv[i]));
+        corner_pixs.push(uv);
 
         // also mark previous and next verts
         let next = pv[(i + 1) % 4];
-        out_colors[next] = [1.; 3];
+
+        let [n_e0, n_e1] =
+            [vi, f_slice[(f_idx + 1) % f_slice.len()]].map(|vi| mesh.v[vi].map(F::to_bits));
+        let n_e = std::cmp::minmax(n_e0, n_e1);
+        insert_to_edge_map(next, n_e);
 
         let prev = pv[if i == 0 { 3 } else { i - 1 }];
-        out_colors[prev] = [1.; 3];
-        todo!();
-    }
+        let [p_e0, p_e1] = [
+            f_slice[if f_idx == 0 {
+                f_slice.len() - 1
+            } else {
+                f_idx - 1
+            }],
+            vi,
+        ]
+        .map(|vi| mesh.v[vi].map(F::to_bits));
+        let p_e = std::cmp::minmax(p_e0, p_e1);
+        insert_to_edge_map(prev, p_e);
 
-    // --- utility for computing edges.
-    let nearest_edge = |bary: [F; 3]| {
-        if bary.iter().filter(|&&v| v < 0.).count() > 1 {
-            todo!();
-        }
-        let i = bary.iter().position(|&v| v < 0.).unwrap();
-        let [e0, e1] = std::array::from_fn(|j| f_slice[(j + i + 1) % f_slice.len()])
-            .map(|vi| mesh.v[vi].map(F::to_bits));
-        std::cmp::minmax(e0, e1)
-    };
-    let mut insert_to_edge_map = |vi, e| {
-        let face_verts = edge_map.entry(e).or_default();
-        if let Some(fv) = face_verts.iter_mut().find(|fv| fv.0 == fi) {
-            if !fv.1.contains(&vi) {
-                fv.1.push(vi);
-            }
-        } else {
-            face_verts.push((fi, vec![vi]));
-        }
-    };
+        // also need to check other edges for this pixel specifically
+    }
 
     // --- Computing nearest edge (if any) to each pixel
     for (&[u, v], verts) in pixel_map.iter() {
-        if true {
+        if corner_pixs.contains(&[u, v]) {
             continue;
         }
         // for each pixel need to check if any of its boundaries is on an edge
@@ -364,6 +393,7 @@ pub fn sample_exact(
             [u, v + 1],
             [u - 1, v + 1],
         ];
+        // check if any of the adjacent pixels are negative?
         for i in 0..cc_pixels.len() {
             let c = cc_pixels[i];
             let n = cc_pixels[(i + 1) % cc_pixels.len()];
@@ -453,7 +483,7 @@ pub fn sample(
     iaabb.expand_by(1);
     let uv_f = f.map_kind(|v| mesh.uv[0][v]);
     let v_f = f.map_kind(|v| mesh.v[v]);
-    let mut vert_map = BTreeMap::new();
+    let mut pixel_map = BTreeMap::new();
 
     for c in iaabb.iter_coords() {
         let cf = c.map(|v| v as F + 0.5);
@@ -483,15 +513,15 @@ pub fn sample(
         let vi = out_verts.len();
         out_verts.push(new_vert);
         out_colors.push([r, g, b]);
-        assert!(vert_map.insert(c, vi).is_none());
+        assert!(pixel_map.insert(c, vi).is_none());
     }
 
     // compute faces for each new vertex
-    for (&[u, v], &vi) in vert_map.iter() {
+    for (&[u, v], &vi) in pixel_map.iter() {
         // TODO determine if this is +1 or -1?
-        let up = vert_map.get(&[u, v + 1]).copied();
-        let left = vert_map.get(&[u + 1, v]).copied();
-        let upleft = vert_map.get(&[u + 1, v + 1]).copied();
+        let up = pixel_map.get(&[u, v + 1]).copied();
+        let left = pixel_map.get(&[u + 1, v]).copied();
+        let upleft = pixel_map.get(&[u + 1, v + 1]).copied();
         let new_face = match (up, upleft, left) {
             (None, None, None) => {
                 /* TODO should form triangle with corners? */

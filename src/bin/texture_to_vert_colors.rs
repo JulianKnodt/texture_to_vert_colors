@@ -56,7 +56,6 @@ pub fn texture_to_vert_colors(
 
     let mut edge_map = BTreeMap::new();
     let mut corner_map = BTreeMap::new();
-    let mut out_bary = vec![];
 
     for (fi, f) in mesh.f.iter().enumerate() {
         /*
@@ -93,7 +92,6 @@ pub fn texture_to_vert_colors(
                 &mut out.f,
                 &mut out.v,
                 &mut out.vert_colors,
-                &mut out_bary,
                 &mut corner_map,
                 &mut edge_map,
             ),
@@ -271,7 +269,6 @@ pub fn sample_exact(
     out_faces: &mut Vec<FaceKind>,
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
-    out_bary: &mut Vec<[F; 3]>,
     // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
@@ -294,7 +291,17 @@ pub fn sample_exact(
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
 
-    let _curr_start = out_verts.len();
+    let get_rgb = |u, v| {
+        let u = u % 1.;
+        let u = if u < 0. { 1. + u } else { u };
+        let v = v % 1.;
+        let v = if v < 0. { 1. + v } else { v };
+        let rgba = image::imageops::sample_bilinear(diff_img, u, v).unwrap();
+        let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
+        [r, g, b]
+    };
+
+    let start = out_verts.len();
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
@@ -321,7 +328,8 @@ pub fn sample_exact(
         let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
         let rgb = {
             let [tex_u, tex_v] = uv_f.from_barycentric(bary);
-            // compute color
+            get_rgb(tex_u, tex_v)
+            /*
             let tex_u = tex_u % 1.;
             let tex_u = if tex_u < 0. { 1. + tex_u } else { tex_u };
             let tex_v = tex_v % 1.;
@@ -329,6 +337,7 @@ pub fn sample_exact(
             let rgba = image::imageops::sample_bilinear(diff_img, tex_u, tex_v).unwrap();
             let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
             [r, g, b]
+            */
         };
 
         let barys = cfs.map(|cf| clamp_bary_to_tri(uv_f.barycentric(cf)));
@@ -343,13 +352,28 @@ pub fn sample_exact(
             let vi = out_verts.len();
             out_verts.push(new_vert);
             out_colors.push(rgb);
-            out_bary.push(barys[i]);
 
             vi
         });
 
         assert_eq!(pixel_map.insert(c, new_verts), None);
         out_faces.push(FaceKind::Quad(new_verts));
+    }
+
+    // If the triangle is smaller than a pixel, use the original corners.
+    if out_verts.len() == start {
+        let mut verts = vec![];
+        for &vi in f_slice {
+            verts.push(out_verts.len());
+            out_verts.push(mesh.v[vi]);
+            let [u, v] = mesh.uv[CHAN][vi];
+            out_colors.push(get_rgb(u, v));
+            corner_map
+                .entry(mesh.v[vi].map(F::to_bits))
+                .or_default()
+                .push((fi, vi));
+        }
+        return;
     }
 
     // --- utility for nearest edge storage
@@ -413,8 +437,6 @@ pub fn sample_exact(
         let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
         assert!(!fv.iter().any(|fv| fv.0 == fi));
         fv.push((fi, pv[i]));
-        out_colors[pv[i]] = [1.; 3];
-        out_colors[pv[(i + 2) % 4]] = [0.; 3];
         corner_pixs.push(uv);
 
         // also mark previous and next verts

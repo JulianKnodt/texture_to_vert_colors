@@ -361,7 +361,7 @@ pub fn sample_exact(
         let n_e = std::cmp::minmax(n_e0, n_e1);
         insert_to_edge_map(next, n_e);
 
-        let prev = pv[if i == 0 { 3 } else { i - 1 }];
+        let prev = pv[(i + 3) % 4];
         let [p_e0, p_e1] = [
             f_slice[if f_idx == 0 {
                 f_slice.len() - 1
@@ -374,7 +374,13 @@ pub fn sample_exact(
         let p_e = std::cmp::minmax(p_e0, p_e1);
         insert_to_edge_map(prev, p_e);
 
-        // also need to check other edges for this pixel specifically
+        // if opp is near to any edges, then also need to include that one.
+        let opp = pv[(i + 2) % 2];
+        let bary = v_f.barycentric(out_verts[opp]);
+        let Some(_near_idx) = bary.iter().position(|&b| b < 1e-3) else {
+            continue;
+        };
+        todo!();
     }
 
     // --- Computing nearest edge (if any) to each pixel

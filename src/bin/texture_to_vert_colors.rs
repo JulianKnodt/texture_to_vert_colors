@@ -100,6 +100,8 @@ pub fn texture_to_vert_colors(
         }
     }
 
+    let mut edge_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
+
     // Zip edges together
     for ([e0_key, e1_key], face_verts) in edge_map {
         // nothing to be done in this case
@@ -137,10 +139,13 @@ pub fn texture_to_vert_colors(
         };
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
-                if let Some(fv) = corner_map.get($key) {
-                    if let Some((_, corner)) = fv.iter().find(|fv| fv.0 == *$face) {
-                        $dst.push((*corner, $l));
-                    }
+                if let Some(fv) = corner_map.get($key)
+                    && let Some(&(_, corner)) = fv.iter().find(|fv| fv.0 == *$face)
+                {
+                    $dst.push((corner, $l));
+                    Some(corner)
+                } else {
+                    None
                 }
             }};
         }
@@ -148,8 +153,8 @@ pub fn texture_to_vert_colors(
         let (f0, verts0) = &face_verts[0];
         let mut v0s = verts0.iter().map(compute_t).collect::<Vec<_>>();
 
-        add_key!(v0s, &e0_key, f0, 0.);
-        add_key!(v0s, &e1_key, f0, 1.);
+        let v00 = add_key!(v0s, &e0_key, f0, 0.);
+        let v01 = add_key!(v0s, &e1_key, f0, 1.);
 
         v0s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         v0s.dedup_by_key(|v| v.0);
@@ -157,11 +162,34 @@ pub fn texture_to_vert_colors(
         let (f1, verts1) = &face_verts[1];
         let mut v1s = verts1.iter().map(compute_t).collect::<Vec<_>>();
 
-        add_key!(v1s, &e0_key, f1, 0.);
-        add_key!(v1s, &e1_key, f1, 1.);
+        let v10 = add_key!(v1s, &e0_key, f1, 0.);
+        let v11 = add_key!(v1s, &e1_key, f1, 1.);
 
         v1s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         v1s.dedup_by_key(|v| v.0);
+
+        const INVALID: usize = usize::MAX;
+        let mut ins = |src, dst| {
+            *edge_adj
+                .entry(src)
+                .or_insert([INVALID; 2])
+                .iter_mut()
+                .find(|v| **v == INVALID)
+                .unwrap() = dst;
+        };
+        if let Some(e0) = v00
+            && let Some(e1) = v10
+        {
+            ins(e0, e1);
+            ins(e1, e0);
+        }
+
+        if let Some(e0) = v01
+            && let Some(e1) = v11
+        {
+            ins(e0, e1);
+            ins(e1, e0);
+        }
 
         // iterate over both and add faces with the front
         let mut v0s = v0s.iter().copied().peekable();
@@ -200,6 +228,36 @@ pub fn texture_to_vert_colors(
             out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
             v1_front = (p1n, t);
         }
+    }
+
+    // Zip corner faces together
+    for (_, fvs) in corner_map.iter() {
+        let face = match fvs.len() {
+            0..3 => continue,
+            // Order doesn't matter here
+            3 => FaceKind::Tri(std::array::from_fn(|i| fvs[i].1)),
+
+            4 => {
+                let mut out = [fvs[0].1, 0, 0, 0];
+                out[1] = edge_adj[&out[0]][0];
+                for i in 2..4 {
+                    let n = edge_adj[&out[i - 1]];
+                    out[i] = *n.iter().find(|&&v| v != out[i - 2]).unwrap();
+                }
+                FaceKind::Quad(out)
+            }
+            n => {
+                let mut poly = vec![fvs[0].1];
+                poly.reserve(n);
+                poly.push(edge_adj[&poly[0]][0]);
+                for i in 2..n {
+                    let n = edge_adj[&poly[i - 1]];
+                    poly.push(*n.iter().find(|&&v| v != poly[i - 2]).unwrap());
+                }
+                FaceKind::Poly(poly)
+            }
+        };
+        out.f.push(face);
     }
 
     out
@@ -289,6 +347,7 @@ pub fn sample_exact(
 
             vi
         });
+
         assert_eq!(pixel_map.insert(c, new_verts), None);
         out_faces.push(FaceKind::Quad(new_verts));
     }
@@ -346,11 +405,16 @@ pub fn sample_exact(
         }
         assert!(best_dist.is_finite());
 
+        // pixel & nearest vert idx
         let (uv, i) = nearest;
+
         let pv = &pixel_map[&uv];
+        assert_eq!(pv.len(), 4);
         let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
         assert!(!fv.iter().any(|fv| fv.0 == fi));
         fv.push((fi, pv[i]));
+        out_colors[pv[i]] = [1.; 3];
+        out_colors[pv[(i + 2) % 4]] = [0.; 3];
         corner_pixs.push(uv);
 
         // also mark previous and next verts
@@ -375,12 +439,22 @@ pub fn sample_exact(
         insert_to_edge_map(prev, p_e);
 
         // if opp is near to any edges, then also need to include that one.
-        let opp = pv[(i + 2) % 2];
+        let opp = pv[(i + 2) % 4];
         let bary = v_f.barycentric(out_verts[opp]);
-        let Some(_near_idx) = bary.iter().position(|&b| b < 1e-3) else {
+        let Some(near_idx) = bary.iter().position(|&b| b < 1e-2) else {
             continue;
         };
-        todo!();
+
+        // Triangle assumption
+        let [e0, e1] =
+            [(near_idx + 1) % 3, (near_idx + 2) % 3].map(|vi| mesh.v[f_slice[vi]].map(F::to_bits));
+        let opp_e = std::cmp::minmax(e0, e1);
+        if opp_e == p_e {
+            insert_to_edge_map(opp, p_e);
+        }
+        if opp_e == n_e {
+            insert_to_edge_map(opp, n_e);
+        }
     }
 
     // --- Computing nearest edge (if any) to each pixel
@@ -460,10 +534,10 @@ pub fn sample_exact(
                     if this will be ever hit."#
                 );
             }
-            (None, None, None) => {
-                /* No faces to add */
-                continue;
-            }
+
+            /* Definitely no faces to add */
+            (None, None, None) => continue,
+
             _ => continue,
         };
         out_faces.push(corner_face);

@@ -413,7 +413,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "pars3d"
 version = "0.1.0"
-source = "git+https://github.com/JulianKnodt/pars3d#7fe39cdd984ba15a00ac8a3ff6d7969a3b412894"
+source = "git+https://github.com/JulianKnodt/pars3d#d5b683b5ef7cc3044c318d8512a59cc2c4b72657"
 dependencies = [
  "gltf",
  "gltf-json",

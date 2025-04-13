@@ -19,6 +19,10 @@ pub struct Args {
     #[arg(long, short)]
     output: String,
 
+    /// Path to alternative texture to use.
+    #[arg(long, short)]
+    diffuse_img: String,
+
     #[arg(long, short = 'k', default_value_t = SampleKind::Exact)]
     sample_kind: SampleKind,
 }
@@ -44,15 +48,21 @@ pub fn texture_to_vert_colors(
 
     // Copy vertex colors for each input UV
     // TODO remove this assumption of a single material and copy per face with duplication
-    let mati = mesh
-        .single_mat()
-        .expect("More than 1 material for this mesh");
-    let mat = &scene.materials[mati];
-    let diff_tex = mat
-        .textures_by_kind(pars3d::mesh::TextureKind::Diffuse)
-        .next()
-        .expect("No diffuse texture?");
-    let diff_img = diff_tex.image.as_ref().expect("No diffuse image?").flipv();
+    let diff_img = if args.diffuse_img.is_empty() {
+        let mati = mesh
+            .single_mat()
+            .expect("More than 1 material for this mesh");
+        let mat = &scene.materials[mati];
+        let diff_tex = mat
+            .textures_by_kind(pars3d::mesh::TextureKind::Diffuse)
+            .next()
+            .expect("No diffuse texture?");
+        diff_tex.image.as_ref().expect("No diffuse image?").flipv()
+    } else {
+        pars3d::image::open(&args.diffuse_img)
+            .expect("Failed to open diffuse image")
+            .flipv()
+    };
 
     let mut edge_map = BTreeMap::new();
     let mut corner_map = BTreeMap::new();

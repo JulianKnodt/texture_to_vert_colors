@@ -1,10 +1,12 @@
 #![feature(cmp_minmax)]
 #![feature(let_chains)]
 
+use std::collections::BTreeMap;
+use std::io::Write;
+
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, edge::EdgeKind, quad_area};
-use std::collections::BTreeMap;
 
 use texture_to_vert_colors::{F, U, add, dot, kmul, length, normalize, sub};
 
@@ -33,6 +35,10 @@ pub struct Args {
     /// Display some extra colors for debuggin
     #[arg(long, hide = true)]
     debug_colors: bool,
+
+    /// Output stats to this file
+    #[arg(long, default_value = "")]
+    stats: String,
 }
 
 pub fn main() {
@@ -44,7 +50,24 @@ pub fn main() {
         let new_mesh = texture_to_vert_colors(mesh, &scene, &args);
         out_scene.meshes[mi] = new_mesh;
     }
+
     pars3d::save(args.output, &out_scene).expect("Failed to save output");
+
+    if !args.stats.is_empty() {
+        let mut stat_file = std::fs::File::create(&args.stats).expect("Failed to open stats file");
+        writeln!(
+            stat_file,
+            r#"""{{
+  "num_faces": {},
+  "num_vertices": {},
+  "num_boundary_edges": {},
+}}"""#,
+            out_scene.num_faces(),
+            out_scene.num_vertices(),
+            out_scene.meshes.iter().map(|m| m.num_boundary_edges()).sum::<usize>(),
+        )
+        .expect("Failed to write stats");
+    }
 }
 
 pub fn texture_to_vert_colors(

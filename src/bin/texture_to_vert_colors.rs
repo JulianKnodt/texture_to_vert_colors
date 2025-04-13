@@ -20,11 +20,15 @@ pub struct Args {
     output: String,
 
     /// Path to alternative texture to use.
-    #[arg(long, short)]
+    #[arg(long, short, default_value = "")]
     diffuse_img: String,
 
     #[arg(long, short = 'k', default_value_t = SampleKind::Exact)]
     sample_kind: SampleKind,
+
+    /// Do not add corners
+    #[arg(long, hide = true)]
+    no_corners: bool,
 }
 
 pub fn main() {
@@ -104,6 +108,7 @@ pub fn texture_to_vert_colors(
                 &mut out.vert_colors,
                 &mut corner_map,
                 &mut edge_map,
+                &args,
             ),
         }
     }
@@ -177,26 +182,23 @@ pub fn texture_to_vert_colors(
         v1s.dedup_by_key(|v| v.0);
 
         const INVALID: usize = usize::MAX;
-        let mut ins = |src, dst| {
-            *edge_adj
-                .entry(src)
-                .or_insert([INVALID; 2])
-                .iter_mut()
-                .find(|v| **v == INVALID)
-                .unwrap() = dst;
+        let mut ins = |src, dst, idx| {
+            let v = edge_adj.entry(src).or_insert([INVALID; 2]);
+            assert!(v[idx] == dst || v[idx] == INVALID);
+            v[idx] = dst;
         };
         if let Some(e0) = v00
             && let Some(e1) = v10
         {
-            ins(e0, e1);
-            ins(e1, e0);
+            ins(e0, e1, 0);
+            ins(e1, e0, 1);
         }
 
         if let Some(e0) = v01
             && let Some(e1) = v11
         {
-            ins(e0, e1);
-            ins(e1, e0);
+            ins(e0, e1, 1);
+            ins(e1, e0, 0);
         }
 
         // iterate over both and add faces with the front
@@ -214,15 +216,22 @@ pub fn texture_to_vert_colors(
             let t0_delta = (v0_front.1 - t1n).abs();
             let t1_delta = (v1_front.1 - t0n).abs();
 
-            let new_face = if t0_delta >= t1_delta {
+            let new_face = if (t0_delta - t1_delta).abs() < 3e-2 {
+                let new_face = FaceKind::Quad([v0_front.0, p0n, p1n, v1_front.0]);
+                v0_front = (p0n, t0n);
+                v1_front = (p1n, t1n);
+                assert!(v0s.next().is_some());
+                assert!(v1s.next().is_some());
+                new_face
+            } else if t0_delta >= t1_delta {
                 let new_face = FaceKind::Tri([v0_front.0, p0n, v1_front.0]);
                 v0_front = (p0n, t0n);
-                v0s.next().unwrap();
+                assert!(v0s.next().is_some());
                 new_face
             } else {
                 let new_face = FaceKind::Tri([v0_front.0, p1n, v1_front.0]);
                 v1_front = (p1n, t1n);
-                v1s.next().unwrap();
+                assert!(v1s.next().is_some());
                 new_face
             };
             out.f.push(new_face);
@@ -282,6 +291,8 @@ pub fn sample_exact(
     // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
+
+    args: &Args,
 ) {
     const CHAN: usize = 0;
     let mut aabb = AABB::<F, 2>::new();
@@ -353,7 +364,7 @@ pub fn sample_exact(
         let barys = cfs.map(|cf| clamp_bary_to_tri(uv_f.barycentric(cf)));
         let new_verts = barys.map(|bary| v_f.from_barycentric(bary));
 
-        if quad_area(new_verts).abs() < 1e-8 {
+        if quad_area(new_verts).abs() < 1e-6 {
             continue;
         }
 
@@ -388,7 +399,9 @@ pub fn sample_exact(
 
     // --- utility for nearest edge storage
     let nearest_edge = |bary: [F; 3]| {
-        let i = bary.iter().position(|&v| v < 0.).unwrap();
+        let Some(i) = bary.iter().position(|&v| v <= 0.) else {
+            todo!("{bary:?}");
+        };
         let [e0, e1] = std::array::from_fn(|j| f_slice[(j + i + 1) % f_slice.len()])
             .map(|vi| mesh.v[vi].map(F::to_bits));
         std::cmp::minmax(e0, e1)
@@ -409,6 +422,9 @@ pub fn sample_exact(
     // This is only a vector since there are at most 3 vertices.
     let mut corner_pixs = vec![];
     for (f_idx, &vi) in f_slice.iter().enumerate() {
+        if args.no_corners {
+            continue;
+        }
         let vert_pos = mesh.v[vi];
         let [u, v] = mesh.uv[CHAN][vi];
 
@@ -417,8 +433,9 @@ pub fn sample_exact(
 
         let mut nearest = ([0; 2], 0);
         let mut best_dist = F::INFINITY;
-        for i in [-1, 0, 1] {
-            for j in [-1, 0, 1] {
+        let range = [-2, -1, 0, 1, 2];
+        for i in range {
+            for j in range {
                 let nu = u + i;
                 let nu = if nu >= 0 { nu } else { w as i32 + nu };
                 let nv = v + j;
@@ -437,17 +454,16 @@ pub fn sample_exact(
                 }
             }
         }
-        assert!(best_dist.is_finite());
+        assert_ne!(best_dist, F::INFINITY);
 
         // pixel & nearest vert idx
         let (uv, i) = nearest;
+        corner_pixs.push(uv);
 
         let pv = &pixel_map[&uv];
-        assert_eq!(pv.len(), 4);
         let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
         assert!(!fv.iter().any(|fv| fv.0 == fi));
         fv.push((fi, pv[i]));
-        corner_pixs.push(uv);
 
         // also mark previous and next verts
         let next = pv[(i + 1) % 4];
@@ -473,7 +489,7 @@ pub fn sample_exact(
         // if opp is near to any edges, then also need to include that one.
         let opp = pv[(i + 2) % 4];
         let bary = v_f.barycentric(out_verts[opp]);
-        let Some(near_idx) = bary.iter().position(|&b| b < 1e-2) else {
+        let Some(near_idx) = bary.iter().position(|&b| b <= 1e-8) else {
             continue;
         };
 

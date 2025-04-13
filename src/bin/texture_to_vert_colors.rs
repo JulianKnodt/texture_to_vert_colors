@@ -183,8 +183,13 @@ pub fn texture_to_vert_colors(
 
         const INVALID: usize = usize::MAX;
         let mut ins = |src, dst, idx| {
+            assert_ne!(src, dst);
             let v = edge_adj.entry(src).or_insert([INVALID; 2]);
-            assert!(v[idx] == dst || v[idx] == INVALID);
+            assert!(
+                v[idx] == dst || v[idx] == INVALID,
+                "{src} {} {dst} {v:?}",
+                v[idx]
+            );
             v[idx] = dst;
         };
         if let Some(e0) = v00
@@ -326,7 +331,7 @@ pub fn sample_exact(
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
-        const DELTA: F = 0.95;
+        const DELTA: F = 0.9999;
         let cfs = [
             [u + (1. - DELTA), v + (1. - DELTA)],
             [u + DELTA, v + (1. - DELTA)],
@@ -364,7 +369,7 @@ pub fn sample_exact(
         let barys = cfs.map(|cf| clamp_bary_to_tri(uv_f.barycentric(cf)));
         let new_verts = barys.map(|bary| v_f.from_barycentric(bary));
 
-        if quad_area(new_verts).abs() < 1e-6 {
+        if quad_area(new_verts).abs() < 1e-10 {
             continue;
         }
 
@@ -381,27 +386,48 @@ pub fn sample_exact(
         out_faces.push(FaceKind::Quad(new_verts));
     }
 
-    // If the triangle is smaller than a pixel, use the original corners.
+    // If no faces were created, use the original corners.
     if out_verts.len() == start {
-        let mut verts = vec![];
+        let mut verts = Vec::with_capacity(f_slice.len());
         for &vi in f_slice {
-            verts.push(out_verts.len());
-            out_verts.push(mesh.v[vi]);
+            let new_vi = out_verts.len();
+            verts.push(new_vi);
+            let pos = mesh.v[vi];
             let [u, v] = mesh.uv[CHAN][vi];
+            out_verts.push(pos);
             out_colors.push(get_rgb(u, v));
             corner_map
-                .entry(mesh.v[vi].map(F::to_bits))
+                .entry(pos.map(F::to_bits))
                 .or_default()
-                .push((fi, vi));
+                .push((fi, new_vi));
         }
+        for ([vi, ni], [new_vi, new_ni]) in f.edges().zip(pars3d::edges(&verts)) {
+            let [v, n] = [vi, ni].map(|i| mesh.v[i].map(F::to_bits));
+            let e = std::cmp::minmax(v, n);
+            let fvs = edge_map.entry(e).or_default();
+            assert!(!fvs.iter().any(|fv| fv.0 == fi));
+            fvs.push((fi, vec![new_vi, new_ni]));
+        }
+        let f = match verts.len() {
+            0..3 => unreachable!(),
+            3 => FaceKind::Tri(std::array::from_fn(|i| verts[i])),
+            4 => FaceKind::Quad(std::array::from_fn(|i| verts[i])),
+            _ => FaceKind::Poly(verts),
+        };
+        out_faces.push(f);
         return;
     }
 
     // --- utility for nearest edge storage
     let nearest_edge = |bary: [F; 3]| {
-        let Some(i) = bary.iter().position(|&v| v <= 0.) else {
-            todo!("{bary:?}");
-        };
+        let i = bary.iter().position(|&v| v <= 0.).unwrap_or_else(|| {
+            bary.iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.total_cmp(&b))
+                .unwrap()
+                .0
+        });
+
         let [e0, e1] = std::array::from_fn(|j| f_slice[(j + i + 1) % f_slice.len()])
             .map(|vi| mesh.v[vi].map(F::to_bits));
         std::cmp::minmax(e0, e1)
@@ -494,8 +520,8 @@ pub fn sample_exact(
         };
 
         // Triangle assumption
-        let [e0, e1] =
-            [(near_idx + 1) % 3, (near_idx + 2) % 3].map(|vi| mesh.v[f_slice[vi]].map(F::to_bits));
+        let [e0, e1] = std::array::from_fn(|i| (near_idx + 1 + i) % 3)
+            .map(|vi| mesh.v[f_slice[vi]].map(F::to_bits));
         let opp_e = std::cmp::minmax(e0, e1);
         if opp_e == p_e {
             insert_to_edge_map(opp, p_e);
@@ -672,7 +698,7 @@ fn clamp_bary_to_tri(bs: [F; 3]) -> [F; 3] {
     if bs.iter().all(|b| (0.0..=1.0).contains(b)) {
         return bs;
     }
-    let new_bs = bs.map(|bs| bs.clamp(0., 1.));
+    let new_bs = bs.map(|bs| bs.max(0.));
     let s = new_bs.iter().sum::<F>();
     new_bs.map(|b| b / s)
 }

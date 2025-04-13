@@ -2,15 +2,15 @@
 #![feature(generic_const_exprs)]
 #![feature(generic_arg_infer)]
 
-pub type F = f32;
-pub type U = u32;
+pub type F = f64;
+pub type U = u64;
 
 mod vec;
 pub use vec::*;
 
-pub mod svd;
+//pub mod svd;
 
-pub mod sym;
+//pub mod sym;
 
 // represent each vertex as 2D barycentric and merge them together
-pub mod quadric;
+//pub mod quadric;

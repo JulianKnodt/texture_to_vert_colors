@@ -6,7 +6,7 @@ use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, edge::EdgeKind, quad_area};
 use std::collections::BTreeMap;
 
-use texture_to_vert_colors::{F, U, dot, length, sub};
+use texture_to_vert_colors::{F, U, add, dot, kmul, length, normalize, sub};
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
 /// drop in visual quality.
@@ -29,6 +29,10 @@ pub struct Args {
     /// Do not add corners
     #[arg(long, hide = true)]
     no_corners: bool,
+
+    /// Display some extra colors for debuggin
+    #[arg(long, hide = true)]
+    debug_colors: bool,
 }
 
 pub fn main() {
@@ -140,16 +144,15 @@ pub fn texture_to_vert_colors(
 
         let e_dir = sub(e1, e0);
         let e_len_sq = dot(e_dir, e_dir);
-        assert!(e_len_sq > 0., "{e_len_sq}");
+        assert!(e_len_sq > 1e-3, "{e_len_sq}");
 
         let compute_t = |&vi: &usize| {
-            let p = out.v[vi];
-            let s = dot(e_dir, sub(p, e0));
-            let t = s / e_len_sq;
+            let t = dot(e_dir, sub(out.v[vi], e0)) / e_len_sq;
             assert!(t.is_finite(), "{t}");
             assert!((0.0..=1.0).contains(&t), "{t}");
-            (vi, t.clamp(0., 1.))
+            (vi, t)
         };
+
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
                 if let Some(fv) = corner_map.get($key)
@@ -169,7 +172,7 @@ pub fn texture_to_vert_colors(
         let v00 = add_key!(v0s, &e0_key, f0, 0.);
         let v01 = add_key!(v0s, &e1_key, f0, 1.);
 
-        v0s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        v0s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         v0s.dedup_by_key(|v| v.0);
 
         let (f1, verts1) = &face_verts[1];
@@ -178,7 +181,7 @@ pub fn texture_to_vert_colors(
         let v10 = add_key!(v1s, &e0_key, f1, 0.);
         let v11 = add_key!(v1s, &e1_key, f1, 1.);
 
-        v1s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        v1s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         v1s.dedup_by_key(|v| v.0);
 
         let mut ins = |src, dst, idx| {
@@ -212,15 +215,13 @@ pub fn texture_to_vert_colors(
         let mut v0_front: (usize, F) = v0s.next().unwrap();
         let mut v1_front: (usize, F) = v1s.next().unwrap();
 
-        // TODO replace this accumulation with picking the front that is closer to the opposite
-        // previous front.
         while let [Some(&(p0n, t0n)), Some(&(p1n, t1n))] = [v0s.peek(), v1s.peek()] {
             debug_assert!(t0n >= v0_front.1);
             debug_assert!(t1n >= v1_front.1);
             let t0_delta = (v0_front.1 - t1n).abs();
             let t1_delta = (v1_front.1 - t0n).abs();
 
-            let new_face = if (t0_delta - t1_delta).abs() < 3e-2 {
+            let new_face = if (t0_delta - t1_delta).abs() < 5e-2 {
                 let new_face = FaceKind::Quad([v0_front.0, p0n, p1n, v1_front.0]);
                 v0_front = (p0n, t0n);
                 v1_front = (p1n, t1n);
@@ -312,16 +313,19 @@ pub fn sample_exact(
     iaabb.expand_by(1);
     let uv_f = f.map_kind(|v| mesh.uv[0][v]);
     let v_f = f.map_kind(|v| mesh.v[v]);
+    // face normal for projecting bary
+    let f_n = normalize(v_f.normal());
+    assert!(length(f_n) > 1e-3);
 
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
 
-    let get_rgb = |u, v| {
+    let get_rgb = |u: F, v: F| {
         let u = u % 1.;
         let u = if u < 0. { 1. + u } else { u };
         let v = v % 1.;
         let v = if v < 0. { 1. + v } else { v };
-        let rgba = image::imageops::sample_bilinear(diff_img, u, v).unwrap();
+        let rgba = image::imageops::sample_bilinear(diff_img, u as f32, v as f32).unwrap();
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
         [r, g, b]
     };
@@ -343,8 +347,10 @@ pub fn sample_exact(
         // check if any of the pixel corners are in the face, if not skip
         let mut num_in_face = 0;
         for cf in cfs {
-            let bary = uv_f.barycentric(cf);
-            num_in_face += bary.iter().all(|&v| 0. <= v && v <= 1.) as usize;
+            num_in_face += uv_f
+                .barycentric(cf)
+                .iter()
+                .all(|&v| (0.0..=1.0).contains(&v)) as usize;
         }
         match num_in_face {
             0 => continue,
@@ -355,10 +361,40 @@ pub fn sample_exact(
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         let rgb = get_rgb(tex_u, tex_v);
 
-        let barys = cfs.map(|cf| clamp_bary_to_tri(uv_f.barycentric(cf)));
-        let new_verts = barys.map(|bary| v_f.from_barycentric(bary));
+        let pos_barys = cfs.map(|cf| {
+            let bary = uv_f.barycentric(cf);
+            (v_f.from_barycentric(bary), bary)
+        });
 
-        if quad_area(new_verts) < 1e-8 {
+        let mut failed = false;
+        const B_DELTA: F = 1e-4;
+        let new_verts: [_; 4] = std::array::from_fn(|i| {
+            let (pos, bary) = pos_barys[i];
+            let Some(_ni) = bary.iter().position(|&b| b < B_DELTA) else {
+                return pos;
+            };
+            let new_bary = bary.map(|v| v.max(B_DELTA));
+            let s = new_bary.iter().sum::<F>();
+            let new_bary = new_bary.map(|v| v / s);
+            let proj_pos = v_f.from_barycentric(new_bary);
+
+            let next = pos_barys[(i + 1) % 4].0;
+            let prev = pos_barys[(i + 3) % 4].0;
+
+            // project to line defined by next and prev
+
+            let dir = sub(next, prev);
+            let e_len_sq = dot(dir, dir);
+
+            let t = dot(dir, sub(proj_pos, prev)) / e_len_sq;
+            failed = failed || !(1e-8..=(1.0 - 1e-8)).contains(&t);
+            proj_pos
+        });
+        if failed {
+            continue;
+        }
+
+        if quad_area(new_verts) < 1e-9 {
             continue;
         }
 
@@ -410,12 +446,12 @@ pub fn sample_exact(
     // --- Compute correspondence between original vertices and a single pixel corner.
     // This is only a vector since there are at most 3 vertices.
     let mut corner_verts = vec![];
-    for &vi in f_slice {
+    for &og_vi in f_slice {
         if args.no_corners {
             continue;
         }
-        let vert_pos = mesh.v[vi];
-        let [u, v] = mesh.uv[CHAN][vi];
+        let vert_pos = mesh.v[og_vi];
+        let [u, v] = mesh.uv[CHAN][og_vi];
 
         let u = ((u % 1.) * w as F - 0.5).floor() as i32;
         let v = ((v % 1.) * h as F - 0.5).floor() as i32;
@@ -452,8 +488,15 @@ pub fn sample_exact(
         let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
         assert!(!fv.iter().any(|fv| fv.0 == fi));
         fv.push((fi, pv[i]));
-        corner_verts.push((vi, pv[i]));
-        out_colors[pv[i]] = [1.; 3];
+        corner_verts.push((og_vi, pv[i]));
+
+        // Pull to a corner to make it tight
+        const T: F = 0.5;
+        out_verts[pv[i]] = add(kmul(1. - T, mesh.v[og_vi]), kmul(T, out_verts[pv[i]]));
+
+        if args.debug_colors {
+            out_colors[pv[i]] = [1.; 3];
+        }
     }
 
     // --- Adding faces in between pixel quads
@@ -486,7 +529,7 @@ pub fn sample_exact(
                 todo!(
                     r#"It might be necessary to add triangles to adjacent
                     faces here? Not sure
-                    if this will be ever hit."#
+                    if this will be ever hit (it likely shouldn't be)."#
                 );
             }
 
@@ -558,7 +601,9 @@ pub fn sample_exact(
     assert!(check);
 
     for (new_vi, ogs) in labels {
-        out_colors[new_vi] = [0.; 3];
+        if args.debug_colors && out_colors[new_vi] != [1.; 3] {
+            out_colors[new_vi] = [0.; 3];
+        }
         let [og0, og1] = ogs.map(|vi| mesh.v[vi].map(F::to_bits));
         let fvs = edge_map.entry(std::cmp::minmax(og0, og1)).or_default();
         if let Some(fv) = fvs.iter_mut().find(|fv| fv.0 == fi) {
@@ -567,50 +612,6 @@ pub fn sample_exact(
             fvs.push((fi, vec![new_vi]));
         }
     }
-
-    // --- Computing nearest edge (if any) to each pixel
-    /*
-    for (&[u, v], verts) in pixel_map.iter() {
-        if corner_pixs.contains(&[u, v]) {
-            continue;
-        }
-        // for each pixel need to check if any of its boundaries is on an edge
-        let cc_pixels = [
-            [u - 1, v],
-            [u - 1, v - 1],
-            [u, v - 1],
-            [u + 1, v - 1],
-            [u + 1, v],
-            [u + 1, v + 1],
-            [u, v + 1],
-            [u - 1, v + 1],
-        ];
-        // check if any of the adjacent pixels are negative
-        for i in 0..cc_pixels.len() {
-            let c = cc_pixels[i];
-            let n = cc_pixels[(i + 1) % cc_pixels.len()];
-
-            if pixel_map.contains_key(&c) || pixel_map.contains_key(&n) {
-                continue;
-            }
-            let bary_of_uv = |[u, v]: [i32; 2]| {
-                uv_f.barycentric([(u as F + 0.5) / w as F, (v as F + 0.5) / h as F])
-            };
-            let c_edge = nearest_edge(bary_of_uv(c));
-            let n_edge = nearest_edge(bary_of_uv(n));
-
-            let prev = if i == 0 { 3 } else { ((i - 1) / 2) % 4 };
-            let idxs = [i / 2, ((i + 1) / 2) % 4, prev];
-
-            for i in idxs {
-                insert_to_edge_map(verts[i], c_edge);
-                if n_edge != c_edge {
-                    insert_to_edge_map(verts[i], n_edge);
-                }
-            }
-        }
-    }
-    */
 }
 
 pub fn sample(
@@ -650,7 +651,7 @@ pub fn sample(
         let u = if u < 0. { 1. + u } else { u };
         let v = v % 1.;
         let v = if v < 0. { 1. + v } else { v };
-        let rgba = image::imageops::sample_bilinear(diff_img, u, v).unwrap();
+        let rgba = image::imageops::sample_bilinear(diff_img, u as f32, v as f32).unwrap();
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
 
         // this is 0-1 so vertices align across edges
@@ -686,16 +687,6 @@ pub fn sample(
         };
         out_faces.push(new_face);
     }
-}
-
-/// Returns the barycentric coordinates in the triangle closest to bs
-fn clamp_bary_to_tri(bs: [F; 3]) -> [F; 3] {
-    if bs.iter().all(|b| (0.0..=1.0).contains(b)) {
-        return bs;
-    }
-    let new_bs = bs.map(|bs| bs.max(0.));
-    let s = new_bs.iter().sum::<F>();
-    new_bs.map(|b| b / s)
 }
 
 macro_rules! impl_display {

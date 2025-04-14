@@ -6,7 +6,7 @@ use std::io::Write;
 
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
-use pars3d::{FaceKind, edge::EdgeKind, quad_area};
+use pars3d::{FaceKind, edge::EdgeKind};
 
 use texture_to_vert_colors::{F, U, add, dot, kmul, length, normalize, sub};
 
@@ -51,7 +51,7 @@ pub fn main() {
         out_scene.meshes[mi] = new_mesh;
     }
 
-    pars3d::save(args.output, &out_scene).expect("Failed to save output");
+    pars3d::save(&args.output, &out_scene).expect("Failed to save output");
 
     if !args.stats.is_empty() {
         let mut stat_file = std::fs::File::create(&args.stats).expect("Failed to open stats file");
@@ -64,7 +64,11 @@ pub fn main() {
 }}"""#,
             out_scene.num_faces(),
             out_scene.num_vertices(),
-            out_scene.meshes.iter().map(|m| m.num_boundary_edges()).sum::<usize>(),
+            out_scene
+                .meshes
+                .iter()
+                .map(|m| m.num_boundary_edges())
+                .sum::<usize>(),
         )
         .expect("Failed to write stats");
     }
@@ -116,9 +120,9 @@ pub fn texture_to_vert_colors(
         };
         */
 
-        match args.sample_kind {
+        let ok = match args.sample_kind {
             SampleKind::Approx => sample(
-                &mesh,
+                mesh,
                 f,
                 &diff_img,
                 &mut out.f,
@@ -126,7 +130,7 @@ pub fn texture_to_vert_colors(
                 &mut out.vert_colors,
             ),
             SampleKind::Exact => sample_exact(
-                &mesh,
+                mesh,
                 f,
                 fi,
                 &diff_img,
@@ -135,22 +139,32 @@ pub fn texture_to_vert_colors(
                 &mut out.vert_colors,
                 &mut corner_map,
                 &mut edge_map,
-                &args,
+                args,
             ),
+        };
+        if !ok {
+            pars3d::save(&args.output, &out.into_scene()).expect("Failed to save error scene");
+            eprintln!("Exiting after saved erroneous mesh");
+            std::process::exit(0);
         }
     }
+
+    /*
+    if true {
+        return out;
+    }
+    */
 
     let mut edge_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
 
     // Zip edges together
     for ([e0_key, e1_key], face_verts) in edge_map {
         // nothing to be done in this case
-        if face_verts.len() <= 1 {
+        if face_verts.len() != 2 {
             continue;
         }
-        assert_eq!(face_verts.len(), 2, "TODO handle non-manifold case");
-        // Non manifold case may just be ok to ignore, not sure what to do there exactly.
 
+        // Non manifold case may just be ok to ignore, not sure what to do there exactly.
         let e0 = e0_key.map(F::from_bits);
         let e1 = e1_key.map(F::from_bits);
 
@@ -167,12 +181,12 @@ pub fn texture_to_vert_colors(
 
         let e_dir = sub(e1, e0);
         let e_len_sq = dot(e_dir, e_dir);
-        assert!(e_len_sq > 1e-3, "{e_len_sq}");
+        assert!(e_len_sq > 1e-4, "{e_len_sq}");
 
         let compute_t = |&vi: &usize| {
             let t = dot(e_dir, sub(out.v[vi], e0)) / e_len_sq;
             assert!(t.is_finite(), "{t}");
-            assert!((0.0..=1.0).contains(&t), "{t}");
+            //assert!((0.0..=1.0).contains(&t), "{t} {e_len_sq}");
             (vi, t)
         };
 
@@ -265,11 +279,11 @@ pub fn texture_to_vert_colors(
             out.f.push(new_face);
         }
 
-        while let Some((p0n, t)) = v0s.next() {
+        for (p0n, t) in v0s {
             out.f.push(FaceKind::Tri([v0_front.0, p0n, v1_front.0]));
             v0_front = (p0n, t);
         }
-        while let Some((p1n, t)) = v1s.next() {
+        for (p1n, t) in v1s {
             out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
             v1_front = (p1n, t);
         }
@@ -283,13 +297,14 @@ pub fn texture_to_vert_colors(
             3 => FaceKind::Tri(std::array::from_fn(|i| fvs[i].1)),
 
             4 => {
-                let mut out = [fvs[0].1, 0, 0, 0];
-                out[1] = edge_adj[&out[0]][0];
+                let mut quad = [fvs[0].1, 0, 0, 0];
+                quad[1] = edge_adj[&quad[0]][0];
                 for i in 2..4 {
-                    let n = edge_adj[&out[i - 1]];
-                    out[i] = *n.iter().find(|&&v| v != out[i - 2]).unwrap();
+                    assert!(edge_adj.contains_key(&quad[i - 1]), "{}", quad[i - 1]);
+                    let n = edge_adj[&quad[i - 1]];
+                    quad[i] = *n.iter().find(|&&v| v != quad[i - 2]).unwrap();
                 }
-                FaceKind::Quad(out)
+                FaceKind::Quad(quad)
             }
             n => {
                 let mut poly = vec![fvs[0].1];
@@ -321,7 +336,7 @@ pub fn sample_exact(
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
 
     args: &Args,
-) {
+) -> bool {
     const CHAN: usize = 0;
     let mut aabb = AABB::<F, 2>::new();
     let f_slice = f.as_slice();
@@ -375,9 +390,8 @@ pub fn sample_exact(
                 .iter()
                 .all(|&v| (0.0..=1.0).contains(&v)) as usize;
         }
-        match num_in_face {
-            0 => continue,
-            _ => {}
+        if num_in_face == 0 {
+            continue;
         }
 
         let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
@@ -390,37 +404,38 @@ pub fn sample_exact(
         });
 
         let mut failed = false;
-        const B_DELTA: F = 1e-4;
         let new_verts: [_; 4] = std::array::from_fn(|i| {
             let (pos, bary) = pos_barys[i];
-            let Some(_ni) = bary.iter().position(|&b| b < B_DELTA) else {
+            let Some(ni) = bary.iter().position(|&b| b < 1e-6) else {
                 return pos;
             };
-            let new_bary = bary.map(|v| v.max(B_DELTA));
-            let s = new_bary.iter().sum::<F>();
-            let new_bary = new_bary.map(|v| v / s);
-            let proj_pos = v_f.from_barycentric(new_bary);
 
-            let next = pos_barys[(i + 1) % 4].0;
-            let prev = pos_barys[(i + 3) % 4].0;
+            let [og_e0, og_e1] =
+                std::array::from_fn(|i| f_slice[(i + 1 + ni) % f_slice.len()]).map(|vi| mesh.v[vi]);
+            let t = nearest_on_line(pos, [og_e0, og_e1]);
+            if !(0.0..=1.0).contains(&t) {
+                failed = true;
+            }
+            let new_pos = add(og_e0, kmul(t, sub(og_e1, og_e0)));
+            let update_dir = sub(new_pos, pos);
+            // TODO this should be smaller
+            let new_pos = add(kmul(1.005, update_dir), pos);
 
-            // project to line defined by next and prev
+            // check that the point is contained within the other two points on the line,
+            // otherwise skip this pixel
+            let t = nearest_on_line(new_pos, [3, 1].map(|o| pos_barys[(i + o) % 4].0));
+            if !(0.0..=1.0).contains(&t) {
+                failed = true;
+            }
 
-            let dir = sub(next, prev);
-            let e_len_sq = dot(dir, dir);
-
-            let t = dot(dir, sub(proj_pos, prev)) / e_len_sq;
-            failed = failed || !(1e-8..=(1.0 - 1e-8)).contains(&t);
-            proj_pos
+            new_pos
         });
+
         if failed {
             continue;
         }
 
-        if quad_area(new_verts) < 1e-9 {
-            continue;
-        }
-
+        // commit to this new pixel
         let new_verts = std::array::from_fn(|i| {
             let new_vert = new_verts[i];
             let vi = out_verts.len();
@@ -463,12 +478,12 @@ pub fn sample_exact(
             _ => FaceKind::Poly(verts),
         };
         out_faces.push(f);
-        return;
+        return true;
     }
 
     // --- Compute correspondence between original vertices and a single pixel corner.
     // This is only a vector since there are at most 3 vertices.
-    let mut corner_verts = vec![];
+    let mut corner_verts = vec![/* (og, new) */];
     for &og_vi in f_slice {
         if args.no_corners {
             continue;
@@ -481,7 +496,7 @@ pub fn sample_exact(
 
         let mut nearest = ([0; 2], 0);
         let mut best_dist = F::INFINITY;
-        let range = [-2, -1, 0, 1, 2];
+        let range = [-3, -2, -1, 0, 1, 2, 3];
         for i in range {
             for j in range {
                 let nu = u + i;
@@ -513,9 +528,9 @@ pub fn sample_exact(
         fv.push((fi, pv[i]));
         corner_verts.push((og_vi, pv[i]));
 
-        // Pull to a corner to make it tight
-        const T: F = 0.5;
-        out_verts[pv[i]] = add(kmul(1. - T, mesh.v[og_vi]), kmul(T, out_verts[pv[i]]));
+        // Pull to a corner to make it tight (larger T is tighter)
+        const T: F = 0.9;
+        out_verts[pv[i]] = add(kmul(T, mesh.v[og_vi]), kmul(1. - T, out_verts[pv[i]]));
 
         if args.debug_colors {
             out_colors[pv[i]] = [1.; 3];
@@ -549,17 +564,19 @@ pub fn sample_exact(
             (Some(a), None, Some(c)) => FaceKind::Tri([l, c[1], a[2]]),
             (Some(a), Some(b), None) => FaceKind::Tri([l, a[2], b[3]]),
             (Some([_, _, _shared, _]), None, None) => {
-                todo!(
+                eprintln!(
                     r#"It might be necessary to add triangles to adjacent
                     faces here? Not sure
                     if this will be ever hit (it likely shouldn't be)."#
                 );
+                continue;
             }
 
             /* Definitely no faces to add */
             (None, None, None) => continue,
 
-            _ => continue,
+            // handled earlier
+            (None, Some(_), None) | (None, None, Some(_)) => continue,
         };
         out_faces.push(corner_face);
     }
@@ -618,23 +635,79 @@ pub fn sample_exact(
         iter(l, new_vi);
         iter(r, new_vi);
     }
+
+    // ensure that verts are in the correct order along each edge
+    for (&v, &og_vs) in labels.iter() {
+        assert!(!corner_verts.iter().any(|&(_, new_vi)| new_vi == v));
+        let [n, p] = vert_adj[&v];
+        let og_vs = og_vs.map(|vi| mesh.v[vi]);
+        let [tv, tn, tp] = [v, n, p].map(|v| nearest_on_line(out_verts[v], og_vs));
+        let [l, h] = [tn.min(tp), tn.max(tp)];
+        const EPS: F = 1e-8;
+        let r = (l + EPS)..=(h - EPS);
+        if r.contains(&tv) {
+            continue;
+        }
+        let dir = sub(og_vs[1], og_vs[0]);
+        let delta = if tv > h - EPS {
+            tv - (h - 1.001 * EPS)
+        } else {
+            tv - (l + 1.001 * EPS)
+        };
+        assert!(r.contains(&(tv - delta)), "{r:?} {} {tv}", tv - delta);
+        let new_pos = add(out_verts[v], kmul(-delta, dir));
+        let new_tv = nearest_on_line(new_pos, og_vs);
+        assert!((0.0..=1.0).contains(&new_tv), "{r:?}");
+        assert!(r.contains(&new_tv), "{r:?} {new_tv} {tv}");
+        out_verts[v] = new_pos;
+    }
+
+    // TODO still figuring it out here
     let check = labels
         .values()
         .all(|&[l0, l1]| l0 != usize::MAX && l1 != usize::MAX);
+    if !check {
+        let error_verts = out_verts[start..].to_vec();
+        let error_colors = out_colors[start..].to_vec();
+        let mut error_faces = out_faces[start_f..].to_vec();
+        for f in &mut error_faces {
+            f.offset(-(start as i32))
+        }
+        *out_verts = error_verts;
+        *out_colors = error_colors;
+        *out_faces = error_faces;
+
+        return false;
+    }
     assert!(check);
 
     for (new_vi, ogs) in labels {
         if args.debug_colors && out_colors[new_vi] != [1.; 3] {
             out_colors[new_vi] = [0.; 3];
         }
-        let [og0, og1] = ogs.map(|vi| mesh.v[vi].map(F::to_bits));
-        let fvs = edge_map.entry(std::cmp::minmax(og0, og1)).or_default();
+        let [og0_key, og1_key] = ogs.map(|vi| mesh.v[vi].map(F::to_bits));
+        let fvs = edge_map
+            .entry(std::cmp::minmax(og0_key, og1_key))
+            .or_default();
         if let Some(fv) = fvs.iter_mut().find(|fv| fv.0 == fi) {
             fv.1.push(new_vi);
         } else {
             fvs.push((fi, vec![new_vi]));
         }
+
+        /*
+        let ogs = ogs.map(|vi| mesh.v[vi]);
+        let t = nearest_on_line(out_verts[new_vi], ogs);
+        if !(0.0..=1.0).contains(&t) {
+            continue;
+        }
+        let tgt_pos = add(ogs[0], kmul(t, sub(ogs[1], ogs[0])));
+        const T: F = 0.0;
+        out_verts[new_vi] = add(kmul(1. - T, out_verts[new_vi]), kmul(T, tgt_pos));
+        */
     }
+
+    true
 }
 
 pub fn sample(
@@ -644,7 +717,7 @@ pub fn sample(
     out_faces: &mut Vec<FaceKind>,
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
-) {
+) -> bool {
     let mut aabb = AABB::<F, 2>::new();
     for uv in f.as_slice().iter().map(|&vi| mesh.uv[0][vi]) {
         aabb.add_point(uv);
@@ -710,6 +783,13 @@ pub fn sample(
         };
         out_faces.push(new_face);
     }
+    true
+}
+
+/// Computes the value `t` such that `s + (s-e)t = nearest point to p on line`
+pub fn nearest_on_line(p: [F; 3], [s, e]: [[F; 3]; 2]) -> F {
+    let dir = sub(e, s);
+    dot(dir, sub(p, s)) / dot(dir, dir)
 }
 
 macro_rules! impl_display {
@@ -738,6 +818,12 @@ impl_display!(SampleKind, Approx => "approx", Exact => "exact");
 pub struct AABB<T, const N: usize> {
     min: [T; N],
     max: [T; N],
+}
+
+impl<const N: usize> Default for AABB<F, N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<const N: usize> AABB<F, N> {

@@ -39,15 +39,21 @@ pub struct Args {
     /// Output stats to this file
     #[arg(long, default_value = "")]
     stats: String,
+
+    /// How much to separate each pixel by, useful for debugging.
+    #[arg(long, default_value_t = 0.999, hide = true)]
+    pixel_sep: F,
 }
 
 pub fn main() {
     let args = Args::parse();
-    let scene = pars3d::load(&args.input).expect("Failed to parse input");
+    let mut scene = pars3d::load(&args.input).expect("Failed to parse input");
     let mut out_scene = scene.clone();
-    for (mi, mesh) in scene.meshes.iter().enumerate() {
+    for (mi, mesh) in scene.meshes.iter_mut().enumerate() {
+        let (s, t) = mesh.normalize();
         assert!(!mesh.uv[0].is_empty());
-        let new_mesh = texture_to_vert_colors(mesh, &scene, &args);
+        let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
+        new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
     }
 
@@ -76,7 +82,7 @@ pub fn main() {
 
 pub fn texture_to_vert_colors(
     mesh: &pars3d::Mesh,
-    scene: &pars3d::Scene,
+    materials: &[pars3d::mesh::Material],
     args: &Args,
 ) -> pars3d::Mesh {
     let mut out = pars3d::Mesh::default();
@@ -87,7 +93,7 @@ pub fn texture_to_vert_colors(
         let mati = mesh
             .single_mat()
             .expect("More than 1 material for this mesh");
-        let mat = &scene.materials[mati];
+        let mat = &materials[mati];
         let diff_tex = mat
             .textures_by_kind(pars3d::mesh::TextureKind::Diffuse)
             .next()
@@ -101,6 +107,7 @@ pub fn texture_to_vert_colors(
 
     let mut edge_map = BTreeMap::new();
     let mut corner_map = BTreeMap::new();
+    let mut labels = BTreeMap::new();
 
     for (fi, f) in mesh.f.iter().enumerate() {
         /*
@@ -139,6 +146,7 @@ pub fn texture_to_vert_colors(
                 &mut out.vert_colors,
                 &mut corner_map,
                 &mut edge_map,
+                &mut labels,
                 args,
             ),
         };
@@ -149,11 +157,9 @@ pub fn texture_to_vert_colors(
         }
     }
 
-    /*
-    if true {
+    if args.no_corners {
         return out;
     }
-    */
 
     let mut edge_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
 
@@ -178,17 +184,7 @@ pub fn texture_to_vert_colors(
         } else {
             ([e0, e1], [e0_key, e1_key])
         };
-
-        let e_dir = sub(e1, e0);
-        let e_len_sq = dot(e_dir, e_dir);
-        assert!(e_len_sq > 1e-4, "{e_len_sq}");
-
-        let compute_t = |&vi: &usize| {
-            let t = dot(e_dir, sub(out.v[vi], e0)) / e_len_sq;
-            assert!(t.is_finite(), "{t}");
-            //assert!((0.0..=1.0).contains(&t), "{t} {e_len_sq}");
-            (vi, t)
-        };
+        assert_ne!(e0_key, e1_key, "temporary check");
 
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
@@ -203,8 +199,26 @@ pub fn texture_to_vert_colors(
             }};
         }
 
+        let ordering = |vi: &usize| {
+            let [(t0, ei0), (t1, ei1)] = labels[&vi];
+            let t = if mesh.v[ei0] == e0 {
+                debug_assert_eq!(mesh.v[ei1], e1);
+                t0
+            } else {
+                debug_assert_eq!(mesh.v[ei0], e1);
+                debug_assert_eq!(mesh.v[ei1], e0);
+                t1
+            };
+            (*vi, t as F)
+        };
+
         let (f0, verts0) = &face_verts[0];
-        let mut v0s = verts0.iter().map(compute_t).collect::<Vec<_>>();
+        let mut v0s = verts0.iter().map(ordering).collect::<Vec<_>>();
+
+        let v0_max = v0s.iter().map(|v0| v0.1).max_by(F::total_cmp).unwrap_or(1.);
+        for (_, v0t) in v0s.iter_mut() {
+            *v0t = *v0t / (v0_max + 1.);
+        }
 
         let v00 = add_key!(v0s, &e0_key, f0, 0.);
         let v01 = add_key!(v0s, &e1_key, f0, 1.);
@@ -213,7 +227,11 @@ pub fn texture_to_vert_colors(
         v0s.dedup_by_key(|v| v.0);
 
         let (f1, verts1) = &face_verts[1];
-        let mut v1s = verts1.iter().map(compute_t).collect::<Vec<_>>();
+        let mut v1s = verts1.iter().map(ordering).collect::<Vec<_>>();
+        let v1_max = v1s.iter().map(|v1| v1.1).max_by(F::total_cmp).unwrap_or(1.);
+        for (_, v1t) in v1s.iter_mut() {
+            *v1t = *v1t / (v1_max + 1.);
+        }
 
         let v10 = add_key!(v1s, &e0_key, f1, 0.);
         let v11 = add_key!(v1s, &e1_key, f1, 1.);
@@ -334,6 +352,7 @@ pub fn sample_exact(
     // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
+    labels: &mut BTreeMap<usize, [(u32, usize); 2]>,
 
     args: &Args,
 ) -> bool {
@@ -354,6 +373,7 @@ pub fn sample_exact(
     // face normal for projecting bary
     let f_n = normalize(v_f.normal());
     assert!(length(f_n) > 1e-3);
+    //assert!(v_f.area() > 1e-5, "{}", v_f.area());
 
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
@@ -373,23 +393,24 @@ pub fn sample_exact(
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
-        const DELTA: F = 0.999;
+        let delta = args.pixel_sep;
         let cfs = [
-            [u + (1. - DELTA), v + (1. - DELTA)],
-            [u + DELTA, v + (1. - DELTA)],
-            [u + DELTA, v + DELTA],
-            [u + (1. - DELTA), v + DELTA],
+            [u + (1. - delta), v + (1. - delta)],
+            [u + delta, v + (1. - delta)],
+            [u + delta, v + delta],
+            [u + (1. - delta), v + delta],
         ];
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
 
         // check if any of the pixel corners are in the face, if not skip
-        let mut num_in_face = 0;
-        for cf in cfs {
-            num_in_face += uv_f
-                .barycentric(cf)
-                .iter()
-                .all(|&v| (0.0..=1.0).contains(&v)) as usize;
-        }
+        let num_in_face = cfs
+            .iter()
+            .filter(|&&cf| {
+                uv_f.barycentric(cf)
+                    .iter()
+                    .all(|&v| (0.0..=1.0).contains(&v))
+            })
+            .count();
         if num_in_face == 0 {
             continue;
         }
@@ -406,7 +427,7 @@ pub fn sample_exact(
         let mut failed = false;
         let new_verts: [_; 4] = std::array::from_fn(|i| {
             let (pos, bary) = pos_barys[i];
-            let Some(ni) = bary.iter().position(|&b| b < 1e-6) else {
+            let Some(ni) = bary.iter().position(|&b| b < 0.) else {
                 return pos;
             };
 
@@ -432,6 +453,11 @@ pub fn sample_exact(
         });
 
         if failed {
+            continue;
+        }
+
+        // delete degen faces
+        if pars3d::quad_area(new_verts) < 1e-15 {
             continue;
         }
 
@@ -496,7 +522,7 @@ pub fn sample_exact(
 
         let mut nearest = ([0; 2], 0);
         let mut best_dist = F::INFINITY;
-        let range = [-3, -2, -1, 0, 1, 2, 3];
+        let range = [0, -1, 1, -2, 2, -3, 3, -4, 4];
         for i in range {
             for j in range {
                 let nu = u + i;
@@ -517,7 +543,13 @@ pub fn sample_exact(
                 }
             }
         }
-        assert_ne!(best_dist, F::INFINITY);
+        assert_ne!(
+            best_dist,
+            F::INFINITY,
+            "{} {}",
+            out_verts[start..].len(),
+            v_f.area()
+        );
 
         // pixel & nearest vert idx
         let (uv, i) = nearest;
@@ -536,6 +568,9 @@ pub fn sample_exact(
             out_colors[pv[i]] = [1.; 3];
         }
     }
+    if !args.no_corners {
+        assert_eq!(corner_verts.len(), 3);
+    }
 
     // --- Adding faces in between pixel quads
     for (&[u, v], &[l, r, ur, ul]) in pixel_map.iter() {
@@ -545,7 +580,6 @@ pub fn sample_exact(
             && let Some(&[_, _, _, a]) = pixel_map.get(&[u + 1, v])
             && let Some(&[_, b, _, _]) = pixel_map.get(&[u, v + 1])
         {
-            // TODO here add tri face.
             out_faces.push(FaceKind::Tri([ur, a, b]));
         }
         // TODO turn these into checked subs?
@@ -564,18 +598,20 @@ pub fn sample_exact(
             (Some(a), None, Some(c)) => FaceKind::Tri([l, c[1], a[2]]),
             (Some(a), Some(b), None) => FaceKind::Tri([l, a[2], b[3]]),
             (Some([_, _, _shared, _]), None, None) => {
+                /*
                 eprintln!(
                     r#"It might be necessary to add triangles to adjacent
                     faces here? Not sure
                     if this will be ever hit (it likely shouldn't be)."#
                 );
+                */
                 continue;
             }
 
             /* Definitely no faces to add */
             (None, None, None) => continue,
 
-            // handled earlier
+            // Handled earlier, no special cases to add
             (None, Some(_), None) | (None, None, Some(_)) => continue,
         };
         out_faces.push(corner_face);
@@ -585,16 +621,16 @@ pub fn sample_exact(
     // compute adjacent boundary edges and trace from the corners
     for (fi, f) in out_faces.iter().enumerate().skip(start_f) {
         for [e0, e1] in f.edges() {
+            assert_ne!(e0, e1);
             edge_face_adj
                 .entry(std::cmp::minmax(e0, e1))
-                .and_modify(|v| {
-                    v.insert(fi);
-                })
+                .and_modify(|v| assert!(v.insert(fi)))
                 .or_insert(EdgeKind::Boundary(fi));
         }
     }
     let mut vert_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
     for (&[ef0, ef1], ek) in edge_face_adj.iter() {
+        assert_ne!(ef0, ef1);
         if !ek.is_boundary() {
             continue;
         }
@@ -615,21 +651,25 @@ pub fn sample_exact(
         .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
     assert!(check);
 
-    let mut labels: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
     for &(og_vi, new_vi) in &corner_verts {
-        let [l, r] = vert_adj[&new_vi];
+        let Some(&[l, r]) = vert_adj.get(&new_vi) else {
+            for v in &mut out_colors[start..] {
+                *v = [1.; 3];
+            }
+            println!("{corner_verts:?}, missing {new_vi}");
+            return false;
+        };
         let mut iter = |mut curr: usize, mut prev: usize| {
+            let mut c = 1;
             while !corner_verts.iter().any(|v| v.1 == curr) {
-                let label = labels.entry(curr).or_insert([usize::MAX; 2]);
-                assert!(label.iter().any(|&v| v == usize::MAX), "{label:?} {og_vi}");
-                *label
-                    .iter_mut()
-                    .find(|v| **v == usize::MAX || **v == og_vi)
-                    .unwrap() = og_vi;
+                let label = labels.entry(curr).or_insert([(0, usize::MAX); 2]);
+                assert!(label.iter().any(|&v| v.1 == usize::MAX),);
+                *label.iter_mut().find(|v| v.1 == usize::MAX).unwrap() = (c, og_vi);
                 assert!(vert_adj[&curr].iter().any(|&v| v == prev));
                 let next = *vert_adj[&curr].iter().find(|v| **v != prev).unwrap();
                 prev = curr;
                 curr = next;
+                c += 1;
             }
         };
         iter(l, new_vi);
@@ -637,22 +677,26 @@ pub fn sample_exact(
     }
 
     // ensure that verts are in the correct order along each edge
-    for (&v, &og_vs) in labels.iter() {
+    for (&v, &og_vs) in labels.range(start..) {
         assert!(!corner_verts.iter().any(|&(_, new_vi)| new_vi == v));
         let [n, p] = vert_adj[&v];
-        let og_vs = og_vs.map(|vi| mesh.v[vi]);
+        let og_vs = og_vs.map(|vi| mesh.v[vi.1]);
         let [tv, tn, tp] = [v, n, p].map(|v| nearest_on_line(out_verts[v], og_vs));
         let [l, h] = [tn.min(tp), tn.max(tp)];
-        const EPS: F = 1e-8;
-        let r = (l + EPS)..=(h - EPS);
+        /// Max size gap when clamping into the safe region
+        const EPS: F = 1e-6;
+        let eps = ((h - l) / 3.).min(EPS);
+        let r = l..=h;
         if r.contains(&tv) {
             continue;
         }
+
+        // NOTE 1.001 is important so that it is not directly on the edge
         let dir = sub(og_vs[1], og_vs[0]);
-        let delta = if tv > h - EPS {
-            tv - (h - 1.001 * EPS)
+        let delta = if tv > h - eps {
+            tv - (h - 1.001 * eps)
         } else {
-            tv - (l + 1.001 * EPS)
+            tv - (l + 1.001 * eps)
         };
         assert!(r.contains(&(tv - delta)), "{r:?} {} {tv}", tv - delta);
         let new_pos = add(out_verts[v], kmul(-delta, dir));
@@ -664,8 +708,8 @@ pub fn sample_exact(
 
     // TODO still figuring it out here
     let check = labels
-        .values()
-        .all(|&[l0, l1]| l0 != usize::MAX && l1 != usize::MAX);
+        .range(start..)
+        .all(|(_, &[(_, l0), (_, l1)])| l0 != usize::MAX && l1 != usize::MAX);
     if !check {
         let error_verts = out_verts[start..].to_vec();
         let error_colors = out_colors[start..].to_vec();
@@ -681,11 +725,11 @@ pub fn sample_exact(
     }
     assert!(check);
 
-    for (new_vi, ogs) in labels {
+    for (&new_vi, ogs) in labels.range(start..) {
         if args.debug_colors && out_colors[new_vi] != [1.; 3] {
             out_colors[new_vi] = [0.; 3];
         }
-        let [og0_key, og1_key] = ogs.map(|vi| mesh.v[vi].map(F::to_bits));
+        let [og0_key, og1_key] = ogs.map(|vi| mesh.v[vi.1].map(F::to_bits));
         let fvs = edge_map
             .entry(std::cmp::minmax(og0_key, og1_key))
             .or_default();
@@ -695,16 +739,15 @@ pub fn sample_exact(
             fvs.push((fi, vec![new_vi]));
         }
 
-        /*
-        let ogs = ogs.map(|vi| mesh.v[vi]);
+        let ogs = ogs.map(|vi| mesh.v[vi.1]);
         let t = nearest_on_line(out_verts[new_vi], ogs);
         if !(0.0..=1.0).contains(&t) {
             continue;
         }
         let tgt_pos = add(ogs[0], kmul(t, sub(ogs[1], ogs[0])));
-        const T: F = 0.0;
+        // pull edge verts to the edge (larger is closer to edge)
+        const T: F = 0.9;
         out_verts[new_vi] = add(kmul(1. - T, out_verts[new_vi]), kmul(T, tgt_pos));
-        */
     }
 
     true
@@ -789,7 +832,7 @@ pub fn sample(
 /// Computes the value `t` such that `s + (s-e)t = nearest point to p on line`
 pub fn nearest_on_line(p: [F; 3], [s, e]: [[F; 3]; 2]) -> F {
     let dir = sub(e, s);
-    dot(dir, sub(p, s)) / dot(dir, dir)
+    dot(dir, sub(p, s)).sqrt() / dot(dir, dir).sqrt()
 }
 
 macro_rules! impl_display {

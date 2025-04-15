@@ -3,3 +3,5 @@
 .DS_Store
 data/
 outputs/
+experiment_log.json
+tmp_error.obj

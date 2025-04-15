@@ -63,11 +63,11 @@ pub fn main() {
         let mut stat_file = std::fs::File::create(&args.stats).expect("Failed to open stats file");
         writeln!(
             stat_file,
-            r#"""{{
+            r#"{{
   "num_faces": {},
   "num_vertices": {},
-  "num_boundary_edges": {},
-}}"""#,
+  "num_boundary_edges": {}
+}}"#,
             out_scene.num_faces(),
             out_scene.num_vertices(),
             out_scene
@@ -427,7 +427,7 @@ pub fn sample_exact(
         let mut failed = false;
         let new_verts: [_; 4] = std::array::from_fn(|i| {
             let (pos, bary) = pos_barys[i];
-            let Some(ni) = bary.iter().position(|&b| b <= 1e-6) else {
+            let Some(ni) = bary.iter().position(|&b| b <= 0.) else {
                 return pos;
             };
 
@@ -437,6 +437,7 @@ pub fn sample_exact(
             if !(0.0..=1.0).contains(&t) {
                 failed = true;
             }
+
             let new_pos = add(og_e0, kmul(t, sub(og_e1, og_e0)));
             let update_dir = sub(new_pos, pos);
             // TODO this should be smaller
@@ -448,8 +449,8 @@ pub fn sample_exact(
             if !(0.0..=1.0).contains(&t) {
                 failed = true;
             }
-
             new_pos
+
         });
 
         if failed {
@@ -542,6 +543,18 @@ pub fn sample_exact(
                     }
                 }
             }
+        }
+        if best_dist == F::INFINITY {
+            let mut tmp = pars3d::Mesh::new_geometry(
+                f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
+                vec![FaceKind::Tri([0, 1, 2])],
+            );
+
+            tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
+            for i in 0..3 {
+                tmp.vert_colors[i] = [1.; 3];
+            }
+            pars3d::save("tmp_error.obj", &tmp.into_scene()).expect("Failed to save temp error");
         }
         assert_ne!(
             best_dist,
@@ -708,7 +721,7 @@ pub fn sample_exact(
         /*
         //assert!((0.0..=1.0).contains(&new_tv), "{r:?}");
         //assert!(r.contains(&new_tv), "{r:?} {new_tv} {tv}");
-        */
+         */
         out_verts[v] = new_pos;
     }
 

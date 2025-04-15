@@ -59,6 +59,15 @@ experiments = {
   "sphere": [
     run("sphere.obj", "sphere.ply", "-d data/uv_grid.png", False),
   ],
+  "rot-uv": [
+    run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/colors.png", False),
+  ],
+  "thin-tri": [
+    run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", False),
+  ],
+  "monkey": [
+    run("monkey.obj", "monkey.ply", "-d data/uv_grid.png", False),
+  ],
 }
 
 def arguments():

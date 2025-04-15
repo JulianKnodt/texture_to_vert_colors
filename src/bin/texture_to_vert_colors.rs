@@ -43,6 +43,14 @@ pub struct Args {
     /// How much to separate each pixel by, useful for debugging.
     #[arg(long, default_value_t = 0.999, hide = true)]
     pixel_sep: F,
+
+    /// How much to pull each vertex associated with an edge toward it.
+    #[arg(long, default_value_t = 0.5)]
+    edge_pull: F,
+
+    /// How much to pull each vertex associated with a vertex toward it.
+    #[arg(long, default_value_t = 0.5)]
+    vertex_pull: F,
 }
 
 pub fn main() {
@@ -92,7 +100,7 @@ pub fn texture_to_vert_colors(
     let diff_img = if args.diffuse_img.is_empty() {
         let mati = mesh
             .single_mat()
-            .expect("More than 1 material for this mesh");
+            .expect("No material or more than 1 material for this mesh");
         let mat = &materials[mati];
         let diff_tex = mat
             .textures_by_kind(pars3d::mesh::TextureKind::Diffuse)
@@ -441,16 +449,18 @@ pub fn sample_exact(
             let new_pos = add(og_e0, kmul(t, sub(og_e1, og_e0)));
             let update_dir = sub(new_pos, pos);
             // TODO this should be smaller
-            let new_pos = add(kmul(1.005, update_dir), pos);
+            let new_pos = add(kmul(1.001, update_dir), pos);
 
+            /*
             // check that the point is contained within the other two points on the line,
             // otherwise skip this pixel
             let t = nearest_on_line(new_pos, [3, 1].map(|o| pos_barys[(i + o) % 4].0));
             if !(0.0..=1.0).contains(&t) {
                 failed = true;
             }
-            new_pos
+            */
 
+            new_pos
         });
 
         if failed {
@@ -458,9 +468,11 @@ pub fn sample_exact(
         }
 
         // delete degen faces
+        /*
         if pars3d::quad_area(new_verts) < 1e-15 {
             continue;
         }
+        */
 
         // commit to this new pixel
         let new_verts = std::array::from_fn(|i| {
@@ -544,6 +556,7 @@ pub fn sample_exact(
                 }
             }
         }
+        /*
         if best_dist == F::INFINITY {
             let mut tmp = pars3d::Mesh::new_geometry(
                 f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
@@ -551,11 +564,10 @@ pub fn sample_exact(
             );
 
             tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
-            for i in 0..3 {
-                tmp.vert_colors[i] = [1.; 3];
-            }
+            tmp.vert_colors = vec![[1.; 3]; 3];
             pars3d::save("tmp_error.obj", &tmp.into_scene()).expect("Failed to save temp error");
         }
+        */
         assert_ne!(
             best_dist,
             F::INFINITY,
@@ -570,12 +582,24 @@ pub fn sample_exact(
         let pv = &pixel_map[&uv];
         let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
         assert!(!fv.iter().any(|fv| fv.0 == fi));
+        let check = corner_verts.iter().any(|&(_, new_vi)| new_vi == pv[i]);
+        if check {
+            let mut tmp = pars3d::Mesh::new_geometry(
+                f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
+                vec![FaceKind::Tri([0, 1, 2])],
+            );
+
+            tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
+            tmp.vert_colors = vec![[1.; 3]; 3];
+            pars3d::save("tmp_error.obj", &tmp.into_scene()).expect("Failed to save temp error");
+        }
+        assert!(!check);
         fv.push((fi, pv[i]));
         corner_verts.push((og_vi, pv[i]));
 
         // Pull to a corner to make it tight (larger T is tighter)
-        const T: F = 0.9;
-        out_verts[pv[i]] = add(kmul(T, mesh.v[og_vi]), kmul(1. - T, out_verts[pv[i]]));
+        let t = args.vertex_pull;
+        out_verts[pv[i]] = add(kmul(t, mesh.v[og_vi]), kmul(1. - t, out_verts[pv[i]]));
 
         if args.debug_colors {
             out_colors[pv[i]] = [1.; 3];
@@ -669,14 +693,18 @@ pub fn sample_exact(
             for v in &mut out_colors[start..] {
                 *v = [1.; 3];
             }
-            println!("{corner_verts:?}, missing {new_vi}");
+            println!("{corner_verts:?}, missing {new_vi} vert_adj");
             return false;
         };
         let mut iter = |mut curr: usize, mut prev: usize| {
             let mut c = 1;
             while !corner_verts.iter().any(|v| v.1 == curr) {
                 let label = labels.entry(curr).or_insert([(0, usize::MAX); 2]);
-                assert!(label.iter().any(|&v| v.1 == usize::MAX),);
+                assert!(
+                    label.iter().any(|&v| v.1 == usize::MAX),
+                    "{label:?} {og_vi} {corner_verts:?} {:?}",
+                    out_verts[start..].len()
+                );
                 *label.iter_mut().find(|v| v.1 == usize::MAX).unwrap() = (c, og_vi);
                 assert!(vert_adj[&curr].iter().any(|&v| v == prev));
                 let next = *vert_adj[&curr].iter().find(|v| **v != prev).unwrap();
@@ -717,7 +745,7 @@ pub fn sample_exact(
         };
         assert!(r.contains(&(tv - delta)), "{r:?} {} {tv}", tv - delta);
         let new_pos = add(out_verts[v], kmul(-delta, dir));
-        let new_tv = nearest_on_line(new_pos, og_vs);
+        //let new_tv = nearest_on_line(new_pos, og_vs);
         /*
         //assert!((0.0..=1.0).contains(&new_tv), "{r:?}");
         //assert!(r.contains(&new_tv), "{r:?} {new_tv} {tv}");
@@ -766,8 +794,8 @@ pub fn sample_exact(
 
         let tgt_pos = add(ogs[0], kmul(t, sub(ogs[1], ogs[0])));
         // pull edge verts to the edge (larger is closer to edge)
-        const T: F = 0.9;
-        out_verts[new_vi] = add(kmul(1. - T, out_verts[new_vi]), kmul(T, tgt_pos));
+        let t = args.edge_pull;
+        out_verts[new_vi] = add(kmul(1. - t, out_verts[new_vi]), kmul(t, tgt_pos));
     }
 
     true

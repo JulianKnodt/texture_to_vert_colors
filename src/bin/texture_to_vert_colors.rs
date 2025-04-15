@@ -382,6 +382,11 @@ pub fn sample_exact(
     let f_n = normalize(v_f.normal());
     assert!(length(f_n) > 1e-3);
     //assert!(v_f.area() > 1e-5, "{}", v_f.area());
+    assert!(
+        uv_f.area() > 1e-8,
+        "TODO handle near 0 area uv face separately {}",
+        uv_f.area()
+    );
 
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
@@ -535,7 +540,7 @@ pub fn sample_exact(
 
         let mut nearest = ([0; 2], 0);
         let mut best_dist = F::INFINITY;
-        let range = [0, -1, 1, -2, 2, -3, 3, -4, 4];
+        let range = [0, -1, 1, -2, 2, -3, 3];
         for i in range {
             for j in range {
                 let nu = u + i;
@@ -556,25 +561,7 @@ pub fn sample_exact(
                 }
             }
         }
-        /*
-        if best_dist == F::INFINITY {
-            let mut tmp = pars3d::Mesh::new_geometry(
-                f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
-                vec![FaceKind::Tri([0, 1, 2])],
-            );
-
-            tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
-            tmp.vert_colors = vec![[1.; 3]; 3];
-            pars3d::save("tmp_error.obj", &tmp.into_scene()).expect("Failed to save temp error");
-        }
-        */
-        assert_ne!(
-            best_dist,
-            F::INFINITY,
-            "{} {}",
-            out_verts[start..].len(),
-            v_f.area()
-        );
+        assert_ne!(best_dist, F::INFINITY,);
 
         // pixel & nearest vert idx
         let (uv, i) = nearest;
@@ -635,13 +622,11 @@ pub fn sample_exact(
             (Some(a), None, Some(c)) => FaceKind::Tri([l, c[1], a[2]]),
             (Some(a), Some(b), None) => FaceKind::Tri([l, a[2], b[3]]),
             (Some([_, _, _shared, _]), None, None) => {
-                /*
                 eprintln!(
                     r#"It might be necessary to add triangles to adjacent
                     faces here? Not sure
                     if this will be ever hit (it likely shouldn't be)."#
                 );
-                */
                 continue;
             }
 
@@ -689,6 +674,8 @@ pub fn sample_exact(
     assert!(check);
 
     for &(og_vi, new_vi) in &corner_verts {
+        let [l, r] = vert_adj[&new_vi];
+        /*
         let Some(&[l, r]) = vert_adj.get(&new_vi) else {
             for v in &mut out_colors[start..] {
                 *v = [1.; 3];
@@ -696,23 +683,34 @@ pub fn sample_exact(
             println!("{corner_verts:?}, missing {new_vi} vert_adj");
             return false;
         };
+        */
         let mut iter = |mut curr: usize, mut prev: usize| {
             let mut c = 1;
-            while !corner_verts.iter().any(|v| v.1 == curr) {
+            loop {
                 let label = labels.entry(curr).or_insert([(0, usize::MAX); 2]);
                 assert!(
                     label.iter().any(|&v| v.1 == usize::MAX),
-                    "{label:?} {og_vi} {corner_verts:?} {:?}",
-                    out_verts[start..].len()
+                    r#"label = {label:?} original vert = {og_vi} corner verts = {corner_verts:?}
+                    #verts = {:?} vert_adj = {:?} curr = {curr}"#,
+                    out_verts[start..].len(), vert_adj[&new_vi]
                 );
-                *label.iter_mut().find(|v| v.1 == usize::MAX).unwrap() = (c, og_vi);
+                if let Some(p) = label.iter_mut().find(|v| v.1 == og_vi) {
+                    p.0 = p.0.min(c);
+                } else {
+                    *label.iter_mut().find(|v| v.1 == usize::MAX).unwrap() = (c, og_vi);
+                }
                 assert!(vert_adj[&curr].iter().any(|&v| v == prev));
                 let next = *vert_adj[&curr].iter().find(|v| **v != prev).unwrap();
                 prev = curr;
                 curr = next;
                 c += 1;
+
+                if corner_verts.iter().any(|v| v.1 == curr) {
+                    break;
+                }
             }
         };
+
         iter(l, new_vi);
         iter(r, new_vi);
     }
@@ -722,7 +720,7 @@ pub fn sample_exact(
         assert!(!corner_verts.iter().any(|&(_, new_vi)| new_vi == v));
         let [n, p] = vert_adj[&v];
         let og_vs = og_vis.map(|vi| mesh.v[vi.1]);
-        assert_ne!(og_vs[0], og_vs[1], "{og_vis:?}");
+        assert_ne!(og_vs[0], og_vs[1], "{og_vis:?}, {corner_verts:?} {v}");
         let [tv, tn, tp] = [v, n, p].map(|v| nearest_on_line(out_verts[v], og_vs));
         assert!(tv.is_finite());
         assert!(tn.is_finite());
@@ -956,3 +954,15 @@ impl AABB<i32, 2> {
         self.max = self.max.map(|val| val + v);
     }
 }
+/*
+if best_dist == F::INFINITY {
+    let mut tmp = pars3d::Mesh::new_geometry(
+        f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
+        vec![FaceKind::Tri([0, 1, 2])],
+    );
+
+    tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
+    tmp.vert_colors = vec![[1.; 3]; 3];
+    pars3d::save("tmp_error.obj", &tmp.into_scene()).expect("Failed to save temp error");
+}
+*/

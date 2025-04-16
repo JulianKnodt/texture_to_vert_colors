@@ -14,6 +14,7 @@ use priority_queue::PriorityQueue;
 
 use texture_to_vert_colors::{F, U, add, cross, dot, kmul, len_sq, length, normalize, sub};
 use texture_to_vert_colors::{
+    aabb::AABB,
     manifold::CollapsibleManifold,
     quadric::{AttrWeights, Quadric, QuadricAccumulator},
 };
@@ -465,8 +466,7 @@ pub fn sample_exact(
     // TODO should these have -1?
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
-    let mut iaabb = aabb.round_to_i32();
-    iaabb.expand_by(1);
+    let iaabb = aabb.round_to_i32();
     let uv_f = f.map_kind(|vi| mesh.uv[0][vi]);
     let v_f = f.map_kind(|vi| mesh.v[vi]);
     let n_f = if !mesh.n.is_empty() {
@@ -512,13 +512,17 @@ pub fn sample_exact(
             [u + (1. - delta), v + delta],
         ];
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
+        let pix = AABB::from([cfs[0], cfs[1]]);
+        if !pix.intersects_tri(uv_f.tri().unwrap()) {
+            continue;
+        }
+        let barys = cfs.map(|cf| uv_f.barycentric(cf));
 
         let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         let rgb = get_rgb(tex_u, tex_v);
 
-        let new_verts = cfs.map(|cf| {
-            let bary = uv_f.barycentric(cf);
+        let new_verts = barys.map(|bary| {
             let normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
             let pos = v_f.from_barycentric(bary);
             if !bary.iter().any(|&b| b < 0.) {
@@ -981,58 +985,6 @@ pub enum SampleKind {
 }
 
 impl_display!(SampleKind, Approx => "approx", Exact => "exact");
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AABB<T, const N: usize> {
-    min: [T; N],
-    max: [T; N],
-}
-
-impl<const N: usize> Default for AABB<F, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const N: usize> AABB<F, N> {
-    pub fn new() -> Self {
-        Self {
-            min: [F::INFINITY; N],
-            max: [F::NEG_INFINITY; N],
-        }
-    }
-    pub fn add_point(&mut self, p: [F; N]) {
-        for i in 0..N {
-            self.min[i] = self.min[i].min(p[i]);
-            self.max[i] = self.max[i].max(p[i]);
-        }
-    }
-    pub fn round_to_i32(&self) -> AABB<i32, N> {
-        AABB {
-            min: self.min.map(|i| i.floor() as i32),
-            max: self.max.map(|i| i.ceil() as i32),
-        }
-    }
-    pub fn scale_by(&mut self, x: F, y: F) {
-        self.min[0] *= x;
-        self.max[0] *= x;
-
-        self.min[1] *= y;
-        self.max[1] *= y;
-    }
-}
-
-impl AABB<i32, 2> {
-    pub fn iter_coords(&self) -> impl Iterator<Item = [i32; 2]> + '_ {
-        let [lx, ly] = self.min;
-        let [hx, hy] = self.max;
-        (ly..=hy).flat_map(move |y| (lx..=hx).map(move |x| [x, y]))
-    }
-    pub fn expand_by(&mut self, v: i32) {
-        self.min = self.min.map(|val| val - v);
-        self.max = self.max.map(|val| val + v);
-    }
-}
 
 pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     let start_time = std::time::Instant::now();

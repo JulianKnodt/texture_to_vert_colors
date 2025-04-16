@@ -23,3 +23,5 @@ pub mod inv_map;
 pub mod merge;
 
 pub mod manifold;
+
+pub mod aabb;

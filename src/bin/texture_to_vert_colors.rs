@@ -8,7 +8,7 @@ use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, edge::EdgeKind};
 
-use texture_to_vert_colors::{F, U, add, dot, kmul, length, normalize, sub};
+use texture_to_vert_colors::{F, U, add, cross, dot, kmul, len_sq, length, normalize, sub};
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
 /// drop in visual quality.
@@ -28,13 +28,21 @@ pub struct Args {
     #[arg(long, short = 'k', default_value_t = SampleKind::Exact)]
     sample_kind: SampleKind,
 
-    /// Do not add corners
+    /// Do not add corners (for debugging)
     #[arg(long, hide = true)]
     no_corners: bool,
 
-    /// Display some extra colors for debuggin
+    /// Do not fill space between pixel quads (for debugging)
+    #[arg(long, hide = true)]
+    no_fill: bool,
+
+    /// Display some extra colors (for debugging)
     #[arg(long, hide = true)]
     debug_colors: bool,
+
+    /// Do not normalize the mesh before processing (for debugging)
+    #[arg(long, hide = true)]
+    no_normalize: bool,
 
     /// Output stats to this file
     #[arg(long, default_value = "")]
@@ -57,13 +65,20 @@ pub fn main() {
     let args = Args::parse();
     let mut scene = pars3d::load(&args.input).expect("Failed to parse input");
     let mut out_scene = scene.clone();
+    let start = std::time::Instant::now();
     for (mi, mesh) in scene.meshes.iter_mut().enumerate() {
-        let (s, t) = mesh.normalize();
+        let (s, t) = if args.no_normalize {
+            (1., [0.; 3])
+        } else {
+            mesh.normalize()
+        };
         assert!(!mesh.uv[0].is_empty());
         let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
     }
+    let elapsed = start.elapsed();
+    println!("[INFO]: Resampling took {elapsed:?}");
 
     pars3d::save(&args.output, &out_scene).expect("Failed to save output");
 
@@ -74,11 +89,21 @@ pub fn main() {
             r#"{{
   "num_faces": {},
   "num_vertices": {},
-  "num_boundary_edges": {}
+  "input_num_faces": {},
+  "input_num_vertices": {},
+  "num_boundary_edges": {},
+  "input_num_boundary_edges": {}
 }}"#,
             out_scene.num_faces(),
             out_scene.num_vertices(),
+            scene.num_faces(),
+            scene.num_vertices(),
             out_scene
+                .meshes
+                .iter()
+                .map(|m| m.num_boundary_edges())
+                .sum::<usize>(),
+            scene
                 .meshes
                 .iter()
                 .map(|m| m.num_boundary_edges())
@@ -159,9 +184,9 @@ pub fn texture_to_vert_colors(
             ),
         };
         if !ok {
-            pars3d::save(&args.output, &out.into_scene()).expect("Failed to save error scene");
+            pars3d::save("curr_error.ply", &out.into_scene()).expect("Failed to save error scene");
             eprintln!("Exiting after saved erroneous mesh");
-            std::process::exit(0);
+            std::process::exit(1);
         }
     }
 
@@ -196,14 +221,10 @@ pub fn texture_to_vert_colors(
 
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
-                if let Some(fv) = corner_map.get($key)
-                    && let Some(&(_, corner)) = fv.iter().find(|fv| fv.0 == *$face)
-                {
-                    $dst.push((corner, $l));
-                    Some(corner)
-                } else {
-                    None
-                }
+                let fv = corner_map.get($key).unwrap();
+                let &(_, corner) = fv.iter().find(|fv| fv.0 == *$face).unwrap();
+                $dst.push((corner, $l));
+                corner
             }};
         }
 
@@ -249,6 +270,9 @@ pub fn texture_to_vert_colors(
 
         let mut ins = |src, dst, idx| {
             assert_ne!(src, dst);
+            assert_ne!(src, usize::MAX);
+            assert_ne!(dst, usize::MAX);
+
             let v = edge_adj.entry(src).or_insert([usize::MAX; 2]);
             assert!(
                 v[idx] == dst || v[idx] == usize::MAX,
@@ -257,19 +281,11 @@ pub fn texture_to_vert_colors(
             );
             v[idx] = dst;
         };
-        if let Some(e0) = v00
-            && let Some(e1) = v10
-        {
-            ins(e0, e1, 0);
-            ins(e1, e0, 1);
-        }
+        ins(v00, v10, 0);
+        ins(v10, v00, 1);
 
-        if let Some(e0) = v01
-            && let Some(e1) = v11
-        {
-            ins(e0, e1, 1);
-            ins(e1, e0, 0);
-        }
+        ins(v01, v11, 1);
+        ins(v11, v01, 0);
 
         // iterate over both and add faces with the front
         let mut v0s = v0s.iter().copied().peekable();
@@ -317,21 +333,31 @@ pub fn texture_to_vert_colors(
 
     // Zip corner faces together
     for (_, fvs) in corner_map.iter() {
+        let is_bd = fvs.iter().any(|fv| {
+            !edge_adj.contains_key(&fv.1) || edge_adj[&fv.1].iter().any(|&v| v == usize::MAX)
+        });
         let face = match fvs.len() {
             0..3 => continue,
             // Order doesn't matter here (except if it should flip)
             3 => FaceKind::Tri(std::array::from_fn(|i| fvs[i].1)),
 
+            4 if is_bd => FaceKind::Quad(std::array::from_fn(|i| fvs[i].1)),
             4 => {
                 let mut quad = [fvs[0].1, 0, 0, 0];
                 quad[1] = edge_adj[&quad[0]][0];
                 for i in 2..4 {
-                    assert!(edge_adj.contains_key(&quad[i - 1]), "{}", quad[i - 1]);
+                    assert!(
+                        edge_adj.contains_key(&quad[i - 1]),
+                        "{} {:?}",
+                        quad[i - 1],
+                        quad
+                    );
                     let n = edge_adj[&quad[i - 1]];
                     quad[i] = *n.iter().find(|&&v| v != quad[i - 2]).unwrap();
                 }
                 FaceKind::Quad(quad)
             }
+            _ if is_bd => FaceKind::Poly(fvs.iter().map(|fv| fv.1).collect()),
             n => {
                 let mut poly = vec![fvs[0].1];
                 poly.reserve(n);
@@ -382,11 +408,13 @@ pub fn sample_exact(
     let f_n = normalize(v_f.normal());
     assert!(length(f_n) > 1e-3);
     //assert!(v_f.area() > 1e-5, "{}", v_f.area());
+    /*
     assert!(
         uv_f.area() > 1e-8,
         "TODO handle near 0 area uv face separately {}",
         uv_f.area()
     );
+    */
 
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
@@ -416,6 +444,7 @@ pub fn sample_exact(
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
 
         // check if any of the pixel corners are in the face, if not skip
+        /*
         let num_in_face = cfs
             .iter()
             .filter(|&&cf| {
@@ -427,57 +456,25 @@ pub fn sample_exact(
         if num_in_face == 0 {
             continue;
         }
+        */
 
         let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         let rgb = get_rgb(tex_u, tex_v);
 
-        let pos_barys = cfs.map(|cf| {
+        let new_verts = cfs.map(|cf| {
             let bary = uv_f.barycentric(cf);
-            (v_f.from_barycentric(bary), bary)
-        });
-
-        let mut failed = false;
-        let new_verts: [_; 4] = std::array::from_fn(|i| {
-            let (pos, bary) = pos_barys[i];
-            let Some(ni) = bary.iter().position(|&b| b <= 0.) else {
+            let pos = v_f.from_barycentric(bary);
+            if !bary.iter().any(|&b| b < 0.) {
                 return pos;
             };
-
-            let [og_e0, og_e1] =
-                std::array::from_fn(|i| f_slice[(i + 1 + ni) % f_slice.len()]).map(|vi| mesh.v[vi]);
-            let t = nearest_on_line(pos, [og_e0, og_e1]);
-            if !(0.0..=1.0).contains(&t) {
-                failed = true;
-            }
-
-            let new_pos = add(og_e0, kmul(t, sub(og_e1, og_e0)));
-            let update_dir = sub(new_pos, pos);
-            // TODO this should be smaller
-            let new_pos = add(kmul(1.001, update_dir), pos);
-
-            /*
-            // check that the point is contained within the other two points on the line,
-            // otherwise skip this pixel
-            let t = nearest_on_line(new_pos, [3, 1].map(|o| pos_barys[(i + o) % 4].0));
-            if !(0.0..=1.0).contains(&t) {
-                failed = true;
-            }
-            */
-
-            new_pos
+            nearest_point_on_tri(v_f.tri().unwrap(), pos)
         });
 
-        if failed {
-            continue;
-        }
-
         // delete degen faces
-        /*
-        if pars3d::quad_area(new_verts) < 1e-15 {
+        if pars3d::quad_area(new_verts) < 1e-25 {
             continue;
         }
-        */
 
         // commit to this new pixel
         let new_verts = std::array::from_fn(|i| {
@@ -491,6 +488,31 @@ pub fn sample_exact(
 
         assert_eq!(pixel_map.insert(c, new_verts), None);
         out_faces.push(FaceKind::Quad(new_verts));
+    }
+
+    macro_rules! save_bad_mesh {
+        ($label: expr) => {{
+            let mut tmp = pars3d::Mesh::new_geometry(
+                f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
+                vec![FaceKind::Tri([0, 1, 2])],
+            );
+
+            tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
+            pars3d::save("failing_tri.obj", &tmp.into_scene()).expect("Failed to save temp error");
+
+            let error_verts = out_verts[start..].to_vec();
+            let error_colors = out_colors[start..].to_vec();
+            let mut error_faces = out_faces[start_f..].to_vec();
+            for f in &mut error_faces {
+                f.offset(-(start as i32))
+            }
+            *out_verts = error_verts;
+            *out_colors = error_colors;
+            *out_faces = error_faces;
+            eprintln!($label);
+
+            return false;
+        }};
     }
 
     // If no faces were created, use the original corners.
@@ -525,81 +547,12 @@ pub fn sample_exact(
         return true;
     }
 
-    // --- Compute correspondence between original vertices and a single pixel corner.
-    // This is only a vector since there are at most 3 vertices.
-    let mut corner_verts = vec![/* (og, new) */];
-    for &og_vi in f_slice {
-        if args.no_corners {
-            continue;
-        }
-        let vert_pos = mesh.v[og_vi];
-        let [u, v] = mesh.uv[CHAN][og_vi];
-
-        let u = ((u % 1.) * w as F - 0.5).floor() as i32;
-        let v = ((v % 1.) * h as F - 0.5).floor() as i32;
-
-        let mut nearest = ([0; 2], 0);
-        let mut best_dist = F::INFINITY;
-        let range = [0, -1, 1, -2, 2, -3, 3];
-        for i in range {
-            for j in range {
-                let nu = u + i;
-                let nu = if nu >= 0 { nu } else { w as i32 + nu };
-                let nv = v + j;
-                let nv = if nv >= 0 { nv } else { h as i32 + nv };
-                let p = [nu, nv];
-                let Some(verts) = pixel_map.get(&p) else {
-                    continue;
-                };
-                for (i, &vi) in verts.iter().enumerate() {
-                    let v = out_verts[vi];
-                    let d = length(sub(v, vert_pos));
-                    if d < best_dist {
-                        nearest = (p, i);
-                        best_dist = d;
-                    }
-                }
-            }
-        }
-        assert_ne!(best_dist, F::INFINITY,);
-
-        // pixel & nearest vert idx
-        let (uv, i) = nearest;
-
-        let pv = &pixel_map[&uv];
-        let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
-        assert!(!fv.iter().any(|fv| fv.0 == fi));
-        let check = corner_verts.iter().any(|&(_, new_vi)| new_vi == pv[i]);
-        if check {
-            let mut tmp = pars3d::Mesh::new_geometry(
-                f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
-                vec![FaceKind::Tri([0, 1, 2])],
-            );
-
-            tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
-            tmp.vert_colors = vec![[1.; 3]; 3];
-            pars3d::save("tmp_error.obj", &tmp.into_scene()).expect("Failed to save temp error");
-        }
-        assert!(!check);
-        fv.push((fi, pv[i]));
-        corner_verts.push((og_vi, pv[i]));
-
-        // Pull to a corner to make it tight (larger T is tighter)
-        let t = args.vertex_pull;
-        out_verts[pv[i]] = add(kmul(t, mesh.v[og_vi]), kmul(1. - t, out_verts[pv[i]]));
-
-        if args.debug_colors {
-            out_colors[pv[i]] = [1.; 3];
-        }
-    }
-    if !args.no_corners {
-        assert_eq!(corner_verts.len(), 3);
-    }
-
     // --- Adding faces in between pixel quads
     for (&[u, v], &[l, r, ur, ul]) in pixel_map.iter() {
+        if args.no_fill {
+            break;
+        }
         // check bottom right first
-
         if !pixel_map.contains_key(&[u + 1, v + 1])
             && let Some(&[_, _, _, a]) = pixel_map.get(&[u + 1, v])
             && let Some(&[_, b, _, _]) = pixel_map.get(&[u, v + 1])
@@ -650,9 +603,12 @@ pub fn sample_exact(
                 .or_insert(EdgeKind::Boundary(fi));
         }
     }
+
+    // Compute adjacent vertices to each boundary vertex
     let mut vert_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
     for (&[ef0, ef1], ek) in edge_face_adj.iter() {
         assert_ne!(ef0, ef1);
+        assert!(!ek.is_nonmanifold());
         if !ek.is_boundary() {
             continue;
         }
@@ -673,27 +629,109 @@ pub fn sample_exact(
         .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
     assert!(check);
 
+    // --- Compute correspondence between original vertices and a single pixel vertex, which
+    // must be a boundary.
+    // This is only a vector since there are at most 3 vertices.
+    let mut corner_verts: Vec<(usize, usize)> = vec![/* (og, new) */];
+    for &og_vi in f_slice {
+        if args.no_corners {
+            break;
+        }
+        let vert_pos = mesh.v[og_vi];
+        let [u, v] = mesh.uv[CHAN][og_vi];
+
+        let u = ((u % 1.) * w as F - 0.5).floor() as i32;
+        let v = ((v % 1.) * h as F - 0.5).floor() as i32;
+
+        let mut nearest = 0;
+        let mut best_dist = F::INFINITY;
+        // TODO do this check more efficiently
+        let range = [0, -1, 1, -2, 2];
+        for i in range {
+            for j in range {
+                let nu = u + i;
+                let nu = if nu >= 0 { nu } else { w as i32 + nu };
+                let nu = if nu >= w as i32 { nu - w as i32 } else { nu };
+                let nv = v + j;
+                let nv = if nv >= 0 { nv } else { h as i32 + nv };
+                let nv = if nv >= h as i32 { nv - h as i32 } else { nv };
+                let p = [nu, nv];
+                let Some(verts) = pixel_map.get(&p) else {
+                    continue;
+                };
+                for &vi in verts.iter() {
+                    // only boundary vertices
+                    if !vert_adj.contains_key(&vi) {
+                        continue;
+                    }
+                    // unique mapping
+                    if corner_verts.iter().any(|&(_, p)| p == vi) {
+                        continue;
+                    }
+                    let d = length(sub(out_verts[vi], vert_pos));
+                    if d < best_dist {
+                        nearest = vi;
+                        best_dist = d;
+                    }
+                }
+            }
+        }
+        if !best_dist.is_finite() {
+            // naive search thru everything
+            for (&new_vi, _) in vert_adj.range(start..) {
+                if corner_verts.iter().any(|&(_, p)| p == new_vi) {
+                    continue;
+                }
+                let d = length(sub(out_verts[new_vi], vert_pos));
+                if d < best_dist {
+                    nearest = new_vi;
+                    best_dist = d;
+                }
+            }
+        }
+        if !best_dist.is_finite() {
+            println!("{:?}", labels.range(start..).count());
+            save_bad_mesh!("No nearby points");
+        }
+        assert_ne!(best_dist, F::INFINITY);
+
+        let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
+        assert!(!fv.iter().any(|fv| fv.0 == fi));
+        // check that each corner vert corresponds to a single original vertex
+        let check = corner_verts.iter().any(|&(_, new_vi)| new_vi == nearest);
+        if check {
+            save_bad_mesh!("One vertex maps to multiple original corners");
+        }
+        assert!(!check);
+        fv.push((fi, nearest));
+        corner_verts.push((og_vi, nearest));
+
+        // Pull to a corner to make it tight (larger T is tighter)
+        let t = args.vertex_pull;
+        out_verts[nearest] = add(kmul(t, mesh.v[og_vi]), kmul(1. - t, out_verts[nearest]));
+
+        if args.debug_colors {
+            out_colors[nearest] = [1.; 3];
+        }
+    }
+    if !args.no_corners {
+        assert_eq!(corner_verts.len(), 3);
+    }
+
     for &(og_vi, new_vi) in &corner_verts {
         let [l, r] = vert_adj[&new_vi];
-        /*
-        let Some(&[l, r]) = vert_adj.get(&new_vi) else {
-            for v in &mut out_colors[start..] {
-                *v = [1.; 3];
-            }
-            println!("{corner_verts:?}, missing {new_vi} vert_adj");
-            return false;
-        };
-        */
         let mut iter = |mut curr: usize, mut prev: usize| {
             let mut c = 1;
-            loop {
+            while !corner_verts.iter().any(|v| v.1 == curr) {
                 let label = labels.entry(curr).or_insert([(0, usize::MAX); 2]);
+                /*
                 assert!(
                     label.iter().any(|&v| v.1 == usize::MAX),
-                    r#"label = {label:?} original vert = {og_vi} corner verts = {corner_verts:?}
-                    #verts = {:?} vert_adj = {:?} curr = {curr}"#,
-                    out_verts[start..].len(), vert_adj[&new_vi]
+                    r#"label = {label:?} og_vi = {og_vi} new_vi = {new_vi} corner_verts = {corner_verts:?}
+                    #verts = {:?} vert_adj = {:?} curr = {curr} c = {c:?} vert_adj[new_vi] = {:?}"#,
+                    out_verts[start..].len(), vert_adj[&curr], vert_adj[&new_vi]
                 );
+                */
                 if let Some(p) = label.iter_mut().find(|v| v.1 == og_vi) {
                     p.0 = p.0.min(c);
                 } else {
@@ -704,21 +742,28 @@ pub fn sample_exact(
                 prev = curr;
                 curr = next;
                 c += 1;
-
-                if corner_verts.iter().any(|v| v.1 == curr) {
-                    break;
-                }
             }
         };
 
         iter(l, new_vi);
         iter(r, new_vi);
     }
+    let check = labels
+        .range(start..)
+        .all(|(_, v)| v[0].1 != usize::MAX && v[1].1 != usize::MAX);
+    if !check {
+        save_bad_mesh!("Missing label from vertex");
+    }
+    assert!(check);
 
     // ensure that verts are in the correct order along each edge
+    /*
     for (&v, &og_vis) in labels.range(start..) {
         assert!(!corner_verts.iter().any(|&(_, new_vi)| new_vi == v));
+        assert_ne!(og_vis[0].1, usize::MAX, "{og_vis:?} {v} {corner_verts:?}");
+        assert_ne!(og_vis[1].1, usize::MAX, "{og_vis:?} {v} {corner_verts:?}");
         let [n, p] = vert_adj[&v];
+
         let og_vs = og_vis.map(|vi| mesh.v[vi.1]);
         assert_ne!(og_vs[0], og_vs[1], "{og_vis:?}, {corner_verts:?} {v}");
         let [tv, tn, tp] = [v, n, p].map(|v| nearest_on_line(out_verts[v], og_vs));
@@ -750,23 +795,14 @@ pub fn sample_exact(
          */
         out_verts[v] = new_pos;
     }
+    */
 
     // TODO still figuring it out here
     let check = labels
         .range(start..)
         .all(|(_, &[(_, l0), (_, l1)])| l0 != usize::MAX && l1 != usize::MAX);
     if !check {
-        let error_verts = out_verts[start..].to_vec();
-        let error_colors = out_colors[start..].to_vec();
-        let mut error_faces = out_faces[start_f..].to_vec();
-        for f in &mut error_faces {
-            f.offset(-(start as i32))
-        }
-        *out_verts = error_verts;
-        *out_colors = error_colors;
-        *out_faces = error_faces;
-
-        return false;
+        save_bad_mesh!("Label does not have 2 values");
     }
     assert!(check);
 
@@ -879,6 +915,39 @@ pub fn sample(
 pub fn nearest_on_line(p: [F; 3], [s, e]: [[F; 3]; 2]) -> F {
     let dir = sub(e, s);
     dot(dir, sub(p, s)) / dot(dir, dir)
+}
+
+/// Returns the nearest point to p on tri.
+pub fn nearest_point_on_tri([v0, v1, v2]: [[F; 3]; 3], p: [F; 3]) -> [F; 3] {
+    let v10 = sub(v1, v0);
+    let v21 = sub(v2, v1);
+    let v02 = sub(v0, v2);
+
+    let [p0, p1, p2] = [v0, v1, v2].map(|v| sub(p, v));
+
+    let nrm = cross(v10, v21);
+    let c = dot(cross(v10, nrm), p0) > 0.
+        && dot(cross(v21, nrm), p1) > 0.
+        && dot(cross(v02, nrm), p2) > 0.;
+    if c {
+        return sub(p, kmul(dot(nrm, p0) / len_sq(nrm), nrm));
+    }
+
+    // compute point on each edge
+    let [q0, q1, q2] = [(v0, p0, v10), (v1, p1, v21), (v2, p2, v02)].map(|(v, p, e)| {
+        let t = (dot(p, e) / len_sq(e)).clamp(0., 1.);
+        add(v, kmul(t, e))
+    });
+
+    // pick nearest one
+    let [ds0, ds1, ds2] = [q0, q1, q2].map(|q| len_sq(sub(q, p)));
+    if ds0 < ds1 && ds0 < ds2 {
+        q0
+    } else if ds1 < ds2 {
+        q1
+    } else {
+        q2
+    }
 }
 
 macro_rules! impl_display {

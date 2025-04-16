@@ -29,6 +29,11 @@ pub fn length<const N: usize>(v: [F; N]) -> F {
     dot(v, v).sqrt()
 }
 
+/// Squared L-2 norm of a vector
+pub fn len_sq<const N: usize>(v: [F; N]) -> F {
+    dot(v, v)
+}
+
 /// Euclidean distance between vectors
 pub fn dist<const N: usize>(a: [F; N], b: [F; N]) -> F {
     length(sub(a, b))

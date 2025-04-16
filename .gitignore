@@ -4,5 +4,5 @@
 data/
 outputs/
 experiment_log.json
-tmp_error.obj
-tmp.ply
+*.obj
+*.ply

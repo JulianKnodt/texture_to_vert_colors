@@ -73,7 +73,7 @@ pub struct Args {
     simplify: bool,
 
     /// During decimation, how heavily should colors be preserved?
-    #[arg(long, default_value_t = 1e-3)]
+    #[arg(long, default_value_t = 1e-4)]
     color_weight: F,
 
     /// Extra weight to add on each edge based on color differences
@@ -81,11 +81,11 @@ pub struct Args {
     color_preservation_weight: F,
 
     /// Minimum face area during decimation.
-    #[arg(long, default_value_t = 1e-3)]
+    #[arg(long, default_value_t = 1e-2)]
     min_face_area: F,
 
     /// Minimum edge weight for each edge.
-    #[arg(long, default_value_t = 5e-3)]
+    #[arg(long, default_value_t = 1e-2)]
     min_edge_weight: F,
 
     /// Epsilon value to use when comparing quadric errors.
@@ -218,6 +218,7 @@ pub fn texture_to_vert_colors(
                 &mut out.f,
                 &mut out.v,
                 &mut out.vert_colors,
+                &mut out.n,
                 &mut corner_map,
                 &mut edge_map,
                 &mut labels,
@@ -374,6 +375,10 @@ pub fn texture_to_vert_colors(
 
     // Zip corner faces together
     for (_, fvs) in corner_map.iter() {
+        if fvs.iter().any(|fv| !edge_adj.contains_key(&fv.1)) {
+            // TODO hacky
+            continue;
+        }
         let first = fvs
             .iter()
             .find(|fv| edge_adj[&fv.1].iter().any(|&v| v == usize::MAX))
@@ -408,7 +413,11 @@ pub fn texture_to_vert_colors(
                 let next = *edge_adj[&first].iter().find(|&&v| v != usize::MAX).unwrap();
                 poly.push(next);
                 for i in 2..n {
-                    let n = edge_adj[&poly[i - 1]];
+                    let Some(n) = edge_adj.get(&poly[i - 1]) else {
+                        poly = fvs.iter().map(|fv| fv.1).collect();
+                        break;
+                        // not sure why this happens, but ok to ignore for now?
+                    };
                     poly.push(*n.iter().find(|&&v| v != poly[i - 2]).unwrap());
                 }
                 FaceKind::Poly(poly)
@@ -428,6 +437,7 @@ pub fn sample_exact(
     out_faces: &mut Vec<FaceKind>,
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
+    out_normals: &mut Vec<[F; 3]>,
     // map from edge -> (original face idx, vertices), which stores vertices along every half edge
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     // map from edge -> (original face idx, vertices on face)
@@ -449,8 +459,13 @@ pub fn sample_exact(
     aabb.scale_by(w as F, h as F);
     let mut iaabb = aabb.round_to_i32();
     iaabb.expand_by(1);
-    let uv_f = f.map_kind(|v| mesh.uv[0][v]);
-    let v_f = f.map_kind(|v| mesh.v[v]);
+    let uv_f = f.map_kind(|vi| mesh.uv[0][vi]);
+    let v_f = f.map_kind(|vi| mesh.v[vi]);
+    let n_f = if !mesh.n.is_empty() {
+        Some(f.map_kind(|vi| mesh.n[vi]))
+    } else {
+        None
+    };
     // face normal for projecting bary
     let f_n = normalize(v_f.normal());
     assert!(length(f_n) > 1e-3);
@@ -496,19 +511,26 @@ pub fn sample_exact(
 
         let new_verts = cfs.map(|cf| {
             let bary = uv_f.barycentric(cf);
+            let normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
             let pos = v_f.from_barycentric(bary);
             if !bary.iter().any(|&b| b < 0.) {
-                return pos;
+                return (pos, normal);
             };
-            nearest_point_on_tri(v_f.tri().unwrap(), pos)
+            let new_pos = nearest_point_on_tri(v_f.tri().unwrap(), pos);
+            let new_normal = n_f
+                .as_ref()
+                .map(|n_f| n_f.from_barycentric(v_f.barycentric(new_pos)));
+            (new_pos, new_normal)
         });
 
         // commit to this new pixel
-        let new_verts = std::array::from_fn(|i| {
-            let new_vert = new_verts[i];
+        let new_verts = new_verts.map(|(new_vert, normal)| {
             let vi = out_verts.len();
             out_verts.push(new_vert);
             out_colors.push(rgb);
+            if let Some(normal) = normal {
+                out_normals.push(normal);
+            }
 
             vi
         });
@@ -1306,6 +1328,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         og_mis.push(mi);
         og_mats.push(mat);
     }
+    println!("{:?}", fs.len());
     let face_set = fs;
 
     println!("[INFO]: Took {:?} for decimation", start_time.elapsed());
@@ -1339,5 +1362,3 @@ pub fn consistent_face_ordering(f: &mut [usize]) {
     let min_idx = f.iter().enumerate().min_by_key(|(_, idx)| **idx).unwrap().0;
     f.rotate_left(min_idx);
 }
-/*
-*/

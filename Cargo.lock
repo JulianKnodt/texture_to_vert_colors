@@ -554,6 +554,7 @@ dependencies = [
  "clap",
  "least_sq",
  "pars3d",
+ "smallvec",
 ]
 
 [[package]]

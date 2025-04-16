@@ -9,6 +9,7 @@ use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, edge::EdgeKind};
 
 use texture_to_vert_colors::{F, U, add, cross, dot, kmul, len_sq, length, normalize, sub};
+use texture_to_vert_colors::{manifold::CollapsibleManifold, quadric::Quadric};
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
 /// drop in visual quality.
@@ -59,6 +60,14 @@ pub struct Args {
     /// How much to pull each vertex associated with a vertex toward it.
     #[arg(long, default_value_t = 0.5)]
     vertex_pull: F,
+
+    /// Do not simplify the output mesh.
+    #[arg(long)]
+    no_simplify: bool,
+
+    /// During decimation, how heavily should colors be preserved?
+    #[arg(long)]
+    color_weight: F,
 }
 
 pub fn main() {
@@ -73,7 +82,12 @@ pub fn main() {
             mesh.normalize()
         };
         assert!(!mesh.uv[0].is_empty());
-        let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
+        let new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
+        let mut new_mesh = if args.no_simplify {
+            new_mesh
+        } else {
+            simplify_colored(new_mesh, &args)
+        };
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
     }
@@ -462,13 +476,6 @@ pub fn sample_exact(
             nearest_point_on_tri(v_f.tri().unwrap(), pos)
         });
 
-        // delete degen faces
-        /*
-        if pars3d::quad_area(new_verts) == 0. {
-            continue;
-        }
-        */
-
         // commit to this new pixel
         let new_verts = std::array::from_fn(|i| {
             let new_vert = new_verts[i];
@@ -620,7 +627,7 @@ pub fn sample_exact(
     let check = vert_adj
         .values()
         .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
-    assert!(check);
+    debug_assert!(check);
 
     // --- Compute correspondence between original vertices and a single pixel vertex, which
     // must be a boundary.
@@ -696,6 +703,7 @@ pub fn sample_exact(
             save_bad_mesh!("One vertex maps to multiple original corners");
         }
         assert!(!check);
+
         fv.push((fi, nearest));
         corner_verts.push((og_vi, nearest));
 
@@ -749,16 +757,6 @@ pub fn sample_exact(
     let check = labels
         .range(start..)
         .all(|(_, v)| v[0].1 != INVALID_POS && v[1].1 != INVALID_POS);
-    /*
-    if !check {
-        let invalid = labels
-            .range(start..)
-            .filter(|(_, v)| v[0].1 == INVALID_POS || v[1].1 == INVALID_POS)
-            .collect::<Vec<_>>();
-        eprintln!("{invalid:?}");
-        save_bad_mesh!("Missing label from vertex");
-    }
-    */
     assert!(check);
 
     for (&new_vi, ogs) in labels.range(start..) {
@@ -978,15 +976,17 @@ impl AABB<i32, 2> {
         self.max = self.max.map(|val| val + v);
     }
 }
-/*
-if best_dist == F::INFINITY {
-    let mut tmp = pars3d::Mesh::new_geometry(
-        f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
-        vec![FaceKind::Tri([0, 1, 2])],
-    );
 
-    tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
-    tmp.vert_colors = vec![[1.; 3]; 3];
-    pars3d::save("tmp_error.obj", &tmp.into_scene()).expect("Failed to save temp error");
+pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
+    let color_weight = args.color_weight;
+    let start_time = std::time::Instant::now();
+    let mut m = CollapsibleManifold::new_with(mesh.v.len(), |vi| {
+        (Quadric::<6>::zero(), mesh.v[vi], mesh.vert_colors[vi])
+    });
+    println!("[INFO]: Took {:?} for decimation", start_time.elapsed());
+
+    let mut out = pars3d::Mesh::default();
+    out
 }
+/*
 */

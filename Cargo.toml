@@ -7,4 +7,5 @@ edition = "2024"
 clap = { version = "4.5.34", features = ["derive"] }
 #pars3d = { git = "https://github.com/JulianKnodt/pars3d", version = "0.1.0", features = ["f64"] }
 pars3d = { path = "../pars3d", features = ["f64"] }
-least_sq = { git="https://github.com/JulianKnodt/qr_lst_sq.git", features = [] }
+least_sq = { git="https://github.com/JulianKnodt/qr_lst_sq.git", features = ["f64"] }
+smallvec = "1.15.0"

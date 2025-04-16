@@ -54,7 +54,7 @@ def runnable_cmds(cmds, stage_kind="run"):
 
 experiments = {
   "basic-cube": [
-    run("cube.obj", "cube.ply", "-d data/uv_grid.png", False),
+    run("cube.obj", "cube.ply", "-d data/colors.png", False),
   ],
   "sphere": [
     run("sphere.obj", "sphere.ply", "-d data/uv_grid.png", False),

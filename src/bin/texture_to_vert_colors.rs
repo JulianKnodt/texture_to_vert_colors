@@ -57,7 +57,7 @@ pub struct Args {
     stats: String,
 
     /// How much to separate each pixel by, useful for debugging.
-    #[arg(long, default_value_t = 0.999, hide = true)]
+    #[arg(long, default_value_t = 0.999)]
     pixel_sep: F,
 
     /// How much to pull each vertex associated with an edge toward it.
@@ -120,6 +120,11 @@ pub fn main() {
     }
     let elapsed = start.elapsed();
     println!("[INFO]: Resampling took {elapsed:?}");
+    println!(
+        "[INFO]: Output #F = {}, #V = {}",
+        out_scene.num_faces(),
+        out_scene.num_vertices()
+    );
 
     pars3d::save(&args.output, &out_scene).expect("Failed to save output");
 
@@ -201,6 +206,7 @@ pub fn texture_to_vert_colors(
         };
         */
 
+        //let start = out.v.len();
         let ok = match args.sample_kind {
             SampleKind::Approx => sample(
                 mesh,
@@ -225,6 +231,8 @@ pub fn texture_to_vert_colors(
                 args,
             ),
         };
+        // Add a simplification step here, as some faces are relatively similar, and we want to
+        // delete degenerate faces.
         if !ok {
             pars3d::save("curr_error.ply", &out.into_scene()).expect("Failed to save error scene");
             eprintln!("Exiting after saved erroneous mesh");
@@ -442,7 +450,7 @@ pub fn sample_exact(
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     // map from edge -> (original face idx, vertices on face)
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
-    // map from new vertex index to original vertex position and
+    // map from new vertex index to original vertex position and distance
     labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
 
     args: &Args,
@@ -1211,7 +1219,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             let mut q_acc = QuadricAccumulator::default();
             q_acc += m.get(e0).0;
             q_acc += m.get(e1).0;
-            let pos = q_acc.point_with_volume();
+            let pos = q_acc.point();
 
             if let Some(adj_faces) = edge_face_adj.get(&[e0, e1]) {
                 for &af in adj_faces.as_slice() {

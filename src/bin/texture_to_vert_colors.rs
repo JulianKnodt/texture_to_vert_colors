@@ -212,12 +212,12 @@ pub fn texture_to_vert_colors(
             .edges()
             .any(|e| e.map(|vi| mesh.v[vi]) == [e1, e0]);
 
-        let ([e0, e1], [e0_key, e1_key]) = if !swapped {
-            ([e1, e0], [e1_key, e0_key])
+        let [e0_key, e1_key] = if !swapped {
+            [e1_key, e0_key]
         } else {
-            ([e0, e1], [e0_key, e1_key])
+            [e0_key, e1_key]
         };
-        assert_ne!(e0_key, e1_key, "temporary check");
+        assert_ne!(e0_key, e1_key, "temporary check for degenerate edges");
 
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
@@ -229,13 +229,13 @@ pub fn texture_to_vert_colors(
         }
 
         let ordering = |vi: &usize| {
-            let [(t0, ei0), (t1, ei1)] = labels[&vi];
-            let t = if mesh.v[ei0] == e0 {
-                debug_assert_eq!(mesh.v[ei1], e1);
+            let [(t0, ei0_key), (t1, ei1_key)] = labels[&vi];
+            let t = if ei0_key == e0_key {
+                assert_eq!(ei1_key, e1_key);
                 t0
             } else {
-                debug_assert_eq!(mesh.v[ei0], e1);
-                debug_assert_eq!(mesh.v[ei1], e0);
+                assert_eq!(ei0_key, e1_key);
+                assert_eq!(ei1_key, e0_key);
                 t1
             };
             (*vi, t as F)
@@ -333,18 +333,22 @@ pub fn texture_to_vert_colors(
 
     // Zip corner faces together
     for (_, fvs) in corner_map.iter() {
-        let is_bd = fvs.iter().any(|fv| {
-            !edge_adj.contains_key(&fv.1) || edge_adj[&fv.1].iter().any(|&v| v == usize::MAX)
-        });
+        let first = fvs
+            .iter()
+            .find(|fv| edge_adj[&fv.1].iter().any(|&v| v == usize::MAX))
+            .copied()
+            .unwrap_or_else(|| fvs[0])
+            .1;
+
         let face = match fvs.len() {
             0..3 => continue,
             // Order doesn't matter here (except if it should flip)
             3 => FaceKind::Tri(std::array::from_fn(|i| fvs[i].1)),
 
-            4 if is_bd => FaceKind::Quad(std::array::from_fn(|i| fvs[i].1)),
             4 => {
-                let mut quad = [fvs[0].1, 0, 0, 0];
-                quad[1] = edge_adj[&quad[0]][0];
+                let mut quad = [first, 0, 0, 0];
+                quad[1] = *edge_adj[&first].iter().find(|&&v| v != usize::MAX).unwrap();
+                assert_ne!(quad[0], usize::MAX);
                 for i in 2..4 {
                     assert!(
                         edge_adj.contains_key(&quad[i - 1]),
@@ -357,11 +361,11 @@ pub fn texture_to_vert_colors(
                 }
                 FaceKind::Quad(quad)
             }
-            _ if is_bd => FaceKind::Poly(fvs.iter().map(|fv| fv.1).collect()),
             n => {
-                let mut poly = vec![fvs[0].1];
+                let mut poly = vec![first];
                 poly.reserve(n);
-                poly.push(edge_adj[&poly[0]][0]);
+                let next = *edge_adj[&first].iter().find(|&&v| v != usize::MAX).unwrap();
+                poly.push(next);
                 for i in 2..n {
                     let n = edge_adj[&poly[i - 1]];
                     poly.push(*n.iter().find(|&&v| v != poly[i - 2]).unwrap());
@@ -383,10 +387,12 @@ pub fn sample_exact(
     out_faces: &mut Vec<FaceKind>,
     out_verts: &mut Vec<[F; 3]>,
     out_colors: &mut Vec<[F; 3]>,
-    // map from edge -> (original idx, face -> vertices), which stores vertices along every half edge
+    // map from edge -> (original face idx, vertices), which stores vertices along every half edge
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
+    // map from edge -> (original face idx, vertices on face)
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
-    labels: &mut BTreeMap<usize, [(u32, usize); 2]>,
+    // map from new vertex index to original vertex position and
+    labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
 
     args: &Args,
 ) -> bool {
@@ -443,21 +449,6 @@ pub fn sample_exact(
         ];
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
 
-        // check if any of the pixel corners are in the face, if not skip
-        /*
-        let num_in_face = cfs
-            .iter()
-            .filter(|&&cf| {
-                uv_f.barycentric(cf)
-                    .iter()
-                    .all(|&v| (-1e-4..=(1.0 + 1e-4)).contains(&v))
-            })
-            .count();
-        if num_in_face == 0 {
-            continue;
-        }
-        */
-
         let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         let rgb = get_rgb(tex_u, tex_v);
@@ -472,9 +463,11 @@ pub fn sample_exact(
         });
 
         // delete degen faces
-        if pars3d::quad_area(new_verts) < 1e-25 {
+        /*
+        if pars3d::quad_area(new_verts) == 0. {
             continue;
         }
+        */
 
         // commit to this new pixel
         let new_verts = std::array::from_fn(|i| {
@@ -718,12 +711,13 @@ pub fn sample_exact(
         assert_eq!(corner_verts.len(), 3);
     }
 
+    const INVALID_POS: [U; 3] = [U::MAX; 3];
     for &(og_vi, new_vi) in &corner_verts {
         let [l, r] = vert_adj[&new_vi];
         let mut iter = |mut curr: usize, mut prev: usize| {
             let mut c = 1;
             while !corner_verts.iter().any(|v| v.1 == curr) {
-                let label = labels.entry(curr).or_insert([(0, usize::MAX); 2]);
+                let label = labels.entry(curr).or_insert([(0, INVALID_POS); 2]);
                 /*
                 assert!(
                     label.iter().any(|&v| v.1 == usize::MAX),
@@ -732,11 +726,15 @@ pub fn sample_exact(
                     out_verts[start..].len(), vert_adj[&curr], vert_adj[&new_vi]
                 );
                 */
-                if let Some(p) = label.iter_mut().find(|v| v.1 == og_vi) {
+                /*
+                if let Some(p) = label.iter_mut().find(|v| v.1 == og_vi.map(F::to_bits)) {
+                    assert!(false);
                     p.0 = p.0.min(c);
                 } else {
-                    *label.iter_mut().find(|v| v.1 == usize::MAX).unwrap() = (c, og_vi);
-                }
+                */
+                *label.iter_mut().find(|v| v.1 == INVALID_POS).unwrap() =
+                    (c, mesh.v[og_vi].map(F::to_bits));
+                //}
                 assert!(vert_adj[&curr].iter().any(|&v| v == prev));
                 let next = *vert_adj[&curr].iter().find(|v| **v != prev).unwrap();
                 prev = curr;
@@ -750,67 +748,24 @@ pub fn sample_exact(
     }
     let check = labels
         .range(start..)
-        .all(|(_, v)| v[0].1 != usize::MAX && v[1].1 != usize::MAX);
+        .all(|(_, v)| v[0].1 != INVALID_POS && v[1].1 != INVALID_POS);
+    /*
     if !check {
+        let invalid = labels
+            .range(start..)
+            .filter(|(_, v)| v[0].1 == INVALID_POS || v[1].1 == INVALID_POS)
+            .collect::<Vec<_>>();
+        eprintln!("{invalid:?}");
         save_bad_mesh!("Missing label from vertex");
     }
-    assert!(check);
-
-    // ensure that verts are in the correct order along each edge
-    /*
-    for (&v, &og_vis) in labels.range(start..) {
-        assert!(!corner_verts.iter().any(|&(_, new_vi)| new_vi == v));
-        assert_ne!(og_vis[0].1, usize::MAX, "{og_vis:?} {v} {corner_verts:?}");
-        assert_ne!(og_vis[1].1, usize::MAX, "{og_vis:?} {v} {corner_verts:?}");
-        let [n, p] = vert_adj[&v];
-
-        let og_vs = og_vis.map(|vi| mesh.v[vi.1]);
-        assert_ne!(og_vs[0], og_vs[1], "{og_vis:?}, {corner_verts:?} {v}");
-        let [tv, tn, tp] = [v, n, p].map(|v| nearest_on_line(out_verts[v], og_vs));
-        assert!(tv.is_finite());
-        assert!(tn.is_finite());
-        assert!(tp.is_finite());
-        let [l, h] = [tn.min(tp), tn.max(tp)];
-        /// Max size gap when clamping into the safe region
-        const EPS: F = 1e-6;
-        let eps = ((h - l) / 3.).min(EPS);
-        let r = l..=h;
-        if r.contains(&tv) {
-            continue;
-        }
-
-        // NOTE 1.001 is important so that it is not directly on the edge
-        let dir = sub(og_vs[1], og_vs[0]);
-        let delta = if tv > h - eps {
-            tv - (h - 1.005 * eps)
-        } else {
-            tv - (l + 1.005 * eps)
-        };
-        assert!(r.contains(&(tv - delta)), "{r:?} {} {tv}", tv - delta);
-        let new_pos = add(out_verts[v], kmul(-delta, dir));
-        //let new_tv = nearest_on_line(new_pos, og_vs);
-        /*
-        //assert!((0.0..=1.0).contains(&new_tv), "{r:?}");
-        //assert!(r.contains(&new_tv), "{r:?} {new_tv} {tv}");
-         */
-        out_verts[v] = new_pos;
-    }
     */
-
-    // TODO still figuring it out here
-    let check = labels
-        .range(start..)
-        .all(|(_, &[(_, l0), (_, l1)])| l0 != usize::MAX && l1 != usize::MAX);
-    if !check {
-        save_bad_mesh!("Label does not have 2 values");
-    }
     assert!(check);
 
     for (&new_vi, ogs) in labels.range(start..) {
         if args.debug_colors && out_colors[new_vi] != [1.; 3] {
             out_colors[new_vi] = [0.; 3];
         }
-        let [og0_key, og1_key] = ogs.map(|vi| mesh.v[vi.1].map(F::to_bits));
+        let [og0_key, og1_key] = ogs.map(|vi| vi.1);
         let fvs = edge_map
             .entry(std::cmp::minmax(og0_key, og1_key))
             .or_default();
@@ -820,7 +775,7 @@ pub fn sample_exact(
             fvs.push((fi, vec![new_vi]));
         }
 
-        let ogs = ogs.map(|vi| mesh.v[vi.1]);
+        let ogs = [og0_key, og1_key].map(|k| k.map(F::from_bits));
         let t = nearest_on_line(out_verts[new_vi], ogs);
         if !(0.0..=1.0).contains(&t) {
             continue;

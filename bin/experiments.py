@@ -65,8 +65,8 @@ experiments = {
   "thin-tri": [
     run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", False),
   ],
-  "monkey": [
-    run("monkey.obj", "monkey.ply", "-d data/uv_grid.png", False),
+  "spot": [
+    run("spot_triangulated.obj", "spot_triangulated.ply", "-d data/uv_grid.png", False),
   ],
 }
 

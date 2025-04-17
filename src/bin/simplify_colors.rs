@@ -48,7 +48,7 @@ pub struct Args {
     color_preservation_weight: F,
 
     /// Minimum face area during decimation.
-    #[arg(long, default_value_t = 1e-2)]
+    #[arg(long, default_value_t = 5e-2)]
     min_face_area: F,
 
     /// Minimum edge weight for each edge.
@@ -68,9 +68,11 @@ pub fn main() {
     let args = Args::parse();
 
     let mut scene = pars3d::load(&args.input).expect("Failed to parse input");
-    let mesh = scene.into_flattened_mesh();
+    let mut mesh = scene.into_flattened_mesh();
+    let (s, t) = mesh.normalize();
 
-    let out_mesh = simplify_colored(mesh, &args);
+    let mut out_mesh = simplify_colored(mesh, &args);
+    out_mesh.denormalize(s, t);
     out_mesh.repopulate_scene(&mut scene);
 
     pars3d::save(&args.output, &scene).expect("Failed to save output mesh");
@@ -82,16 +84,19 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     let mut m =
         CollapsibleManifold::new_with(mesh.v.len(), |vi| (Quadric::<3>::zero(), mesh.v[vi]));
 
-    let attr_ws = AttrWeights {
-        ws: [args.color_weight; 3],
+    let cw = if mesh.vert_colors.is_empty() {
+        0.
+    } else {
+        args.color_weight
     };
+    let attr_ws = AttrWeights { ws: [cw; 3] };
 
     let mut edge_face_adj: HashMap<[usize; 2], EdgeKind> = HashMap::new();
     let mut f_n = vec![[0.; 3]; mesh.f.len()];
     let mut num_edges = 0;
     let mut avg_edge_len = 0.;
     for (fi, f) in mesh.f.iter().enumerate() {
-        f_n[fi] = f.normal(&mesh.v);
+        f_n[fi] = normalize(f.normal(&mesh.v));
         for e in f.edges_ord() {
             edge_face_adj
                 .entry(e)
@@ -108,9 +113,11 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     avg_edge_len /= num_edges as F;
 
     let mut color_dists = HashMap::new();
-    for &[e0, e1] in edge_face_adj.keys() {
-        let v = length(sub(mesh.vert_colors[e0], mesh.vert_colors[e1]));
-        assert_eq!(color_dists.insert([e0, e1], v), None);
+    if !mesh.vert_colors.is_empty() {
+        for &[e0, e1] in edge_face_adj.keys() {
+            let v = length(sub(mesh.vert_colors[e0], mesh.vert_colors[e1]));
+            assert_eq!(color_dists.insert([e0, e1], v), None);
+        }
     }
 
     for f in mesh.f.iter() {
@@ -137,11 +144,12 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             let interior_angle = {
                 let e0 = normalize(sub(prev, curr));
                 let e1 = normalize(sub(next, curr));
-                dot(e0, e1).clamp(-1., 1.).acos() / std::f64::consts::PI as F
+                dot(e0, e1).clamp(-1., 1.).acos()
             };
             let mut q = Quadric::new_plane(curr, n, area) * interior_angle;
             q.area = area;
             m.data[v].0 += q;
+
             const PI: F = std::f64::consts::PI as F;
 
             macro_rules! dihedral_angle {
@@ -222,10 +230,9 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         ($e0:expr, $e1: expr) => {{
             let [e0, e1] = std::cmp::minmax($e1, $e0);
             let mut q_acc = QuadricAccumulator::default();
-            for e in [e0, e1] {
-                q_acc += m.get(e).0;
-            }
-            let p = q_acc.point_with_volume();
+            q_acc += m.get(e0).0;
+            q_acc += m.get(e1).0;
+            let p = q_acc.point();
             assert!(p.iter().copied().all(F::is_finite));
             let mut total_cost = 0.;
 
@@ -256,14 +263,14 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
-            if *q_err >= args.quadric_threshold {
+            if -*q_err >= args.quadric_threshold {
                 break 'outer;
             }
 
             let mut q_acc = QuadricAccumulator::default();
             q_acc += m.get(e0).0;
             q_acc += m.get(e1).0;
-            let pos = q_acc.point();
+            let pos = q_acc.point_with_volume();
 
             if let Some(adj_faces) = edge_face_adj.get(&[e0, e1]) {
                 for &af in adj_faces.as_slice() {
@@ -332,6 +339,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     let mut new_positions = vec![];
     let mut new_colors = vec![];
 
+    println!("{:?}", m.num_vertices());
     for (curr_vi, (vi, &(q, p))) in m.vertices().enumerate() {
         let prev = remap.insert(vi, curr_vi);
         assert_eq!(prev, None);
@@ -380,7 +388,6 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         og_mis.push(mi);
         og_mats.push(mat);
     }
-    println!("{:?}", fs.len());
     let face_set = fs;
 
     println!("[INFO]: Took {:?} for decimation", start_time.elapsed());

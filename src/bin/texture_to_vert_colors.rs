@@ -171,7 +171,11 @@ pub fn texture_to_vert_colors(
             .expect("Failed to open diffuse image")
             .flipv()
     };
-    println!("[INFO]: W/H for diffuse image is {} {}", diff_img.width(), diff_img.height());
+    println!(
+        "[INFO]: Diffuse W = {}, H = {}",
+        diff_img.width(),
+        diff_img.height()
+    );
 
     let mut edge_map = BTreeMap::new();
     let mut corner_map = BTreeMap::new();
@@ -275,7 +279,7 @@ pub fn texture_to_vert_colors(
             continue;
         }
         if face_verts.len() != 2 {
-          continue;
+            continue;
         }
         assert_eq!(face_verts.len(), 2);
         assert_ne!(

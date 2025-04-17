@@ -1,0 +1,416 @@
+#![feature(cmp_minmax)]
+#![feature(let_chains)]
+
+use std::collections::HashMap;
+
+use clap::Parser;
+use ordered_float::NotNan;
+use pars3d::FaceKind;
+use priority_queue::PriorityQueue;
+
+use texture_to_vert_colors::{
+    F, cross, dot, length,
+    manifold::{CollapsibleManifold, EdgeKind},
+    normalize,
+    quadric::{AttrWeights, Quadric, QuadricAccumulator},
+    sub,
+};
+
+/// A utility for converting a mesh with texture into a mesh with vertex colors without
+/// drop in visual quality.
+#[derive(Debug, Clone, PartialEq, Parser)]
+pub struct Args {
+    /// Input mesh path.
+    #[arg(long, short)]
+    input: String,
+    /// Output mesh path (PLY).
+    #[arg(long, short)]
+    output: String,
+
+    /// Do not normalize the mesh before processing (for debugging)
+    #[arg(long, hide = true)]
+    no_normalize: bool,
+
+    /// Output stats to this file
+    #[arg(long, default_value = "")]
+    stats: String,
+
+    /// Do not simplify the output mesh.
+    #[arg(long)]
+    simplify: bool,
+
+    /// During decimation, how heavily should colors be preserved?
+    #[arg(long, default_value_t = 1e-4)]
+    color_weight: F,
+
+    /// Extra weight to add on each edge based on color differences
+    #[arg(long, default_value_t = 0.1)]
+    color_preservation_weight: F,
+
+    /// Minimum face area during decimation.
+    #[arg(long, default_value_t = 1e-2)]
+    min_face_area: F,
+
+    /// Minimum edge weight for each edge.
+    #[arg(long, default_value_t = 1e-2)]
+    min_edge_weight: F,
+
+    /// Epsilon value to use when comparing quadric errors.
+    #[arg(long, default_value_t = 1e-5)]
+    abs_eps: F,
+
+    /// Threshold to stop quadric decimation at
+    #[arg(long, default_value_t = 1e-4)]
+    quadric_threshold: F,
+}
+
+pub fn main() {
+    let args = Args::parse();
+
+    let mut scene = pars3d::load(&args.input).expect("Failed to parse input");
+    let mesh = scene.into_flattened_mesh();
+
+    let out_mesh = simplify_colored(mesh, &args);
+    out_mesh.repopulate_scene(&mut scene);
+
+    pars3d::save(&args.output, &scene).expect("Failed to save output mesh");
+}
+
+pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
+    let start_time = std::time::Instant::now();
+
+    let mut m =
+        CollapsibleManifold::new_with(mesh.v.len(), |vi| (Quadric::<3>::zero(), mesh.v[vi]));
+
+    let attr_ws = AttrWeights {
+        ws: [args.color_weight; 3],
+    };
+
+    let mut edge_face_adj: HashMap<[usize; 2], EdgeKind> = HashMap::new();
+    let mut f_n = vec![[0.; 3]; mesh.f.len()];
+    let mut num_edges = 0;
+    let mut avg_edge_len = 0.;
+    for (fi, f) in mesh.f.iter().enumerate() {
+        f_n[fi] = f.normal(&mesh.v);
+        for e in f.edges_ord() {
+            edge_face_adj
+                .entry(e)
+                .and_modify(|p| {
+                    p.insert(fi);
+                })
+                .or_insert_with(|| EdgeKind::Boundary(fi));
+            num_edges += 1;
+            let [e0, e1] = e.map(|vi| mesh.v[vi]);
+            avg_edge_len += length(sub(e1, e0));
+        }
+    }
+
+    avg_edge_len /= num_edges as F;
+
+    let mut color_dists = HashMap::new();
+    for &[e0, e1] in edge_face_adj.keys() {
+        let v = length(sub(mesh.vert_colors[e0], mesh.vert_colors[e1]));
+        assert_eq!(color_dists.insert([e0, e1], v), None);
+    }
+
+    for f in mesh.f.iter() {
+        m.add_face(f.as_slice());
+    }
+
+    for (fi, f) in mesh.f.iter().enumerate() {
+        let area = f.area(&mesh.v).max(0.) + args.min_face_area;
+        let n = f_n[fi];
+        if length(n) == 0. {
+            // Handle this better (there will be many degenerate triangles)
+            continue;
+        }
+
+        let f_slice = f.as_slice();
+        for (i, &v) in f_slice.iter().enumerate() {
+            let curr = mesh.v[v];
+            let pi = f_slice[i.checked_sub(1).unwrap_or_else(|| f.len() - 1)];
+            let prev = mesh.v[pi];
+            let ni = f_slice[(i + 1) % f.len()];
+            let e = std::cmp::minmax(v, ni);
+            let next = mesh.v[ni];
+
+            let interior_angle = {
+                let e0 = normalize(sub(prev, curr));
+                let e1 = normalize(sub(next, curr));
+                dot(e0, e1).clamp(-1., 1.).acos() / std::f64::consts::PI as F
+            };
+            let mut q = Quadric::new_plane(curr, n, area) * interior_angle;
+            q.area = area;
+            m.data[v].0 += q;
+            const PI: F = std::f64::consts::PI as F;
+
+            macro_rules! dihedral_angle {
+                ($f0: expr, $f1: expr) => {{
+                    let angle = dot(f_n[$f0], f_n[$f1]);
+                    assert!((-1.0001..=1.0001).contains(&angle), "{angle}");
+                    let angle = angle.clamp(-1., 1.);
+
+                    let v = angle.acos();
+                    assert!((0.0..=PI).contains(&v), "{v} {angle}");
+                    v
+                }};
+            }
+
+            let e_w = match edge_face_adj[&e] {
+                EdgeKind::Boundary(_) => 2.,
+                EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) / PI,
+                EdgeKind::NonManifold(_) => todo!(),
+            };
+            let e_w = e_w.max(args.min_edge_weight);
+
+            let edge_dir = sub(curr, next);
+            let edge_len = length(edge_dir);
+            let edge_len = edge_len / avg_edge_len;
+            if edge_len == 0. {
+                continue;
+            }
+            let edge_dir = normalize(edge_dir);
+            let edge_quadric = Quadric::new_plane(curr, normalize(cross(n, edge_dir)), 0.);
+
+            let colpw = color_dists.get(&e).copied().unwrap_or(0.) * args.color_preservation_weight;
+
+            let e_w = e_w.max(colpw);
+
+            let total_e_w = e_w * edge_len;
+            let mut edge_quadric = edge_quadric * total_e_w.max(1e-4);
+            edge_quadric.area = 0.;
+
+            m.data[v].0 += edge_quadric;
+            m.data[ni].0 += edge_quadric;
+        }
+
+        /*
+        macro_rules! q_n_attribs(
+          ($vis: expr) => {{
+            Quadric::n_attribs(
+                n,
+                $vis.map(|vi| mesh.v[vi]),
+                $vis.map(|vi| mesh.vert_colors[vi]),
+                attr_ws,
+            )
+          }}
+        );
+
+        // add attributes as well
+        let q_attr = match f {
+            FaceKind::Tri(vis) => q_n_attribs!(vis),
+            FaceKind::Quad(vis) => q_n_attribs!(vis),
+            FaceKind::Poly(p) => Quadric::dyn_attribs(
+                n,
+                p.len(),
+                |vi| mesh.v[vi],
+                |vi| mesh.vert_colors[vi],
+                attr_ws,
+            ),
+        };
+
+        for &vi in f.as_slice() {
+            m.data[vi].0 += q_attr * area;
+        }
+        */
+    }
+
+    let mut curr_costs = vec![0.; m.num_vertices()];
+    let mut pq = PriorityQueue::new();
+
+    macro_rules! update_cost_of_edge {
+        ($e0:expr, $e1: expr) => {{
+            let [e0, e1] = std::cmp::minmax($e1, $e0);
+            let mut q_acc = QuadricAccumulator::default();
+            for e in [e0, e1] {
+                q_acc += m.get(e).0;
+            }
+            let p = q_acc.point_with_volume();
+            assert!(p.iter().copied().all(F::is_finite));
+            let mut total_cost = 0.;
+
+            let q01f = m.get(e0).0 + m.get(e1).0;
+            // colors are also automatically clamped to [0., 1.].
+            let attrs = q01f.attributes(p, attr_ws).map(|v| v.clamp(0., 1.));
+            total_cost -=
+                q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1];
+
+            NotNan::new(total_cost).unwrap()
+        }};
+    }
+
+    for [e0, e1] in m.ord_edges() {
+        pq.push([e0, e1], update_cost_of_edge!(e0, e1));
+    }
+
+    let p = indicatif::ProgressBar::new(m.num_vertices() as u64);
+    let mut buf = PriorityQueue::new();
+    let mut recencies = HashMap::new();
+    let mut did_update = vec![];
+    'outer: while let Some((e, q)) = pq.pop() {
+        assert!(buf.is_empty());
+        buf.push(e, (0, q));
+        recencies.clear();
+        while let Some(([e0, e1], (rec, q_err))) = buf.pop() {
+            assert!(e0 < e1);
+            if m.is_deleted(e0) || m.is_deleted(e1) {
+                continue;
+            }
+            if *q_err >= args.quadric_threshold {
+                break 'outer;
+            }
+
+            let mut q_acc = QuadricAccumulator::default();
+            q_acc += m.get(e0).0;
+            q_acc += m.get(e1).0;
+            let pos = q_acc.point();
+
+            if let Some(adj_faces) = edge_face_adj.get(&[e0, e1]) {
+                for &af in adj_faces.as_slice() {
+                    let f = &mesh.f[af];
+                    let Some([q0, q1]) = f.quad_opp_edge(e0, e1) else {
+                        continue;
+                    };
+                    let r = recencies.entry(std::cmp::minmax(q0, q1)).or_insert(rec);
+                    *r += 1000;
+                }
+            };
+
+            m.merge(e0, e1, |(q0, _), (q1, _)| {
+                let q01 = *q0 + *q1;
+                curr_costs[e1] = q01
+                    .cost_attrib(pos, q01.attributes(pos, attr_ws), attr_ws)
+                    .max(0.);
+                (q01, pos)
+            });
+
+            did_update.clear();
+            let e_dst = m.get_new_vertex(e1);
+            for adj in m.vertex_adj(e_dst) {
+                let prio = update_cost_of_edge!(e_dst, adj);
+                let adj_e = std::cmp::minmax(e_dst, adj);
+                buf.remove(&adj_e);
+                pq.push(adj_e, prio);
+                did_update.push(adj_e);
+            }
+
+            for adj in m.vertex_adj(e_dst) {
+                for adj2 in m.vertex_adj(adj) {
+                    let adj_e = std::cmp::minmax(adj, adj2);
+                    if adj2 == e_dst || did_update.contains(&adj_e) {
+                        continue;
+                    }
+                    did_update.push(adj_e);
+                    let prio = update_cost_of_edge!(adj, adj2);
+                    let recency = recencies.get(&adj_e).copied().unwrap_or(0);
+
+                    if !approx_eq(*prio, *q_err, args.abs_eps) {
+                        buf.remove(&adj_e);
+                        pq.push(adj_e, prio);
+                        continue;
+                    }
+                    let changed = buf.change_priority(&adj_e, (recency, prio)).is_some();
+                    if !changed {
+                        pq.push(adj_e, prio);
+                    }
+                }
+            }
+
+            while let Some((_e, nq_err)) = pq.peek()
+                && approx_eq(**nq_err, *q_err, args.abs_eps)
+            {
+                let (e, nq_err) = pq.pop().unwrap();
+                let recency = recencies.get(&e).copied().unwrap_or(0);
+                buf.push(e, (recency, nq_err));
+            }
+
+            p.set_position(m.num_vertices() as u64);
+        }
+    }
+
+    let mut remap: HashMap<usize, usize> = HashMap::new();
+    let mut new_positions = vec![];
+    let mut new_colors = vec![];
+
+    for (curr_vi, (vi, &(q, p))) in m.vertices().enumerate() {
+        let prev = remap.insert(vi, curr_vi);
+        assert_eq!(prev, None);
+        new_positions.push(p);
+
+        let attrs = q.attributes(p, attr_ws);
+        assert!(!attrs.is_empty());
+        assert!(attrs.len() == 3);
+        new_colors.push(attrs.map(|c| c.clamp(0., 1.)));
+    }
+
+    let mut face_set = std::collections::BTreeSet::new();
+    let mut vertex_buf = vec![];
+    for (fi, f) in mesh.f.iter().enumerate() {
+        vertex_buf.clear();
+        vertex_buf.extend_from_slice(f.as_slice());
+        for v in vertex_buf.iter_mut() {
+            *v = remap[&m.get_new_vertex(*v)];
+        }
+        vertex_buf.dedup();
+        while !vertex_buf.is_empty() && vertex_buf.first() == vertex_buf.last() {
+            vertex_buf.pop();
+        }
+        if vertex_buf.len() < 3 {
+            continue;
+        }
+        consistent_face_ordering(&mut vertex_buf);
+        let face = match vertex_buf.as_slice() {
+            &[] | &[_] | &[_, _] => unreachable!(),
+            &[a, b, c] => FaceKind::Tri([a, b, c]),
+            &[a, b, c, d] => FaceKind::Quad([a, b, c, d]),
+            x => FaceKind::Poly(x.to_vec()),
+        };
+        face_set.insert((
+            face,
+            mesh.face_mesh_idx.get(fi).copied().unwrap_or(0),
+            mesh.mat_for_face(fi),
+        ));
+    }
+
+    let mut fs = vec![];
+    let mut og_mis = vec![];
+    let mut og_mats = vec![];
+    for (f, mi, mat) in face_set.into_iter() {
+        fs.push(f);
+        og_mis.push(mi);
+        og_mats.push(mat);
+    }
+    println!("{:?}", fs.len());
+    let face_set = fs;
+
+    println!("[INFO]: Took {:?} for decimation", start_time.elapsed());
+    pars3d::Mesh {
+        v: new_positions,
+        uv: std::array::from_fn(|_| vec![]),
+        n: vec![],
+        f: face_set,
+        face_mesh_idx: og_mis,
+        face_mat_idx: pars3d::mesh::convert_opt_usize(&og_mats),
+
+        joint_weights: vec![],
+        joint_idxs: vec![],
+        vert_colors: new_colors,
+        name: String::new(),
+    }
+}
+
+fn approx_eq(a: F, b: F, abs_eps: F) -> bool {
+    if a == b {
+        return true;
+    }
+    (a - b).abs() < abs_eps
+}
+
+/// rotates f so that the minimum value is in front
+pub fn consistent_face_ordering(f: &mut [usize]) {
+    if f.is_empty() {
+        return;
+    }
+    let min_idx = f.iter().enumerate().min_by_key(|(_, idx)| **idx).unwrap().0;
+    f.rotate_left(min_idx);
+}

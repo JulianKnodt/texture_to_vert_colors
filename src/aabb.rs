@@ -5,11 +5,11 @@ pub(crate) fn cross_2d([x, y]: [F; 2], [a, b]: [F; 2]) -> F {
     x * b - y * a
 }
 
-const EPS: F = 5e-3;
+const EPS: F = 1e-2;
 pub fn tri_2d_contains(p: [F; 2], t: [[F; 2]; 3]) -> bool {
     pars3d::barycentric_2d(p, t)
         .iter()
-        .all(|v| (-EPS..=(1. + EPS)).contains(v))
+        .all(|v| (EPS..=(1. - EPS)).contains(v))
 }
 
 // positive if cw, negative if ccw
@@ -71,7 +71,7 @@ impl<const N: usize> AABB<F, N> {
     }
     #[inline]
     fn within_dim(&self, dim: usize, v: F) -> bool {
-        ((self.min[dim] - EPS)..=(self.max[dim] + EPS)).contains(&v)
+        ((self.min[dim] + EPS)..=(self.max[dim] - EPS)).contains(&v)
     }
 }
 
@@ -119,18 +119,20 @@ impl AABB<F, 2> {
     }
     pub fn intersects_line(&self, a: [F; 2], b: [F; 2]) -> bool {
         for d in [0, 1] {
-            if a[d] > self.max[d] && b[d] > self.max[d] {
+            if a[d] > self.max[d] + EPS && b[d] > self.max[d] + EPS {
                 return false;
             }
-            if a[d] < self.min[d] && b[d] < self.min[d] {
+            if a[d] < self.min[d] - EPS && b[d] < self.min[d] - EPS {
                 return false;
             }
         }
-        let cs = self.corners().map(|c| orient_2d(a, b, c).signum() as i8);
-        if cs.iter().any(|&c| c == 0) {
-            return true;
-        }
-        cs[1..].iter().any(|&c| c != cs[0])
+        let cs = self.corners().map(|c| {
+            let o = orient_2d(a, b, c);
+            (o, o.signum() as i8)
+        });
+        assert!(!cs.iter().any(|c| c.1 == 0));
+
+        cs[1..].iter().any(|&c| c.1 != cs[0].1)
     }
 }
 
@@ -138,7 +140,7 @@ impl AABB<i32, 2> {
     pub fn iter_coords(&self) -> impl Iterator<Item = [i32; 2]> + '_ {
         let [lx, ly] = self.min;
         let [hx, hy] = self.max;
-        (ly..=hy).flat_map(move |y| (lx..=hx).map(move |x| [x, y]))
+        (ly..hy).flat_map(move |y| (lx..hx).map(move |x| [x, y]))
     }
     pub fn expand_by(&mut self, v: i32) {
         self.min = self.min.map(|val| val - v);

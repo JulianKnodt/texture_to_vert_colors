@@ -7,6 +7,10 @@ pub fn cross([x, y, z]: [F; 3], [a, b, c]: [F; 3]) -> [F; 3] {
     [y * c - z * b, z * a - x * c, x * b - y * a]
 }
 
+pub fn cross_2d([x, y]: [F; 2], [a, b]: [F; 2]) -> F {
+    x * b - y * a
+}
+
 #[test]
 fn test_cross() {
     assert_eq!(cross([0., 0., 1.], [1., 0., 0.]), [0., 1., 0.]);

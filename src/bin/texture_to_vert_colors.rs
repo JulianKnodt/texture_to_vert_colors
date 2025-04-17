@@ -12,7 +12,9 @@ use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, edge::EdgeKind};
 use priority_queue::PriorityQueue;
 
-use texture_to_vert_colors::{F, U, add, cross, dot, kmul, len_sq, length, normalize, sub};
+use texture_to_vert_colors::{
+    F, U, add, cross, cross_2d, dot, kmul, len_sq, length, normalize, sub,
+};
 use texture_to_vert_colors::{
     aabb::AABB,
     manifold::CollapsibleManifold,
@@ -58,7 +60,7 @@ pub struct Args {
     stats: String,
 
     /// How much to separate each pixel by, useful for debugging.
-    #[arg(long, default_value_t = 0.999)]
+    #[arg(long, default_value_t = 0.995)]
     pixel_sep: F,
 
     /// How much to pull each vertex associated with an edge toward it.
@@ -69,6 +71,7 @@ pub struct Args {
     #[arg(long, default_value_t = 0.5)]
     vertex_pull: F,
 
+    /*
     /// Do not simplify the output mesh.
     #[arg(long)]
     simplify: bool,
@@ -96,6 +99,14 @@ pub struct Args {
     /// Threshold to stop quadric decimation at
     #[arg(long, default_value_t = 1e-4)]
     quadric_threshold: F,
+    */
+    /// Area below which faces can be deleted
+    #[arg(long, default_value_t = 1e-12)]
+    area_threshold: F,
+
+    /// Distance below which colors are considered similar
+    #[arg(long, default_value_t = 1e-4)]
+    color_diff_threshold: F,
 }
 
 pub fn main() {
@@ -110,12 +121,19 @@ pub fn main() {
             mesh.normalize()
         };
         assert!(!mesh.uv[0].is_empty());
-        let new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
+        let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
+        let deleted = delete_degenerate_faces(&mut new_mesh, &args);
+        println!("[INFO]: Deleted {deleted} degenerate faces");
+        let del_vert = new_mesh.delete_unused_vertices();
+        println!("[INFO]: Deleted {del_vert} unused vertices");
+
+        /*
         let mut new_mesh = if !args.simplify {
             new_mesh
         } else {
             simplify_colored(new_mesh, &args)
         };
+        */
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
     }
@@ -245,21 +263,29 @@ pub fn texture_to_vert_colors(
         return out;
     }
 
+    // map from (new vertex -> adjacent vertices that share the same corner)
     let mut edge_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
 
     // Zip edges together
     for ([e0_key, e1_key], face_verts) in edge_map {
-        // nothing to be done in this case
-        if face_verts.len() != 2 {
-            continue;
+        macro_rules! add_key {
+            ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
+                let fv = &corner_map[$key];
+                let corner = fv.iter().find(|fv| fv.0 == *$face).unwrap().1;
+                assert_eq!(fv.iter().filter(|fv| fv.0 == *$face).count(), 1);
+                $dst.push((corner, $l));
+                corner
+            }};
         }
+        assert!(!face_verts.is_empty());
 
-        // Non manifold case may just be ok to ignore, not sure what to do there exactly.
+        // Only add boundary edges here
+        let f0 = face_verts[0].0;
+
         let e0 = e0_key.map(F::from_bits);
         let e1 = e1_key.map(F::from_bits);
 
-        let (f0, _) = &face_verts[0];
-        let swapped = mesh.f[*f0]
+        let swapped = mesh.f[f0]
             .edges()
             .any(|e| e.map(|vi| mesh.v[vi]) == [e1, e0]);
 
@@ -268,25 +294,32 @@ pub fn texture_to_vert_colors(
         } else {
             [e0_key, e1_key]
         };
-        assert_ne!(e0_key, e1_key, "temporary check for degenerate edges");
 
-        macro_rules! add_key {
-            ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
-                let fv = corner_map.get($key).unwrap();
-                let &(_, corner) = fv.iter().find(|fv| fv.0 == *$face).unwrap();
-                $dst.push((corner, $l));
-                corner
-            }};
+        if face_verts.len() == 1 {
+            for key in [e0_key, e1_key] {
+                let fv = &corner_map[&key];
+                let corner = fv.iter().find(|fv| fv.0 == f0).unwrap().1;
+                edge_adj.entry(corner).or_insert([usize::MAX; 2]);
+            }
+
+            continue;
         }
+        assert_eq!(face_verts.len(), 2);
+        assert_ne!(
+            e0_key, e1_key,
+            "temporary check for degenerate edges {e0:?} {e1:?}"
+        );
+
+        // Non manifold case may just be ok to ignore (for now), not sure what to do there exactly.
 
         let ordering = |vi: &usize| {
-            let [(t0, ei0_key), (t1, ei1_key)] = labels[&vi];
+            let [(t0, ei0_key), (t1, ei1_key)] = labels[vi];
             let t = if ei0_key == e0_key {
-                assert_eq!(ei1_key, e1_key);
+                debug_assert_eq!(ei1_key, e1_key);
                 t0
             } else {
-                assert_eq!(ei0_key, e1_key);
-                assert_eq!(ei1_key, e0_key);
+                debug_assert_eq!(ei0_key, e1_key);
+                debug_assert_eq!(ei1_key, e0_key);
                 t1
             };
             (*vi, t as F)
@@ -297,7 +330,7 @@ pub fn texture_to_vert_colors(
 
         let v0_max = v0s.iter().map(|v0| v0.1).max_by(F::total_cmp).unwrap_or(1.);
         for (_, v0t) in v0s.iter_mut() {
-            *v0t = *v0t / (v0_max + 1.);
+            *v0t /= v0_max + 1.;
         }
 
         let v00 = add_key!(v0s, &e0_key, f0, 0.);
@@ -310,7 +343,7 @@ pub fn texture_to_vert_colors(
         let mut v1s = verts1.iter().map(ordering).collect::<Vec<_>>();
         let v1_max = v1s.iter().map(|v1| v1.1).max_by(F::total_cmp).unwrap_or(1.);
         for (_, v1t) in v1s.iter_mut() {
-            *v1t = *v1t / (v1_max + 1.);
+            *v1t /= v1_max + 1.;
         }
 
         let v10 = add_key!(v1s, &e0_key, f1, 0.);
@@ -384,16 +417,19 @@ pub fn texture_to_vert_colors(
 
     // Zip corner faces together
     for (_, fvs) in corner_map.iter() {
+        assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
+
         if fvs.iter().any(|fv| !edge_adj.contains_key(&fv.1)) {
-            // TODO hacky
+            out.f.push(FaceKind::from_iter(fvs.iter().map(|fv| fv.1)));
             continue;
-        }
+        };
         let first = fvs
             .iter()
             .find(|fv| edge_adj[&fv.1].iter().any(|&v| v == usize::MAX))
             .copied()
             .unwrap_or_else(|| fvs[0])
             .1;
+        assert_ne!(first, usize::MAX);
 
         let face = match fvs.len() {
             0..3 => continue,
@@ -402,24 +438,35 @@ pub fn texture_to_vert_colors(
 
             4 => {
                 let mut quad = [first, 0, 0, 0];
-                quad[1] = *edge_adj[&first].iter().find(|&&v| v != usize::MAX).unwrap();
+                let Some(&next) = edge_adj[&first].iter().find(|&&v| v != usize::MAX) else {
+                    out.f
+                        .push(FaceKind::Quad(std::array::from_fn(|i| fvs[i].1)));
+                    continue;
+                };
+                quad[1] = next;
                 assert_ne!(quad[0], usize::MAX);
                 for i in 2..4 {
-                    assert!(
-                        edge_adj.contains_key(&quad[i - 1]),
-                        "{} {:?}",
-                        quad[i - 1],
-                        quad
-                    );
-                    let n = edge_adj[&quad[i - 1]];
-                    quad[i] = *n.iter().find(|&&v| v != quad[i - 2]).unwrap();
+                    let Some(n) = edge_adj.get(&quad[i - 1]) else {
+                        quad = std::array::from_fn(|i| fvs[i].1);
+                        break;
+                    };
+                    let Some(&next) = n.iter().find(|&&v| v != quad[i - 2] && v != usize::MAX)
+                    else {
+                        quad = std::array::from_fn(|i| fvs[i].1);
+                        break;
+                    };
+                    quad[i] = next;
                 }
                 FaceKind::Quad(quad)
             }
             n => {
                 let mut poly = vec![first];
                 poly.reserve(n);
-                let next = *edge_adj[&first].iter().find(|&&v| v != usize::MAX).unwrap();
+                let Some(&next) = edge_adj[&first].iter().find(|&&v| v != usize::MAX) else {
+                    out.f
+                        .push(FaceKind::Poly(fvs.iter().map(|fv| fv.1).collect()));
+                    continue;
+                };
                 poly.push(next);
                 for i in 2..n {
                     let Some(n) = edge_adj.get(&poly[i - 1]) else {
@@ -427,7 +474,12 @@ pub fn texture_to_vert_colors(
                         break;
                         // not sure why this happens, but ok to ignore for now?
                     };
-                    poly.push(*n.iter().find(|&&v| v != poly[i - 2]).unwrap());
+                    let Some(&next) = n.iter().find(|&&v| v != poly[i - 2] && v != usize::MAX)
+                    else {
+                        poly = fvs.iter().map(|fv| fv.1).collect();
+                        break;
+                    };
+                    poly.push(next);
                 }
                 FaceKind::Poly(poly)
             }
@@ -512,26 +564,46 @@ pub fn sample_exact(
             [u + (1. - delta), v + delta],
         ];
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
+
+        /*
         let pix = AABB::from([cfs[0], cfs[1]]);
         if !pix.intersects_tri(uv_f.tri().unwrap()) {
             continue;
         }
+        */
+
         let barys = cfs.map(|cf| uv_f.barycentric(cf));
+
+        // TODO this needs to correspond to the distance of the pixel on the triangle
+        let check = (0..3).any(|i| barys.iter().all(|bary| bary[i] < -0.3));
+        if check {
+            continue;
+        }
 
         let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         let rgb = get_rgb(tex_u, tex_v);
 
-        let new_verts = barys.map(|bary| {
+        let raw_pos = barys.map(|bary| v_f.from_barycentric(bary));
+
+        let new_verts = std::array::from_fn(|i| {
+            let bary = barys[i];
+            let pos = raw_pos[i];
             let normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
-            let pos = v_f.from_barycentric(bary);
             if !bary.iter().any(|&b| b < 0.) {
                 return (pos, normal);
             };
-            let new_pos = nearest_point_on_tri(v_f.tri().unwrap(), pos);
+
+            let tri = v_f.tri().unwrap();
+            let new_pos = nearest_point_on_tri(tri, pos);
             let new_normal = n_f
                 .as_ref()
                 .map(|n_f| n_f.from_barycentric(v_f.barycentric(new_pos)));
+            assert!(
+                v_f.barycentric(new_pos)
+                    .iter()
+                    .all(|v| (0.0..=1.0).contains(v))
+            );
             (new_pos, new_normal)
         });
 
@@ -690,14 +762,15 @@ pub fn sample_exact(
         .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
     debug_assert!(check);
 
+    if args.no_corners {
+        return true;
+    }
+
     // --- Compute correspondence between original vertices and a single pixel vertex, which
     // must be a boundary.
     // This is only a vector since there are at most 3 vertices.
-    let mut corner_verts: Vec<(usize, usize)> = vec![/* (og, new) */];
-    for &og_vi in f_slice {
-        if args.no_corners {
-            break;
-        }
+    let mut corner_verts: [(usize, usize); 3] = [(usize::MAX, usize::MAX /* og, new) */); 3];
+    for (ci, &og_vi) in f_slice.iter().enumerate() {
         let vert_pos = mesh.v[og_vi];
         let [u, v] = mesh.uv[CHAN][og_vi];
 
@@ -766,7 +839,7 @@ pub fn sample_exact(
         assert!(!check);
 
         fv.push((fi, nearest));
-        corner_verts.push((og_vi, nearest));
+        corner_verts[ci] = (og_vi, nearest);
 
         // Pull to a corner to make it tight (larger T is tighter)
         let t = args.vertex_pull;
@@ -776,12 +849,10 @@ pub fn sample_exact(
             out_colors[nearest] = [1.; 3];
         }
     }
-    if !args.no_corners {
-        assert_eq!(corner_verts.len(), 3);
-    }
 
     const INVALID_POS: [U; 3] = [U::MAX; 3];
     for &(og_vi, new_vi) in &corner_verts {
+        assert!(vert_adj.contains_key(&new_vi), "{new_vi} {corner_verts:?}");
         let [l, r] = vert_adj[&new_vi];
         let mut iter = |mut curr: usize, mut prev: usize| {
             let mut c = 1;
@@ -964,6 +1035,47 @@ pub fn nearest_point_on_tri([v0, v1, v2]: [[F; 3]; 3], p: [F; 3]) -> [F; 3] {
     }
 }
 
+/// Returns the nearest point to p on tri, assuming the tri, point and direction all lie in the
+/// same plane
+pub fn nearest_point_on_tri_in_dir(
+    vs: [[F; 3]; 3],
+    p: [F; 3],
+    n: [F; 3],
+    dir: [F; 3],
+) -> Option<[F; 3]> {
+    // the plane is centered at p, with normal `n`, and x-axis defined by dir
+    assert!(dot(n, dir).abs() < 1e-6);
+    let dir = normalize(dir);
+    let tan = cross(dir, n);
+
+    let vs = vs.map(|v| {
+        let local = sub(v, p);
+        [dir, tan].map(|d| dot(d, local))
+    });
+
+    (0..3)
+        // compute length along line of intersection
+        .map(|i| {
+            let t = cross_2d(vs[i], [1., 0.]) / cross_2d(vs[(i + 1) % 3], vs[i]);
+            (i, t)
+        })
+        // check if between endpoints
+        .filter(|(_, t)| (0.0..=1.0).contains(t))
+        // ensure that the ray is only in the positive direction
+        .filter_map(|(i, t)| {
+            let pos = add(vs[i], kmul(t, sub(vs[(i + 1) % 3], vs[i])));
+            let ray_extent = dot(pos, [1., 0.]);
+            if ray_extent < 0. {
+                return None;
+            }
+            Some((ray_extent, pos))
+        })
+        // take nearest point
+        .min_by(|(a, _), (b, _)| a.partial_cmp(&b).unwrap())
+        // remap back to 3d.
+        .map(|(_, pos)| add(kmul(pos[0], dir), kmul(pos[1], tan)))
+}
+
 macro_rules! impl_display {
   ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {
     impl std::fmt::Display for $name {
@@ -986,6 +1098,7 @@ pub enum SampleKind {
 
 impl_display!(SampleKind, Approx => "approx", Exact => "exact");
 
+/*
 pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     let start_time = std::time::Instant::now();
 
@@ -1066,10 +1179,10 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
                 }};
             }
 
-            let e_w = match &edge_face_adj[&e] {
-                &EdgeKind::Boundary(_) => 2.,
-                &EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) / PI,
-                &EdgeKind::NonManifold(_) => todo!(),
+            let e_w = match edge_face_adj[&e] {
+                EdgeKind::Boundary(_) => 2.,
+                EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) / PI,
+                EdgeKind::NonManifold(_) => todo!(),
             };
             let e_w = e_w.max(args.min_edge_weight);
 
@@ -1094,6 +1207,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             m.data[ni].0 += edge_quadric;
         }
 
+        /*
         macro_rules! q_n_attribs(
           ($vis: expr) => {{
             Quadric::n_attribs(
@@ -1121,6 +1235,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         for &vi in f.as_slice() {
             m.data[vi].0 += q_attr * area;
         }
+        */
     }
 
     let mut curr_costs = vec![0.; m.num_vertices()];
@@ -1321,4 +1436,66 @@ pub fn consistent_face_ordering(f: &mut [usize]) {
     }
     let min_idx = f.iter().enumerate().min_by_key(|(_, idx)| **idx).unwrap().0;
     f.rotate_left(min_idx);
+}
+*/
+
+pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
+    let mut deleted = 0;
+    let mut remap = HashMap::new();
+
+    let mut deletable = vec![true; mesh.v.len()];
+    for f in &mesh.f {
+        for [e0, e1] in f.edges() {
+            let [vc0, vc1] = [e0, e1].map(|vi| mesh.vert_colors[vi]);
+            if length(sub(vc0, vc1)) > args.color_diff_threshold {
+                deletable[e0] = false;
+                deletable[e1] = false;
+            }
+        }
+    }
+
+    // for each vertex need to compute whether it can be deleted,
+    // based on whether the 1 ring of the vertex all have similar values.
+    mesh.f.retain(|f| {
+        let f_s = f.as_slice();
+        if f_s.iter().any(|vi| remap.contains_key(vi)) {
+            return true;
+        }
+        let area = f.area(&mesh.v).abs();
+        if area > args.area_threshold {
+            return true;
+        }
+        let n = f_s.len().max(1) as F;
+        let avg_color = f_s
+            .iter()
+            .map(|&vi| mesh.vert_colors[vi])
+            .fold([0.; 3], add)
+            .map(|v| v / n);
+        if !f_s.iter().all(|&vi| deletable[vi]) {
+            return true;
+        }
+
+        let new_vert = f_s
+            .iter()
+            .map(|&vi| mesh.v[vi])
+            .fold([0.; 3], add)
+            .map(|v| v / n);
+        let new_vi = mesh.v.len();
+        mesh.v.push(new_vert);
+        mesh.vert_colors.push(avg_color);
+
+        for &vi in f_s {
+            assert_eq!(remap.insert(vi, new_vi), None);
+        }
+
+        deleted += 1;
+        false
+    });
+
+    mesh.f.retain_mut(|f| {
+        f.remap(|vi| remap.get(&vi).copied().unwrap_or(vi));
+        !f.canonicalize()
+    });
+
+    deleted
 }

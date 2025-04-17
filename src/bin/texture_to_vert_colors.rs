@@ -7,18 +7,19 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
 use clap::Parser;
-use ordered_float::NotNan;
 use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, edge::EdgeKind};
+/*
+use ordered_float::NotNan;
 use priority_queue::PriorityQueue;
+*/
 
 use texture_to_vert_colors::{
     F, U, add, cross, cross_2d, dot, kmul, len_sq, length, normalize, sub,
 };
 use texture_to_vert_colors::{
     aabb::AABB,
-    manifold::CollapsibleManifold,
-    quadric::{AttrWeights, Quadric, QuadricAccumulator},
+    // manifold::CollapsibleManifold, quadric::{AttrWeights, Quadric, QuadricAccumulator},
 };
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
@@ -122,10 +123,12 @@ pub fn main() {
         };
         assert!(!mesh.uv[0].is_empty());
         let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
-        let deleted = delete_degenerate_faces(&mut new_mesh, &args);
-        println!("[INFO]: Deleted {deleted} degenerate faces");
-        let del_vert = new_mesh.delete_unused_vertices();
-        println!("[INFO]: Deleted {del_vert} unused vertices");
+        for _ in 0..2 {
+            let del_f = delete_degenerate_faces(&mut new_mesh, &args);
+            let del_v = new_mesh.delete_unused_vertices();
+            println!("[INFO]: Deleted {del_f} degenerate faces");
+            println!("[INFO]: Deleted {del_v} unused vertices");
+        }
 
         /*
         let mut new_mesh = if !args.simplify {
@@ -594,8 +597,21 @@ pub fn sample_exact(
                 return (pos, normal);
             };
 
+            let next = raw_pos[(i + 1) % 4];
+            let prev = raw_pos[(i + 3) % 4];
             let tri = v_f.tri().unwrap();
-            let new_pos = nearest_point_on_tri(tri, pos);
+
+            let mut new_pos = nearest_point_on_tri(tri, pos);
+            for _ in 0..10 {
+                let a = nearest_pt_on_line(new_pos, [next, pos]);
+                let b = nearest_pt_on_line(new_pos, [prev, pos]);
+                new_pos = if length(sub(a, new_pos)) < length(sub(b, new_pos)) {
+                    a
+                } else {
+                    b
+                };
+                new_pos = nearest_point_on_tri(tri, new_pos);
+            }
             let new_normal = n_f
                 .as_ref()
                 .map(|n_f| n_f.from_barycentric(v_f.barycentric(new_pos)));
@@ -1000,6 +1016,12 @@ pub fn sample(
 pub fn nearest_on_line(p: [F; 3], [s, e]: [[F; 3]; 2]) -> F {
     let dir = sub(e, s);
     dot(dir, sub(p, s)) / dot(dir, dir)
+}
+
+/// Computes the nearest point on the line
+pub fn nearest_pt_on_line(p: [F; 3], [s, e]: [[F; 3]; 2]) -> [F; 3] {
+    let t = nearest_on_line(p, [s, e]);
+    add(s, kmul(t, sub(e, s)))
 }
 
 /// Returns the nearest point to p on tri.
@@ -1485,7 +1507,7 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
         mesh.vert_colors.push(avg_color);
 
         for &vi in f_s {
-            assert_eq!(remap.insert(vi, new_vi), None);
+            remap.insert(vi, new_vi);
         }
 
         deleted += 1;

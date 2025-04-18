@@ -65,7 +65,7 @@ pub struct Args {
     vertex_pull: F,
 
     /// Area below which faces can be deleted
-    #[arg(long, default_value_t = 1e-15)]
+    #[arg(long, default_value_t = 1e-14)]
     area_threshold: F,
 
     /// Distance below which colors are considered similar
@@ -90,7 +90,7 @@ pub fn main() {
         let mut total_del_v = 0;
         println!("[INFO]: Starting degenerate face deletion");
         while let del_f = delete_degenerate_faces(&mut new_mesh, &args)
-            && del_f > 2000
+            && del_f > 0
         {
             total_del_f += del_f;
         }
@@ -202,6 +202,8 @@ pub fn texture_to_vert_colors(
                 args,
             ),
         };
+        // For now, do not store normals since they are not well supported
+        out.n.clear();
         // Add a simplification step here, as some faces are relatively similar, and we want to
         // delete degenerate faces.
         if !ok {

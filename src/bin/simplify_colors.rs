@@ -372,7 +372,6 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     let mut new_positions = vec![];
     let mut new_colors = vec![];
 
-    println!("{:?}", m.num_vertices());
     for (curr_vi, (vi, &(q, p))) in m.vertices().enumerate() {
         let prev = remap.insert(vi, curr_vi);
         assert_eq!(prev, None);

@@ -1,10 +1,9 @@
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
 #![feature(let_chains)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
+use ordered_float::NotNan;
 
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
@@ -96,13 +95,6 @@ pub fn main() {
         println!("[INFO]: Deleted {total_del_f} degenerate faces");
         println!("[INFO]: Deleted {total_del_v} unused vertices");
 
-        /*
-        let mut new_mesh = if !args.simplify {
-            new_mesh
-        } else {
-            simplify_colored(new_mesh, &args)
-        };
-        */
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
     }
@@ -1097,6 +1089,7 @@ pub enum SampleKind {
 
 impl_display!(SampleKind, Approx => "approx", Exact => "exact");
 
+/// Deletes degenerate faces by merging all vertices of the face together
 pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
     let mut deleted = 0;
     let mut remap = HashMap::new();
@@ -1109,12 +1102,20 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
                 fixed.insert(e0);
                 fixed.insert(e1);
             }
+
+            // TODO here also check planarity
         }
     }
 
+    mesh.f.sort_by_key(|f| NotNan::new(f.area(&mesh.v)).unwrap());
+
     // for each vertex need to compute whether it can be deleted,
     // based on whether the 1 ring of the vertex all have similar values.
+    let mut done = false;
     mesh.f.retain(|f| {
+        if done {
+          return true;
+        }
         let f_s = f.as_slice();
         if f_s.iter().any(|vi| remap.contains_key(vi)) {
             return true;
@@ -1124,6 +1125,7 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
         }
         let area = f.area(&mesh.v).abs();
         if area > args.area_threshold {
+            done = true;
             return true;
         }
         let n = f_s.len().max(1) as F;

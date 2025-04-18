@@ -7,9 +7,18 @@ default-run = "texture_to_vert_colors"
 [dependencies]
 clap = { version = "4.5.34", features = ["derive"] }
 #pars3d = { git = "https://github.com/JulianKnodt/pars3d", version = "0.1.0", features = ["f64"] }
-pars3d = { path = "../pars3d", features = ["f64"] }
-least_sq = { git="https://github.com/JulianKnodt/qr_lst_sq.git", features = ["f64"] }
 smallvec = "1.15.0"
 priority-queue = "2.3.1"
 ordered-float = "5.0.0"
 indicatif = "0.17.11"
+
+[target.'cfg(feature = "f64")'.dependencies]
+pars3d = { path = "../pars3d", features = ["f64"] }
+least_sq = { git="https://github.com/JulianKnodt/qr_lst_sq.git", features = ["f64"] }
+
+[target.'cfg(not(feature = "f64"))'.dependencies]
+pars3d = { path = "../pars3d", features = [] }
+least_sq = { git="https://github.com/JulianKnodt/qr_lst_sq.git", features = [] }
+
+[features]
+f64 = ["pars3d/f64", "least_sq/f64"]

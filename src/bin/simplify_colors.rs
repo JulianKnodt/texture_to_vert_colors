@@ -1,3 +1,5 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
 #![feature(let_chains)]
 
@@ -62,6 +64,10 @@ pub struct Args {
     /// Threshold to stop quadric decimation at
     #[arg(long, default_value_t = 1e-4)]
     quadric_threshold: F,
+
+    /// The weight to use for degenerate quadrics
+    #[arg(long, default_value_t = 1e-6)]
+    degen_quadric_weight: F,
 }
 
 pub fn main() {
@@ -81,12 +87,20 @@ pub fn main() {
 pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     let start_time = std::time::Instant::now();
 
-    let mut m =
-        CollapsibleManifold::new_with(mesh.v.len(), |vi| (Quadric::<3>::zero(), mesh.v[vi]));
+    let mut m = CollapsibleManifold::new_with(mesh.v.len(), |vi| {
+        let pos = mesh.v[vi];
+        let mut q = Quadric::new_plane(pos, [1., 0., 0.], 1e-8)
+            + Quadric::new_plane(pos, [0., 1., 0.], 1e-8)
+            + Quadric::new_plane(pos, [0., 0., 1.], 1e-8);
+        q.area = 1e-8;
+        q *= args.degen_quadric_weight;
+        (q, pos)
+    });
 
     let cw = if mesh.vert_colors.is_empty() {
         0.
     } else {
+        println!("[INFO]: Also decimating vertex colors");
         args.color_weight
     };
     let attr_ws = AttrWeights { ws: [cw; 3] };
@@ -192,7 +206,6 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             m.data[ni].0 += edge_quadric;
         }
 
-        /*
         macro_rules! q_n_attribs(
           ($vis: expr) => {{
             Quadric::n_attribs(
@@ -220,7 +233,6 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         for &vi in f.as_slice() {
             m.data[vi].0 += q_attr * area;
         }
-        */
     }
 
     let mut curr_costs = vec![0.; m.num_vertices()];
@@ -270,7 +282,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             let mut q_acc = QuadricAccumulator::default();
             q_acc += m.get(e0).0;
             q_acc += m.get(e1).0;
-            let pos = q_acc.point_with_volume();
+            let pos = q_acc.point();
 
             if let Some(adj_faces) = edge_face_adj.get(&[e0, e1]) {
                 for &af in adj_faces.as_slice() {

@@ -3,8 +3,15 @@
 #![feature(generic_arg_infer)]
 #![feature(cmp_minmax)]
 
+#[cfg(feature = "f64")]
 pub type F = f64;
+#[cfg(feature = "f64")]
 pub type U = u64;
+
+#[cfg(not(feature = "f64"))]
+pub type F = f32;
+#[cfg(not(feature = "f64"))]
+pub type U = u32;
 
 mod vec;
 pub use vec::*;

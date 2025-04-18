@@ -21,6 +21,11 @@ use texture_to_vert_colors::{
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
 /// drop in visual quality.
 #[derive(Debug, Clone, PartialEq, Parser)]
+#[clap(group(
+  clap::ArgGroup::new("target")
+    .required(true)
+    .args(&["quadric_threshold", "target_vert_ratio", "target_num_verts"])
+))]
 pub struct Args {
     /// Input mesh path.
     #[arg(long, short)]
@@ -42,11 +47,19 @@ pub struct Args {
     simplify: bool,
 
     /// During decimation, how heavily should colors be preserved?
-    #[arg(long, default_value_t = 1e-4)]
+    #[arg(long, default_value_t = 0.5)]
     color_weight: F,
 
+    /// Target number of vertices after reduction
+    #[arg(long, short = 'v', default_value_t = 0.)]
+    target_vert_ratio: F,
+
+    /// Target number of vertices after reduction
+    #[arg(long, short = 'V', default_value_t = 0)]
+    target_num_verts: usize,
+
     /// Extra weight to add on each edge based on color differences
-    #[arg(long, default_value_t = 0.1)]
+    #[arg(long, default_value_t = 10.)]
     color_preservation_weight: F,
 
     /// Minimum face area during decimation.
@@ -58,11 +71,11 @@ pub struct Args {
     min_edge_weight: F,
 
     /// Epsilon value to use when comparing quadric errors.
-    #[arg(long, default_value_t = 1e-5)]
+    #[arg(long, default_value_t = 1e-4)]
     abs_eps: F,
 
     /// Threshold to stop quadric decimation at
-    #[arg(long, default_value_t = 1e-4)]
+    #[arg(long, default_value_t = 1.)]
     quadric_threshold: F,
 
     /// The weight to use for degenerate quadrics
@@ -87,16 +100,6 @@ pub fn main() {
 pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     let start_time = std::time::Instant::now();
 
-    let mut m = CollapsibleManifold::new_with(mesh.v.len(), |vi| {
-        let pos = mesh.v[vi];
-        let mut q = Quadric::new_plane(pos, [1., 0., 0.], 1e-8)
-            + Quadric::new_plane(pos, [0., 1., 0.], 1e-8)
-            + Quadric::new_plane(pos, [0., 0., 1.], 1e-8);
-        q.area = 1e-8;
-        q *= args.degen_quadric_weight;
-        (q, pos)
-    });
-
     let cw = if mesh.vert_colors.is_empty() {
         0.
     } else {
@@ -104,6 +107,24 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         args.color_weight
     };
     let attr_ws = AttrWeights { ws: [cw; 3] };
+
+    let mut m = CollapsibleManifold::new_with(mesh.v.len(), |vi| {
+        let pos = mesh.v[vi];
+        let area = 1e-6;
+        let mut q = Quadric::<3>::zero();
+        for d in [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]] {
+            q += Quadric::new_plane(pos, d, area);
+            q.area += area;
+        }
+        q += Quadric::degen_attr(mesh.vert_colors[vi], attr_ws) * area;
+        q *= args.degen_quadric_weight;
+
+        (q, pos)
+    });
+
+    let target_verts = args
+        .target_num_verts
+        .max((args.target_vert_ratio.clamp(0., 1.) * (mesh.v.len() as F)) as usize);
 
     let mut edge_face_adj: HashMap<[usize; 2], EdgeKind> = HashMap::new();
     let mut f_n = vec![[0.; 3]; mesh.f.len()];
@@ -179,9 +200,9 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             }
 
             let e_w = match edge_face_adj[&e] {
-                EdgeKind::Boundary(_) => 2.,
+                EdgeKind::Boundary(_) => 4.,
                 EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) / PI,
-                EdgeKind::NonManifold(_) => todo!(),
+                EdgeKind::NonManifold(_) => 4.,
             };
             let e_w = e_w.max(args.min_edge_weight);
 
@@ -275,7 +296,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
-            if -*q_err >= args.quadric_threshold {
+            if -*q_err >= args.quadric_threshold || m.num_vertices() < target_verts {
                 break 'outer;
             }
 

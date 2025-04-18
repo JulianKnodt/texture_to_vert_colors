@@ -249,6 +249,21 @@ impl<const N: usize> Quadric<N> {
         Self::new_plane([b0, b1, b2], [0., 0., 1.], area)
     }
 
+    /// For a single vertex, add a constant `d` value so that the attributes default to that
+    /// value.
+    pub fn degen_attr(attrib: [F; N], weights: AttrWeights<N>) -> Self {
+        let d = from_fn(|i| attrib[i] * weights.ws[i].max(0.));
+        Self {
+            a: SymMatrix3::zero(),
+            b: [0.; 3],
+            c: d.into_iter().map(|d| d * d).sum::<F>(),
+            g: [[0.; 3]; N],
+            d,
+            area: 0.,
+            nv: [0.; 3],
+            dv: 0.,
+        }
+    }
     pub fn n_attribs<const V: usize>(
         [nx, ny, nz]: [F; 3],
         points: [[F; 3]; V],
@@ -268,8 +283,8 @@ impl<const N: usize> Quadric<N> {
             [x, y, z, 1.]
         });
         let (q, r) = least_sq::mgs_qr(pn);
-        assert!(q.iter().all(|col| col.iter().all(|v| v.is_finite())));
-        assert!(r.iter().all(|col| col.iter().all(|v| v.is_finite())));
+        debug_assert!(q.iter().all(|col| col.iter().all(|v| v.is_finite())));
+        debug_assert!(r.iter().all(|col| col.iter().all(|v| v.is_finite())));
         //assert!(q.iter().any(|col| col.iter().any(|&v| v > 0.)));
         //assert!(r.iter().any(|col| col.iter().any(|&v| v > 0.)));
 
@@ -284,7 +299,7 @@ impl<const N: usize> Quadric<N> {
                 }
                 w * attribs[pi][i]
             });
-            assert!(a_s.iter().copied().all(F::is_finite));
+            debug_assert!(a_s.iter().copied().all(F::is_finite));
             least_sq::qr_solve(q, r, a_s)
         });
         let g = gd.map(|[g0, g1, g2, _]| [g0, g1, g2]);
@@ -440,12 +455,16 @@ impl<const N: usize> Quadric<N> {
                 return 0.;
             }
             let s = dot(self.g[i], p) + self.d[i];
-            assert!(s.is_finite(), "{p:?} {:?} {:?}", self.g[i], self.d[i]);
+            debug_assert!(s.is_finite(), "{p:?} {:?} {:?}", self.g[i], self.d[i]);
             let denom = w * self.area;
             if denom == 0. {
                 return 0.;
             }
-            assert!(denom > 1e-14, "{denom} {w} {}", self.area);
+            assert!(
+                denom > 1e-14,
+                "Expected non-degenerate denom, denom = {denom} w = {w} area = {}",
+                self.area
+            );
             let out = s / denom;
             assert!(out.is_finite(), "{s}/{denom}");
             out

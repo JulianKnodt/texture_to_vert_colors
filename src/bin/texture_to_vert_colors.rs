@@ -1,9 +1,9 @@
 #![feature(cmp_minmax)]
 #![feature(let_chains)]
 
+use ordered_float::NotNan;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
-use ordered_float::NotNan;
 
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
@@ -65,7 +65,7 @@ pub struct Args {
     vertex_pull: F,
 
     /// Area below which faces can be deleted
-    #[arg(long, default_value_t = 1e-12)]
+    #[arg(long, default_value_t = 1e-15)]
     area_threshold: F,
 
     /// Distance below which colors are considered similar
@@ -88,10 +88,13 @@ pub fn main() {
         let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
         let mut total_del_f = 0;
         let mut total_del_v = 0;
-        for _ in 0..2 {
-            total_del_f += delete_degenerate_faces(&mut new_mesh, &args);
-            total_del_v += new_mesh.delete_unused_vertices();
+        println!("[INFO]: Starting degenerate face deletion");
+        while let del_f = delete_degenerate_faces(&mut new_mesh, &args)
+            && del_f > 2000
+        {
+            total_del_f += del_f;
         }
+        total_del_v += new_mesh.delete_unused_vertices();
         println!("[INFO]: Deleted {total_del_f} degenerate faces");
         println!("[INFO]: Deleted {total_del_v} unused vertices");
 
@@ -175,23 +178,6 @@ pub fn texture_to_vert_colors(
 
     use indicatif::ProgressIterator;
     for (fi, f) in mesh.f.iter().enumerate().progress() {
-        /*
-        let Some(mati) = mesh.mat_for_face(fi) else {
-            continue;
-        };
-        let mat = &scene.materials[mati];
-        let Some(diff_tex) = mat
-            .textures_by_kind(pars3d::mesh::TextureKind::Diffuse)
-            .next()
-        else {
-            // TODO handle other kinds of textures as well.
-            continue;
-        };
-        let Some(ref diff_img) = diff_tex.image else {
-            continue;
-        };
-        */
-
         let ok = match args.sample_kind {
             SampleKind::Approx => sample(
                 mesh,
@@ -439,13 +425,15 @@ pub fn texture_to_vert_colors(
                 poly.push(next);
                 for i in 2..n {
                     let Some(n) = edge_adj.get(&poly[i - 1]) else {
-                        poly = fvs.iter().map(|fv| fv.1).collect();
+                        poly.clear();
+                        poly.extend(fvs.iter().map(|fv| fv.1));
                         break;
                         // not sure why this happens, but ok to ignore for now?
                     };
                     let Some(&next) = n.iter().find(|&&v| v != poly[i - 2] && v != usize::MAX)
                     else {
-                        poly = fvs.iter().map(|fv| fv.1).collect();
+                        poly.clear();
+                        poly.extend(fvs.iter().map(|fv| fv.1));
                         break;
                     };
                     poly.push(next);
@@ -584,7 +572,7 @@ pub fn sample_exact(
             let new_normal = n_f
                 .as_ref()
                 .map(|n_f| n_f.from_barycentric(v_f.barycentric(new_pos)));
-            assert!(
+            debug_assert!(
                 v_f.barycentric(new_pos)
                     .iter()
                     .all(|v| (0.0..=1.0).contains(v))
@@ -604,7 +592,8 @@ pub fn sample_exact(
             vi
         });
 
-        assert_eq!(pixel_map.insert(c, new_verts), None);
+        let prev = pixel_map.insert(c, new_verts);
+        assert_eq!(prev, None);
         out_faces.push(FaceKind::Quad(new_verts));
     }
 
@@ -714,10 +703,13 @@ pub fn sample_exact(
     // compute adjacent boundary edges and trace from the corners
     for (fi, f) in out_faces.iter().enumerate().skip(start_f) {
         for [e0, e1] in f.edges() {
-            assert_ne!(e0, e1);
+            debug_assert_ne!(e0, e1);
             edge_face_adj
                 .entry(std::cmp::minmax(e0, e1))
-                .and_modify(|v| assert!(v.insert(fi)))
+                .and_modify(|v| {
+                    let did_ins = v.insert(fi);
+                    debug_assert!(did_ins);
+                })
                 .or_insert(EdgeKind::Boundary(fi));
         }
     }
@@ -725,7 +717,7 @@ pub fn sample_exact(
     // Compute adjacent vertices to each boundary vertex
     let mut vert_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
     for (&[ef0, ef1], ek) in edge_face_adj.iter() {
-        assert_ne!(ef0, ef1);
+        debug_assert_ne!(ef0, ef1);
         assert!(!ek.is_nonmanifold());
         if !ek.is_boundary() {
             continue;
@@ -753,7 +745,8 @@ pub fn sample_exact(
 
     // --- Compute correspondence between original vertices and a single pixel vertex, which
     // must be a boundary.
-    // This is only a vector since there are at most 3 vertices.
+
+    // This is only an array since there are exactly 3 vertices.
     let mut corner_verts: [(usize, usize); 3] = [(usize::MAX, usize::MAX /* og, new) */); 3];
     for (ci, &og_vi) in f_slice.iter().enumerate() {
         let vert_pos = mesh.v[og_vi];
@@ -809,19 +802,18 @@ pub fn sample_exact(
             }
         }
         if !best_dist.is_finite() {
-            println!("{:?}", labels.range(start..).count());
             save_bad_mesh!("No nearby points");
         }
-        assert_ne!(best_dist, F::INFINITY);
+        debug_assert_ne!(best_dist, F::INFINITY);
 
         let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
-        assert!(!fv.iter().any(|fv| fv.0 == fi));
+        debug_assert!(!fv.iter().any(|fv| fv.0 == fi));
         // check that each corner vert corresponds to a single original vertex
         let check = corner_verts.iter().any(|&(_, new_vi)| new_vi == nearest);
         if check {
             save_bad_mesh!("One vertex maps to multiple original corners");
         }
-        assert!(!check);
+        debug_assert!(!check);
 
         fv.push((fi, nearest));
         corner_verts[ci] = (og_vi, nearest);
@@ -843,23 +835,8 @@ pub fn sample_exact(
             let mut c = 1;
             while !corner_verts.iter().any(|v| v.1 == curr) {
                 let label = labels.entry(curr).or_insert([(0, INVALID_POS); 2]);
-                /*
-                assert!(
-                    label.iter().any(|&v| v.1 == usize::MAX),
-                    r#"label = {label:?} og_vi = {og_vi} new_vi = {new_vi} corner_verts = {corner_verts:?}
-                    #verts = {:?} vert_adj = {:?} curr = {curr} c = {c:?} vert_adj[new_vi] = {:?}"#,
-                    out_verts[start..].len(), vert_adj[&curr], vert_adj[&new_vi]
-                );
-                */
-                /*
-                if let Some(p) = label.iter_mut().find(|v| v.1 == og_vi.map(F::to_bits)) {
-                    assert!(false);
-                    p.0 = p.0.min(c);
-                } else {
-                */
                 *label.iter_mut().find(|v| v.1 == INVALID_POS).unwrap() =
                     (c, mesh.v[og_vi].map(F::to_bits));
-                //}
                 assert!(vert_adj[&curr].iter().any(|&v| v == prev));
                 let next = *vert_adj[&curr].iter().find(|v| **v != prev).unwrap();
                 prev = curr;
@@ -1098,7 +1075,9 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
     for f in &mesh.f {
         for [e0, e1] in f.edges() {
             let [vc0, vc1] = [e0, e1].map(|vi| mesh.vert_colors[vi]);
-            if length(sub(vc0, vc1)) > args.color_diff_threshold {
+            let lock =
+                length(sub(vc0, vc1)) > args.color_diff_threshold || length(sub(vc0, vc1)) > 1e-3;
+            if lock {
                 fixed.insert(e0);
                 fixed.insert(e1);
             }
@@ -1107,14 +1086,15 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
         }
     }
 
-    mesh.f.sort_by_key(|f| NotNan::new(f.area(&mesh.v)).unwrap());
+    mesh.f
+        .sort_unstable_by_key(|f| NotNan::new(f.area(&mesh.v)).unwrap());
 
     // for each vertex need to compute whether it can be deleted,
     // based on whether the 1 ring of the vertex all have similar values.
     let mut done = false;
     mesh.f.retain(|f| {
         if done {
-          return true;
+            return true;
         }
         let f_s = f.as_slice();
         if f_s.iter().any(|vi| remap.contains_key(vi)) {

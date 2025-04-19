@@ -1,5 +1,6 @@
 use super::F;
 use super::{normalize, sub};
+use core::ops::Range;
 
 pub(crate) fn cross_2d([x, y]: [F; 2], [a, b]: [F; 2]) -> F {
     x * b - y * a
@@ -146,8 +147,14 @@ impl AABB<i32, 2> {
     pub fn width(&self) -> usize {
         (self.max[0] - self.min[0]).max(0) as usize
     }
+    pub fn width_range(&self) -> Range<i32> {
+        self.min[0]..self.max[0]
+    }
     pub fn height(&self) -> usize {
         (self.max[1] - self.min[1]).max(0) as usize
+    }
+    pub fn height_range(&self) -> Range<i32> {
+        self.min[1]..self.max[1]
     }
     pub fn area(&self) -> usize {
         self.width() * self.height()

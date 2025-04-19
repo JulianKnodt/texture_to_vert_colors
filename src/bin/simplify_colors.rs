@@ -79,7 +79,7 @@ pub struct Args {
     quadric_threshold: F,
 
     /// The weight to use for degenerate quadrics
-    #[arg(long, default_value_t = 1e-6)]
+    #[arg(long, default_value_t = 1e-4)]
     degen_quadric_weight: F,
 }
 

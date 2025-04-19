@@ -91,6 +91,7 @@ pub fn main() {
             new_mesh.v.len(),
             new_mesh.f.len()
         );
+        /*
         println!("[INFO]: Starting degenerate face deletion");
         while let del_f = delete_degenerate_faces(&mut new_mesh, &args)
             && del_f > 0
@@ -101,6 +102,7 @@ pub fn main() {
             new_mesh.v.len(),
             new_mesh.f.len()
         );
+        */
 
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
@@ -543,12 +545,6 @@ pub fn sample_exact(
         todo!();
     }
 
-    // If no faces were created, use the original corners.
-    /*
-    if start {
-    }
-    */
-
     let start = out_verts.len();
     let start_f = out_faces.len();
     for c in iaabb.iter_coords() {
@@ -563,19 +559,11 @@ pub fn sample_exact(
         ];
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
 
-        /*
-        let mut pix = AABB::from([cfs[0], cfs[2]]);
-        pix.expand_by(length(sub(cfs[2], cfs[0])));
-        if !pix.intersects_tri(uv_f.tri().unwrap()) {
-            continue;
-        }
-        */
-
         let barys = cfs.map(|cf| uv_f.barycentric(cf));
 
-        // TODO this needs to correspond to the distance of the pixel on the triangle
-        let check = (0..3).any(|i| barys.iter().all(|bary| bary[i] < -0.3));
-        if check {
+        // seems to work fine but a bit sus about it because it took so long to figure out if it
+        // worked.
+        if (0..3).any(|i| barys.iter().all(|bary| bary[i] < 0.)) {
             continue;
         }
 
@@ -645,6 +633,20 @@ pub fn sample_exact(
                 f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
                 vec![FaceKind::Tri([0, 1, 2])],
             );
+
+            println!("--- Bad Triangle Diagram ---");
+            for h in iaabb.height_range() {
+                for w in iaabb.width_range() {
+                    let c = if pixel_map.contains_key(&[w, h]) {
+                        "x"
+                    } else {
+                        "-"
+                    };
+                    print!("{c} ");
+                }
+                println!();
+            }
+            println!("------");
 
             tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
             pars3d::save("failing_tri.obj", &tmp.into_scene()).expect("Failed to save temp error");
@@ -1149,4 +1151,14 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
     });
 
     deleted
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FaceLabel {
+    /// New pixel from a given face
+    Pixel(usize),
+    /// Bridge between two pixels within a given face
+    Bridge(usize),
+    /// A face intended to cover the boundary between two faces
+    GapFill(usize, usize),
 }

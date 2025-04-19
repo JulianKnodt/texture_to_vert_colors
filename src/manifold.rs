@@ -1,5 +1,5 @@
 use crate::inv_map::InverseMap;
-use crate::union_find::UnionFind;
+use union_find::UnionFind;
 
 /// A mesh representation which is suitable for collapsing vertices.
 /// It can associate data with each vertex, and each edge.
@@ -51,10 +51,6 @@ impl<T> CollapsibleManifold<T> {
         (0..self.vertices.capacity())
             .filter(|&vi| !self.is_deleted(vi))
             .map(|vi| (vi, &self.data[vi]))
-    }
-    /// Computes all vertices merged into other vertices
-    pub fn source_vertices(&self) -> Vec<Vec<usize>> {
-        self.vertices.inverse_map()
     }
     pub fn is_deleted(&self, vi: usize) -> bool {
         !self.vertices.is_root(vi)

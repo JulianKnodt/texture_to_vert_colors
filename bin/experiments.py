@@ -21,8 +21,11 @@ def run(src, dst, flags, is_abl=True, src_dir="data"):
     out_json = f"{out_dir(is_abl)}/{dst[:-4]}.json"
     cmds = [
       f"{bin_file} -i {src_dir}/{src} -o {out_dir(is_abl)}/{dst} {flags} --stats {out_json}",
-      f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_dir(is_abl)}/{dst} --stats {out_json}"
-   ]
+    ]
+    if not args.no_eval:
+      cmds.append(
+        f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_dir(is_abl)}/{dst} --stats {out_json}"
+      )
 
     return cmds
   return cb
@@ -92,6 +95,10 @@ def arguments():
   a.add_argument("--first-only", action="store_true", help="Run one command then exit")
   a.add_argument("--skip-to", default=None, choices=list(experiments.keys()), help="skip to this experiment")
   a.add_argument("--match-output", default=None, help="Only match render outputs with this")
+  a.add_argument(
+    "--no-eval", action="store_true",
+    help="Do not evaluate similarity of input and output mesh",
+  )
   return a.parse_args()
 
 args = arguments()

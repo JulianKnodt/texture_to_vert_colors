@@ -1,7 +1,8 @@
 #![feature(cmp_minmax)]
 #![feature(let_chains)]
+#![feature(assert_matches)]
 
-use ordered_float::NotNan;
+use std::assert_matches::assert_matches;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
@@ -36,15 +37,15 @@ pub struct Args {
     #[arg(long, hide = true)]
     no_corners: bool,
 
-    /// Do not fill space between pixel quads (for debugging)
+    /// Do not fill space between pixel quads (DEBUGGING)
     #[arg(long, hide = true)]
     no_fill: bool,
 
-    /// Display some extra colors (for debugging)
+    /// Display some extra colors (DEBUGGING)
     #[arg(long, hide = true)]
     debug_colors: bool,
 
-    /// Do not normalize the mesh before processing (for debugging)
+    /// Do not normalize the mesh before processing (DEBUGGING)
     #[arg(long, hide = true)]
     no_normalize: bool,
 
@@ -52,7 +53,7 @@ pub struct Args {
     #[arg(long, default_value = "")]
     stats: String,
 
-    /// How much to separate each pixel by, useful for debugging.
+    /// How much to separate each pixel by (DEBUGGING)
     #[arg(long, default_value_t = 0.995)]
     pixel_sep: F,
 
@@ -71,11 +72,26 @@ pub struct Args {
     /// Distance below which colors are considered similar
     #[arg(long, default_value_t = 1e-4)]
     color_diff_threshold: F,
+
+    /// Do not delete degenerate faces in the mesh (ABLATION)
+    #[arg(long)]
+    no_delete_degen: bool,
 }
 
 pub fn main() {
     let args = Args::parse();
     let mut scene = pars3d::load(&args.input).expect("Failed to parse input");
+    let input_bd_edges = scene
+        .meshes
+        .iter()
+        .map(|m| m.num_boundary_edges())
+        .sum::<usize>();
+    println!(
+        "[INFO]: Input #F = {}, #V = {}, bd edges = {input_bd_edges}",
+        scene.num_faces(),
+        scene.num_vertices()
+    );
+
     let mut out_scene = scene.clone();
     let start = std::time::Instant::now();
     for (mi, mesh) in scene.meshes.iter_mut().enumerate() {
@@ -86,31 +102,18 @@ pub fn main() {
         };
         assert!(!mesh.uv[0].is_empty());
         let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
-        println!(
-            "[INFO]: Initial generated mesh has {} faces & {} vertices",
-            new_mesh.v.len(),
-            new_mesh.f.len()
-        );
-        /*
-        println!("[INFO]: Starting degenerate face deletion");
-        while let del_f = delete_degenerate_faces(&mut new_mesh, &args)
-            && del_f > 0
-        {}
-        new_mesh.delete_unused_vertices();
-        println!(
-            "[INFO]: Cleaned mesh has {} faces & {} vertices",
-            new_mesh.v.len(),
-            new_mesh.f.len()
-        );
-        */
-
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
     }
     let elapsed = start.elapsed();
+    let output_bd_edges = out_scene
+        .meshes
+        .iter()
+        .map(|m| m.num_boundary_edges())
+        .sum::<usize>();
     println!("[INFO]: Resampling took {elapsed:?}");
     println!(
-        "[INFO]: Output #F = {}, #V = {}",
+        "[INFO]: Output #F = {}, #V = {}, bd edges = {output_bd_edges}",
         out_scene.num_faces(),
         out_scene.num_vertices()
     );
@@ -126,23 +129,13 @@ pub fn main() {
   "num_vertices": {},
   "input_num_faces": {},
   "input_num_vertices": {},
-  "num_boundary_edges": {},
-  "input_num_boundary_edges": {}
+  "num_boundary_edges": {output_bd_edges},
+  "input_num_boundary_edges": {input_bd_edges}
 }}"#,
             out_scene.num_faces(),
             out_scene.num_vertices(),
             scene.num_faces(),
             scene.num_vertices(),
-            out_scene
-                .meshes
-                .iter()
-                .map(|m| m.num_boundary_edges())
-                .sum::<usize>(),
-            scene
-                .meshes
-                .iter()
-                .map(|m| m.num_boundary_edges())
-                .sum::<usize>(),
         )
         .expect("Failed to write stats");
     }
@@ -181,6 +174,8 @@ pub fn texture_to_vert_colors(
     let mut edge_map = BTreeMap::new();
     let mut corner_map = BTreeMap::new();
     let mut labels = BTreeMap::new();
+    let mut face_labels = vec![];
+    //let mut to_del = vec![];
 
     use indicatif::ProgressIterator;
     for (fi, f) in mesh.f.iter().enumerate().progress() {
@@ -198,16 +193,15 @@ pub fn texture_to_vert_colors(
                 f,
                 fi,
                 &diff_img,
-                &mut out.f,
-                &mut out.v,
-                &mut out.vert_colors,
-                &mut out.n,
+                &mut out,
                 &mut corner_map,
                 &mut edge_map,
                 &mut labels,
+                &mut face_labels,
                 args,
             ),
         };
+        assert_eq!(out.f.len(), face_labels.len());
         // For now, do not store normals since they are not well supported
         out.n.clear();
         // Add a simplification step here, as some faces are relatively similar, and we want to
@@ -231,8 +225,8 @@ pub fn texture_to_vert_colors(
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
                 let fv = &corner_map[$key];
-                let corner = fv.iter().find(|fv| fv.0 == *$face).unwrap().1;
-                assert_eq!(fv.iter().filter(|fv| fv.0 == *$face).count(), 1);
+                let corner = fv.iter().find(|fv| fv.0 == $face).unwrap().1;
+                assert_eq!(fv.iter().filter(|fv| fv.0 == $face).count(), 1);
                 $dst.push((corner, $l));
                 corner
             }};
@@ -289,6 +283,7 @@ pub fn texture_to_vert_colors(
         };
 
         let (f0, verts0) = &face_verts[0];
+        let f0 = *f0;
         let mut v0s = verts0.iter().map(ordering).collect::<Vec<_>>();
 
         let v0_max = v0s.iter().map(|v0| v0.1).max_by(F::total_cmp).unwrap_or(1.);
@@ -303,6 +298,7 @@ pub fn texture_to_vert_colors(
         v0s.dedup_by_key(|v| v.0);
 
         let (f1, verts1) = &face_verts[1];
+        let f1 = *f1;
         let mut v1s = verts1.iter().map(ordering).collect::<Vec<_>>();
         let v1_max = v1s.iter().map(|v1| v1.1).max_by(F::total_cmp).unwrap_or(1.);
         for (_, v1t) in v1s.iter_mut() {
@@ -365,14 +361,17 @@ pub fn texture_to_vert_colors(
                 assert!(v1s.next().is_some());
                 new_face
             };
+            face_labels.push(FaceLabel::GapFill(f0, f1));
             out.f.push(new_face);
         }
 
         for (p0n, t) in v0s {
+            face_labels.push(FaceLabel::GapFill(f0, f1));
             out.f.push(FaceKind::Tri([v0_front.0, p0n, v1_front.0]));
             v0_front = (p0n, t);
         }
         for (p1n, t) in v1s {
+            face_labels.push(FaceLabel::GapFill(f0, f1));
             out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
             v1_front = (p1n, t);
         }
@@ -383,6 +382,7 @@ pub fn texture_to_vert_colors(
         assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
 
         if fvs.iter().any(|fv| !edge_adj.contains_key(&fv.1)) {
+            face_labels.push(FaceLabel::GapCorner);
             out.f.push(FaceKind::from_iter(fvs.iter().map(|fv| fv.1)));
             continue;
         };
@@ -449,7 +449,65 @@ pub fn texture_to_vert_colors(
                 FaceKind::Poly(poly)
             }
         };
+        face_labels.push(FaceLabel::GapCorner);
         out.f.push(face);
+    }
+
+    assert_eq!(face_labels.len(), out.f.len());
+
+    // compute statistics for degenerate mesh
+    let mut degen_degen = 0;
+    let mut degen_pixel = 0;
+    let mut degen_bridge = 0;
+    let mut degen_bridge_corner = 0;
+    let mut degen_fill = 0;
+
+    for (fi, f) in out.f.iter().enumerate() {
+        let area = f.area(&out.v);
+        let counter = match face_labels[fi] {
+            FaceLabel::Degen => &mut degen_degen,
+            FaceLabel::Pixel => &mut degen_pixel,
+            FaceLabel::Bridge(_, _) => &mut degen_bridge,
+            FaceLabel::BridgeCorner => &mut degen_bridge_corner,
+            FaceLabel::GapFill(_, _) | FaceLabel::GapCorner => &mut degen_fill,
+        };
+        if area < args.area_threshold {
+            *counter += 1;
+        }
+    }
+    macro_rules! count_face_label {
+        ($p: pat) => {{ face_labels.iter().filter(|c| matches!(c, $p)).count() }};
+    }
+    println!(
+        r#"
+      Degen Degen   : {degen_degen} / {}
+      Degen Pixel   : {degen_pixel} / {}
+      Degen Bridge  : {degen_bridge} / {}
+      Degen BridgeC : {degen_bridge_corner} / {}
+      Degen Fill    : {degen_fill} / {}
+    "#,
+        count_face_label!(FaceLabel::Degen),
+        count_face_label!(FaceLabel::Pixel),
+        count_face_label!(FaceLabel::Bridge(_, _)),
+        count_face_label!(FaceLabel::BridgeCorner),
+        count_face_label!(FaceLabel::GapFill(_, _) | FaceLabel::GapCorner),
+    );
+
+    let init_f = out.f.len();
+    let init_v = out.v.len();
+    println!("[INFO]: Initial generated mesh has {init_f} faces & {init_v} vertices");
+
+    if !args.no_delete_degen {
+        println!("[INFO]: Starting degenerate face deletion");
+        delete_degenerate_faces(&mut out, args, &face_labels);
+        out.delete_unused_vertices();
+        println!(
+            "[INFO]: Cleaned mesh has {} faces (-{}) & {} vertices (-{})",
+            out.f.len(),
+            init_f - out.f.len(),
+            out.v.len(),
+            init_v - out.v.len(),
+        );
     }
 
     out
@@ -460,16 +518,20 @@ pub fn sample_exact(
     f: &FaceKind,
     fi: usize,
     diff_img: &DynamicImage,
-    out_faces: &mut Vec<FaceKind>,
-    out_verts: &mut Vec<[F; 3]>,
-    out_colors: &mut Vec<[F; 3]>,
-    out_normals: &mut Vec<[F; 3]>,
+
+    // destination for all attributes
+    out: &mut pars3d::Mesh,
+
     // map from edge -> (original face idx, vertices), which stores vertices along every half edge
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
     // map from edge -> (original face idx, vertices on face)
     edge_map: &mut BTreeMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
     // map from new vertex index to original vertex position and distance
     labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
+
+    // label for what kind of face is being inserted into the mesh, useful for cleaning up faces
+    // later
+    face_labels: &mut Vec<FaceLabel>,
 
     args: &Args,
 ) -> bool {
@@ -486,32 +548,36 @@ pub fn sample_exact(
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
         [r, g, b]
     };
+    /*
     macro_rules! emit_degen {
         () => {{
+            println!("Emitting degen");
             let mut new_f = f.clone();
             new_f.remap(|og_vi| {
-                let new_vi = out_verts.len();
+                let new_vi = out.v.len();
                 let pos = mesh.v[og_vi];
                 let [u, v] = mesh.uv[CHAN][og_vi];
-                out_verts.push(pos);
-                out_colors.push(get_rgb(u, v));
+                out.v.push(pos);
+                out.vert_colors.push(get_rgb(u, v));
                 corner_map
                     .entry(pos.map(F::to_bits))
                     .or_default()
                     .push((fi, new_vi));
                 new_vi
             });
-            out_faces.push(new_f);
+            out.f.push(new_f);
+            face_labels.push(FaceLabel::Degen);
             return true;
         }};
     }
+    */
     for uv in f_slice.iter().map(|&vi| mesh.uv[CHAN][vi]) {
         aabb.add_point(uv);
     }
 
-    // TODO should these have -1?
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
+    //aabb.expand_by(1e-4);
     let iaabb = aabb.round_to_i32();
     let uv_f = f.map_kind(|vi| mesh.uv[0][vi]);
     let v_f = f.map_kind(|vi| mesh.v[vi]);
@@ -523,9 +589,11 @@ pub fn sample_exact(
     // face normal for projecting bary
     let f_n = normalize(v_f.normal());
     assert!(length(f_n) > 1e-3);
+    /*
     if v_f.area() < 1e-8 {
         emit_degen!();
     }
+    */
     //assert!(v_f.area() > 1e-5, "{}", v_f.area());
     /*
     assert!(
@@ -537,6 +605,7 @@ pub fn sample_exact(
 
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
+    let mut pix_fi: BTreeMap<_, usize> = BTreeMap::new();
 
     let iarea = iaabb.area();
     assert_ne!(iarea, 0);
@@ -545,8 +614,8 @@ pub fn sample_exact(
         todo!();
     }
 
-    let start = out_verts.len();
-    let start_f = out_faces.len();
+    let start = out.v.len();
+    let start_f = out.f.len();
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
@@ -592,7 +661,7 @@ pub fn sample_exact(
             for _ in 0..4 {
                 let a = nearest_pt_on_line(new_pos, [next, pos]);
                 let b = nearest_pt_on_line(new_pos, [prev, pos]);
-                new_pos = if length(sub(a, new_pos)) < length(sub(b, new_pos)) {
+                new_pos = if dist(a, new_pos) < dist(b, new_pos) {
                     a
                 } else {
                     b
@@ -612,11 +681,11 @@ pub fn sample_exact(
 
         // commit to this new pixel
         let new_verts = new_verts.map(|(new_vert, normal)| {
-            let vi = out_verts.len();
-            out_verts.push(new_vert);
-            out_colors.push(rgb);
+            let vi = out.v.len();
+            out.v.push(new_vert);
+            out.vert_colors.push(rgb);
             if let Some(normal) = normal {
-                out_normals.push(normal);
+                out.n.push(normal);
             }
 
             vi
@@ -624,7 +693,9 @@ pub fn sample_exact(
 
         let prev = pixel_map.insert(c, new_verts);
         assert_eq!(prev, None);
-        out_faces.push(FaceKind::Quad(new_verts));
+        pix_fi.insert(c, out.f.len());
+        face_labels.push(FaceLabel::Pixel);
+        out.f.push(FaceKind::Quad(new_verts));
     }
 
     macro_rules! save_bad_mesh {
@@ -651,15 +722,15 @@ pub fn sample_exact(
             tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
             pars3d::save("failing_tri.obj", &tmp.into_scene()).expect("Failed to save temp error");
 
-            let error_verts = out_verts[start..].to_vec();
-            let error_colors = out_colors[start..].to_vec();
-            let mut error_faces = out_faces[start_f..].to_vec();
+            let error_verts = out.v[start..].to_vec();
+            let error_colors = out.vert_colors[start..].to_vec();
+            let mut error_faces = out.f[start_f..].to_vec();
             for f in &mut error_faces {
                 f.offset(-(start as i32))
             }
-            *out_verts = error_verts;
-            *out_colors = error_colors;
-            *out_faces = error_faces;
+            out.v = error_verts;
+            out.vert_colors = error_colors;
+            out.f = error_faces;
             eprintln!($label);
 
             return false;
@@ -671,21 +742,25 @@ pub fn sample_exact(
         if args.no_fill {
             break;
         }
+        let own_fi = pix_fi[&[u, v]];
         // check bottom right first
         if !pixel_map.contains_key(&[u + 1, v + 1])
             && let Some(&[_, _, _, a]) = pixel_map.get(&[u + 1, v])
             && let Some(&[_, b, _, _]) = pixel_map.get(&[u, v + 1])
         {
-            out_faces.push(FaceKind::Tri([ur, a, b]));
+            face_labels.push(FaceLabel::BridgeCorner);
+            out.f.push(FaceKind::Tri([ur, a, b]));
         }
         // TODO turn these into checked subs?
         let left = pixel_map.get(&[u - 1, v]);
         let up = pixel_map.get(&[u, v - 1]);
         if let Some(&[_, or, our, _]) = left {
-            out_faces.push(FaceKind::Quad([ul, our, or, l]));
+            face_labels.push(FaceLabel::Bridge(own_fi, pix_fi[&[u - 1, v]]));
+            out.f.push(FaceKind::Quad([ul, our, or, l]));
         }
         if let Some(&[_, _, our, oul]) = up {
-            out_faces.push(FaceKind::Quad([oul, our, r, l]));
+            face_labels.push(FaceLabel::Bridge(own_fi, pix_fi[&[u, v - 1]]));
+            out.f.push(FaceKind::Quad([oul, our, r, l]));
         }
         let upleft = pixel_map.get(&[u - 1, v - 1]);
         let corner_face = match (upleft, up, left) {
@@ -699,7 +774,8 @@ pub fn sample_exact(
                     faces here? Not sure
                     if this will be ever hit (it likely shouldn't be)."#
                 );
-                continue;
+                todo!();
+                //continue;
             }
 
             /* Definitely no faces to add */
@@ -708,12 +784,13 @@ pub fn sample_exact(
             // Handled earlier, no special cases to add
             (None, Some(_), None) | (None, None, Some(_)) => continue,
         };
-        out_faces.push(corner_face);
+        face_labels.push(FaceLabel::BridgeCorner);
+        out.f.push(corner_face);
     }
 
     let mut edge_face_adj: BTreeMap<[usize; 2], EdgeKind> = BTreeMap::new();
     // compute adjacent boundary edges and trace from the corners
-    for (fi, f) in out_faces.iter().enumerate().skip(start_f) {
+    for (fi, f) in out.f.iter().enumerate().skip(start_f) {
         for [e0, e1] in f.edges() {
             debug_assert_ne!(e0, e1);
             edge_face_adj
@@ -792,7 +869,7 @@ pub fn sample_exact(
                     if corner_verts.iter().any(|&(_, p)| p == vi) {
                         continue;
                     }
-                    let d = length(sub(out_verts[vi], vert_pos));
+                    let d = dist(out.v[vi], vert_pos);
                     if d < best_dist {
                         nearest = vi;
                         best_dist = d;
@@ -806,7 +883,7 @@ pub fn sample_exact(
                 if corner_verts.iter().any(|&(_, p)| p == new_vi) {
                     continue;
                 }
-                let d = length(sub(out_verts[new_vi], vert_pos));
+                let d = dist(out.v[new_vi], vert_pos);
                 if d < best_dist {
                     nearest = new_vi;
                     best_dist = d;
@@ -832,10 +909,10 @@ pub fn sample_exact(
 
         // Pull to a corner to make it tight (larger T is tighter)
         let t = args.vertex_pull;
-        out_verts[nearest] = add(kmul(t, mesh.v[og_vi]), kmul(1. - t, out_verts[nearest]));
+        out.v[nearest] = add(kmul(t, mesh.v[og_vi]), kmul(1. - t, out.v[nearest]));
 
         if args.debug_colors {
-            out_colors[nearest] = [1.; 3];
+            out.vert_colors[nearest] = [1.; 3];
         }
     }
 
@@ -866,8 +943,8 @@ pub fn sample_exact(
     assert!(check);
 
     for (&new_vi, ogs) in labels.range(start..) {
-        if args.debug_colors && out_colors[new_vi] != [1.; 3] {
-            out_colors[new_vi] = [0.; 3];
+        if args.debug_colors && out.vert_colors[new_vi] != [1.; 3] {
+            out.vert_colors[new_vi] = [0.; 3];
         }
         let [og0_key, og1_key] = ogs.map(|vi| vi.1);
         let fvs = edge_map
@@ -880,7 +957,7 @@ pub fn sample_exact(
         }
 
         let ogs = [og0_key, og1_key].map(|k| k.map(F::from_bits));
-        let t = nearest_on_line(out_verts[new_vi], ogs);
+        let t = nearest_on_line(out.v[new_vi], ogs);
         if !(0.0..=1.0).contains(&t) {
             continue;
         }
@@ -888,7 +965,7 @@ pub fn sample_exact(
         let tgt_pos = add(ogs[0], kmul(t, sub(ogs[1], ogs[0])));
         // pull edge verts to the edge (larger is closer to edge)
         let t = args.edge_pull;
-        out_verts[new_vi] = add(kmul(1. - t, out_verts[new_vi]), kmul(t, tgt_pos));
+        out.v[new_vi] = add(kmul(1. - t, out.v[new_vi]), kmul(t, tgt_pos));
     }
 
     true
@@ -1052,7 +1129,7 @@ pub fn nearest_point_on_tri_in_dir(
             Some((ray_extent, pos))
         })
         // take nearest point
-        .min_by(|(a, _), (b, _)| a.partial_cmp(&b).unwrap())
+        .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap())
         // remap back to 3d.
         .map(|(_, pos)| add(kmul(pos[0], dir), kmul(pos[1], tan)))
 }
@@ -1080,16 +1157,20 @@ pub enum SampleKind {
 impl_display!(SampleKind, Approx => "approx", Exact => "exact");
 
 /// Deletes degenerate faces by merging all vertices of the face together
-pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
+pub fn delete_degenerate_faces(
+    mesh: &mut pars3d::Mesh,
+    args: &Args,
+    labels: &[FaceLabel],
+) -> usize {
     let mut deleted = 0;
+    // TODO make this into a union find
     let mut remap = HashMap::new();
 
     let mut fixed = HashSet::new();
     for f in &mesh.f {
         for [e0, e1] in f.edges() {
             let [vc0, vc1] = [e0, e1].map(|vi| mesh.vert_colors[vi]);
-            let lock =
-                length(sub(vc0, vc1)) > args.color_diff_threshold || length(sub(vc0, vc1)) > 1e-10;
+            let lock = dist(vc0, vc1) > args.color_diff_threshold;
             if lock {
                 fixed.insert(e0);
                 fixed.insert(e1);
@@ -1099,27 +1180,31 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
         }
     }
 
-    mesh.f
-        .sort_unstable_by_key(|f| NotNan::new(f.area(&mesh.v)).unwrap());
+    // First, delete degenerate fill faces, they can be taken as the average of all of their
+    // components.
 
     // for each vertex need to compute whether it can be deleted,
     // based on whether the 1 ring of the vertex all have similar values.
-    let mut done = false;
-    mesh.f.retain(|f| {
-        if done {
-            return true;
+    for (fi, f) in mesh.f.iter_mut().enumerate() {
+        if f.is_empty() {
+            continue;
         }
+        if !matches!(labels[fi], FaceLabel::GapFill(_, _) | FaceLabel::GapCorner) {
+            continue;
+        }
+
         let f_s = f.as_slice();
-        if f_s.iter().any(|vi| remap.contains_key(vi)) {
-            return true;
+        if f_s
+            .iter()
+            .any(|vi| remap.contains_key(vi) || fixed.contains(vi))
+        {
+            continue;
         }
-        if f_s.iter().any(|&vi| fixed.contains(&vi)) {
-            return true;
-        }
-        let area = f.area(&mesh.v).abs();
+        let area = f.area(&mesh.v);
+        assert!(area >= 0.);
+        assert!(area.is_finite());
         if area > args.area_threshold {
-            done = true;
-            return true;
+            continue;
         }
         let n = f_s.len().max(1) as F;
         let avg_color = f_s
@@ -1128,24 +1213,78 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
             .fold([0.; 3], add)
             .map(|v| v / n);
 
-        let new_vert = f_s
+        let new_v = f_s
             .iter()
             .map(|&vi| mesh.v[vi])
             .fold([0.; 3], add)
             .map(|v| v / n);
+
         let new_vi = mesh.v.len();
-        mesh.v.push(new_vert);
+        mesh.v.push(new_v);
         mesh.vert_colors.push(avg_color);
 
         for &vi in f_s {
             remap.insert(vi, new_vi);
         }
 
+        *f = FaceKind::empty();
         deleted += 1;
-        false
-    });
+    }
+
+    let curr_del = deleted;
+    for fi in 0..mesh.f.len() {
+        let f = &mesh.f[fi];
+        if f.len() != 4 {
+            continue;
+        }
+        // TODO this case needs to be handled
+        if f.as_slice().iter().any(|vi| remap.contains_key(vi)) {
+            continue;
+        }
+
+        let FaceLabel::Bridge(fi0, fi1) = labels[fi] else {
+            continue;
+        };
+        assert_matches!(labels[fi0], FaceLabel::Pixel);
+        assert_matches!(labels[fi1], FaceLabel::Pixel);
+
+        let [f, f0, f1] = mesh.f.get_disjoint_mut([fi, fi0, fi1]).unwrap();
+        let [e00, e01] = f.shared_edge(f0).unwrap();
+        let [e10, e11] = f.shared_edge(f1).unwrap();
+
+        // e00 - e11 is a paired edge
+        // e01 - e10 is a paired edge
+
+        if dist(mesh.vert_colors[e00], mesh.vert_colors[e11]) > args.color_diff_threshold {
+            continue;
+        }
+        if dist(mesh.vert_colors[e01], mesh.vert_colors[e10]) > args.color_diff_threshold {
+            continue;
+        }
+
+        // Commit to collapsing this face
+        let mut combine = |a: usize, b: usize| {
+            let new_v = kmul(0.5, add(mesh.v[a], mesh.v[b]));
+            let new_vc = kmul(0.5, add(mesh.vert_colors[a], mesh.vert_colors[b]));
+            let new_vi = mesh.v.len();
+
+            mesh.v.push(new_v);
+            mesh.vert_colors.push(new_vc);
+            assert_eq!(remap.insert(a, new_vi), None);
+            assert_eq!(remap.insert(b, new_vi), None);
+        };
+        combine(e00, e11);
+        combine(e10, e01);
+
+        *f = FaceKind::empty();
+        deleted += 1;
+    }
+    println!("{}", deleted - curr_del);
 
     mesh.f.retain_mut(|f| {
+        if f.is_empty() {
+          return false;
+        }
         f.remap(|vi| remap.get(&vi).copied().unwrap_or(vi));
         !f.canonicalize()
     });
@@ -1155,10 +1294,20 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FaceLabel {
+    /// A triangle representing a face which is too small for any pixels
+    Degen,
     /// New pixel from a given face
-    Pixel(usize),
+    Pixel,
     /// Bridge between two pixels within a given face
-    Bridge(usize),
+    Bridge(usize, usize),
+    /// Fills in gaps between bridges
+    BridgeCorner,
     /// A face intended to cover the boundary between two faces
     GapFill(usize, usize),
+    /// A face which covers the corner between many triangles
+    GapCorner,
+}
+
+fn dist<const N: usize>(a: [F; N], b: [F; N]) -> F {
+    length(sub(a, b))
 }

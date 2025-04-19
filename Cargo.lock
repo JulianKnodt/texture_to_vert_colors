@@ -672,6 +672,7 @@ dependencies = [
  "pars3d",
  "priority-queue",
  "smallvec",
+ "union-find",
 ]
 
 [[package]]
@@ -696,6 +697,11 @@ name = "unicode-width"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fc81956842c57dac11422a97c3b8195a1ff727f06e85c84ed2e8aa277c9a0fd"
+
+[[package]]
+name = "union-find"
+version = "0.1.0"
+source = "git+https://github.com/JulianKnodt/union-find.git#53974f9a544d3490c9c780aff804ae412df09b62"
 
 [[package]]
 name = "urlencoding"

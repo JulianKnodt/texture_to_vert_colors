@@ -16,8 +16,6 @@ pub mod sym;
 // represent each vertex as 2D barycentric and merge them together
 pub mod quadric;
 
-pub mod union_find;
-
 pub mod inv_map;
 
 pub mod merge;

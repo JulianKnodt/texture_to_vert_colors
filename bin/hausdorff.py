@@ -13,6 +13,7 @@ def arguments():
 
 def main():
   args = arguments()
+  print("[INFO]: Computing distance between meshes")
 
   import trimesh
 
@@ -39,7 +40,6 @@ def main():
     _,_,new_positions = igl.random_points_on_mesh(N, new_mesh.vertices, new_mesh.faces)
     nv = np.concatenate([nv, new_positions])
 
-  print("Computing new->og");
   new_to_og,_,_ = igl.point_mesh_squared_distance(
     nv,
     og_mesh.vertices,
@@ -52,7 +52,6 @@ def main():
     _,_,new_positions = igl.random_points_on_mesh(N, og_mesh.vertices, og_mesh.faces)
     ov = np.concatenate([ov, new_positions])
 
-  print("Computing og->new");
   og_to_new,_,_ = igl.point_mesh_squared_distance(
     ov,
     new_mesh.vertices,

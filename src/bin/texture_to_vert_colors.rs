@@ -86,17 +86,21 @@ pub fn main() {
         };
         assert!(!mesh.uv[0].is_empty());
         let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
-        let mut total_del_f = 0;
-        let mut total_del_v = 0;
+        println!(
+            "[INFO]: Initial generated mesh has {} faces & {} vertices",
+            new_mesh.v.len(),
+            new_mesh.f.len()
+        );
         println!("[INFO]: Starting degenerate face deletion");
         while let del_f = delete_degenerate_faces(&mut new_mesh, &args)
             && del_f > 0
-        {
-            total_del_f += del_f;
-        }
-        total_del_v += new_mesh.delete_unused_vertices();
-        println!("[INFO]: Deleted {total_del_f} degenerate faces");
-        println!("[INFO]: Deleted {total_del_v} unused vertices");
+        {}
+        new_mesh.delete_unused_vertices();
+        println!(
+            "[INFO]: Cleaned mesh has {} faces & {} vertices",
+            new_mesh.v.len(),
+            new_mesh.f.len()
+        );
 
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
@@ -470,6 +474,35 @@ pub fn sample_exact(
     const CHAN: usize = 0;
     let mut aabb = AABB::<F, 2>::new();
     let f_slice = f.as_slice();
+
+    let get_rgb = |u: F, v: F| {
+        let u = u % 1.;
+        let u = if u < 0. { 1. + u } else { u };
+        let v = v % 1.;
+        let v = if v < 0. { 1. + v } else { v };
+        let rgba = image::imageops::sample_bilinear(diff_img, u as f32, v as f32).unwrap();
+        let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
+        [r, g, b]
+    };
+    macro_rules! emit_degen {
+        () => {{
+            let mut new_f = f.clone();
+            new_f.remap(|og_vi| {
+                let new_vi = out_verts.len();
+                let pos = mesh.v[og_vi];
+                let [u, v] = mesh.uv[CHAN][og_vi];
+                out_verts.push(pos);
+                out_colors.push(get_rgb(u, v));
+                corner_map
+                    .entry(pos.map(F::to_bits))
+                    .or_default()
+                    .push((fi, new_vi));
+                new_vi
+            });
+            out_faces.push(new_f);
+            return true;
+        }};
+    }
     for uv in f_slice.iter().map(|&vi| mesh.uv[CHAN][vi]) {
         aabb.add_point(uv);
     }
@@ -488,6 +521,9 @@ pub fn sample_exact(
     // face normal for projecting bary
     let f_n = normalize(v_f.normal());
     assert!(length(f_n) > 1e-3);
+    if v_f.area() < 1e-8 {
+        emit_degen!();
+    }
     //assert!(v_f.area() > 1e-5, "{}", v_f.area());
     /*
     assert!(
@@ -500,15 +536,18 @@ pub fn sample_exact(
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
 
-    let get_rgb = |u: F, v: F| {
-        let u = u % 1.;
-        let u = if u < 0. { 1. + u } else { u };
-        let v = v % 1.;
-        let v = if v < 0. { 1. + v } else { v };
-        let rgba = image::imageops::sample_bilinear(diff_img, u as f32, v as f32).unwrap();
-        let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
-        [r, g, b]
-    };
+    let iarea = iaabb.area();
+    assert_ne!(iarea, 0);
+
+    if iarea == 1 {
+        todo!();
+    }
+
+    // If no faces were created, use the original corners.
+    /*
+    if start {
+    }
+    */
 
     let start = out_verts.len();
     let start_f = out_faces.len();
@@ -525,7 +564,8 @@ pub fn sample_exact(
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
 
         /*
-        let pix = AABB::from([cfs[0], cfs[1]]);
+        let mut pix = AABB::from([cfs[0], cfs[2]]);
+        pix.expand_by(length(sub(cfs[2], cfs[0])));
         if !pix.intersects_tri(uv_f.tri().unwrap()) {
             continue;
         }
@@ -622,38 +662,6 @@ pub fn sample_exact(
 
             return false;
         }};
-    }
-
-    // If no faces were created, use the original corners.
-    if out_verts.len() == start {
-        let mut verts = Vec::with_capacity(f_slice.len());
-        for &vi in f_slice {
-            let new_vi = out_verts.len();
-            verts.push(new_vi);
-            let pos = mesh.v[vi];
-            let [u, v] = mesh.uv[CHAN][vi];
-            out_verts.push(pos);
-            out_colors.push(get_rgb(u, v));
-            corner_map
-                .entry(pos.map(F::to_bits))
-                .or_default()
-                .push((fi, new_vi));
-        }
-        for ([vi, ni], [new_vi, new_ni]) in f.edges().zip(pars3d::edges(&verts)) {
-            let [v, n] = [vi, ni].map(|i| mesh.v[i].map(F::to_bits));
-            let e = std::cmp::minmax(v, n);
-            let fvs = edge_map.entry(e).or_default();
-            assert!(!fvs.iter().any(|fv| fv.0 == fi));
-            fvs.push((fi, vec![new_vi, new_ni]));
-        }
-        let f = match verts.len() {
-            0..3 => unreachable!(),
-            3 => FaceKind::Tri(std::array::from_fn(|i| verts[i])),
-            4 => FaceKind::Quad(std::array::from_fn(|i| verts[i])),
-            _ => FaceKind::Poly(verts),
-        };
-        out_faces.push(f);
-        return true;
     }
 
     // --- Adding faces in between pixel quads
@@ -899,8 +907,9 @@ pub fn sample(
     // TODO should these have -1?
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
-    let mut iaabb = aabb.round_to_i32();
-    iaabb.expand_by(1);
+    aabb.expand_by(1e-3);
+    let iaabb = aabb.round_to_i32();
+
     let uv_f = f.map_kind(|v| mesh.uv[0][v]);
     let v_f = f.map_kind(|v| mesh.v[v]);
     let mut pixel_map = BTreeMap::new();
@@ -1078,7 +1087,7 @@ pub fn delete_degenerate_faces(mesh: &mut pars3d::Mesh, args: &Args) -> usize {
         for [e0, e1] in f.edges() {
             let [vc0, vc1] = [e0, e1].map(|vi| mesh.vert_colors[vi]);
             let lock =
-                length(sub(vc0, vc1)) > args.color_diff_threshold || length(sub(vc0, vc1)) > 1e-3;
+                length(sub(vc0, vc1)) > args.color_diff_threshold || length(sub(vc0, vc1)) > 1e-10;
             if lock {
                 fixed.insert(e0);
                 fixed.insert(e1);

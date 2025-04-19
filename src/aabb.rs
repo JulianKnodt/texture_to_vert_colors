@@ -130,13 +130,28 @@ impl AABB<F, 2> {
             let o = orient_2d(a, b, c);
             (o, o.signum() as i8)
         });
-        assert!(!cs.iter().any(|c| c.1 == 0));
+        if cs.iter().any(|c| c.0.abs() < 1e-4) {
+            return true;
+        }
 
         cs[1..].iter().any(|&c| c.1 != cs[0].1)
+    }
+    pub fn expand_by(&mut self, v: F) {
+        self.min = self.min.map(|val| val - v);
+        self.max = self.max.map(|val| val + v);
     }
 }
 
 impl AABB<i32, 2> {
+    pub fn width(&self) -> usize {
+        (self.max[0] - self.min[0]).max(0) as usize
+    }
+    pub fn height(&self) -> usize {
+        (self.max[1] - self.min[1]).max(0) as usize
+    }
+    pub fn area(&self) -> usize {
+        self.width() * self.height()
+    }
     pub fn iter_coords(&self) -> impl Iterator<Item = [i32; 2]> + '_ {
         let [lx, ly] = self.min;
         let [hx, hy] = self.max;

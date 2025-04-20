@@ -226,6 +226,7 @@ pub fn texture_to_vert_colors(
     for ([e0_key, e1_key], face_verts) in edge_map {
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
+                assert!(corner_map.contains_key($key));
                 let fv = &corner_map[$key];
                 let corner = fv.iter().find(|fv| fv.0 == $face).unwrap().1;
                 assert_eq!(fv.iter().filter(|fv| fv.0 == $face).count(), 1);
@@ -665,13 +666,6 @@ pub fn sample_exact(
             (new_pos, new_normal)
         });
 
-        // TODO check if this is alright?
-        /*
-        if pars3d::quad_area(new_verts.map(|vn| vn.0)) == 0. {
-          continue;
-        }
-        */
-
         // commit to this new pixel
         let new_verts = new_verts.map(|(new_vert, normal)| {
             let vi = out.v.len();
@@ -847,6 +841,7 @@ pub fn sample_exact(
         let vert_pos = mesh.v[og_vi];
 
         let [og_u, og_v] = mesh.uv[CHAN][og_vi];
+        // TODO double check if this is +0.5 or -0.5
         let u = (og_u.fract().abs() * w as F - 0.5).floor() as i32;
         let v = (og_v.fract().abs() * h as F - 0.5).floor() as i32;
         assert!(u >= 0, "{og_u} {u} {v}");
@@ -951,11 +946,13 @@ pub fn sample_exact(
         // intermediate vertices it will be labeled.
         let end_pt = iter(l, new_vi);
         let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
-        let [e0_key, e1_key] = [og_vi, next_og_vi].map(|vi| out.v[vi].map(F::to_bits));
+        let [e0_key, e1_key] = [og_vi, next_og_vi].map(|vi| mesh.v[vi].map(F::to_bits));
         let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
         if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
             fvs.push((fi, vec![]));
         }
+
+        // TODO I don't think I need to do this for the opposite side, but worth checking later
         iter(r, new_vi);
     }
     let check = labels

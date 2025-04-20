@@ -72,7 +72,7 @@ pub struct Args {
     area_threshold: F,
 
     /// Distance below which colors are considered similar
-    #[arg(long, default_value_t = 1e-4)]
+    #[arg(long, default_value_t = 3e-2)]
     color_diff_threshold: F,
 
     /// Do not delete degenerate faces in the mesh (ABLATION)
@@ -203,7 +203,6 @@ pub fn texture_to_vert_colors(
                 args,
             ),
         };
-        assert_eq!(out.f.len(), face_labels.len());
         // For now, do not store normals since they are not well supported
         out.n.clear();
         // Add a simplification step here, as some faces are relatively similar, and we want to
@@ -213,6 +212,8 @@ pub fn texture_to_vert_colors(
             eprintln!("Exiting after saved erroneous mesh");
             std::process::exit(1);
         }
+
+        assert_eq!(out.f.len(), face_labels.len());
     }
 
     if args.no_gap_fill {
@@ -472,42 +473,56 @@ pub fn texture_to_vert_colors(
     assert_eq!(face_labels.len(), out.f.len());
 
     // compute statistics for degenerate mesh
-    let mut degen_degen = 0;
-    let mut degen_pixel = 0;
-    let mut degen_bridge = 0;
-    let mut degen_bridge_corner = 0;
-    let mut degen_fill = 0;
+    macro_rules! mesh_stats {
+        () => {{
+            let mut degen_degen = 0;
+            let mut degen_pixel = 0;
+            let mut degen_bridge = 0;
+            let mut degen_bridge_corner = 0;
+            let mut degen_fill = 0;
 
-    for (fi, f) in out.f.iter().enumerate() {
-        let area = f.area(&out.v);
-        let counter = match face_labels[fi] {
-            FaceLabel::Degen => &mut degen_degen,
-            FaceLabel::Pixel => &mut degen_pixel,
-            FaceLabel::Bridge(_, _) => &mut degen_bridge,
-            FaceLabel::BridgeCorner => &mut degen_bridge_corner,
-            FaceLabel::GapFill(_, _) | FaceLabel::GapCorner => &mut degen_fill,
-        };
-        if area < args.area_threshold {
-            *counter += 1;
-        }
-    }
-    macro_rules! count_face_label {
-        ($p: pat) => {{ face_labels.iter().filter(|c| matches!(c, $p)).count() }};
-    }
-    println!(
-        r#"
+            for (fi, f) in out.f.iter().enumerate() {
+                if f.is_degenerate() {
+                    continue;
+                }
+                let area = f.area(&out.v);
+                let counter = match face_labels[fi] {
+                    FaceLabel::Degen => &mut degen_degen,
+                    FaceLabel::Pixel => &mut degen_pixel,
+                    FaceLabel::Bridge(_, _) => &mut degen_bridge,
+                    FaceLabel::BridgeCorner => &mut degen_bridge_corner,
+                    FaceLabel::GapFill(_, _) | FaceLabel::GapCorner => &mut degen_fill,
+                };
+                if area < args.area_threshold {
+                    *counter += 1;
+                }
+            }
+            macro_rules! count_face_label {
+                ($p: pat) => {{
+                    face_labels
+                        .iter()
+                        .enumerate()
+                        .filter(|&(fi, c)| !out.f[fi].is_degenerate() && matches!(c, $p))
+                        .count()
+                }};
+            }
+            println!(
+                r#"
       Degen Degen   : {degen_degen} / {}
       Degen Pixel   : {degen_pixel} / {}
       Degen Bridge  : {degen_bridge} / {}
       Degen BridgeC : {degen_bridge_corner} / {}
       Degen Fill    : {degen_fill} / {}
     "#,
-        count_face_label!(FaceLabel::Degen),
-        count_face_label!(FaceLabel::Pixel),
-        count_face_label!(FaceLabel::Bridge(_, _)),
-        count_face_label!(FaceLabel::BridgeCorner),
-        count_face_label!(FaceLabel::GapFill(_, _) | FaceLabel::GapCorner),
-    );
+                count_face_label!(FaceLabel::Degen),
+                count_face_label!(FaceLabel::Pixel),
+                count_face_label!(FaceLabel::Bridge(_, _)),
+                count_face_label!(FaceLabel::BridgeCorner),
+                count_face_label!(FaceLabel::GapFill(_, _) | FaceLabel::GapCorner),
+            );
+        }};
+    }
+    mesh_stats!();
 
     let init_f = out.f.len();
     let init_v = out.v.len();
@@ -515,7 +530,24 @@ pub fn texture_to_vert_colors(
 
     if !args.no_delete_degen {
         println!("[INFO]: Starting degenerate face deletion");
-        delete_degenerate_faces(&mut out, args, &face_labels);
+        let remap = delete_degenerate_faces(&mut out, args, &face_labels);
+
+        for f in out.f.iter_mut() {
+            f.remap(|vi| remap.get_compress(vi));
+            f.canonicalize();
+        }
+
+        mesh_stats!();
+
+        out.f.retain_mut(|f| {
+            if f.is_empty() {
+                return false;
+            }
+
+            f.remap(|vi| remap.get_compress(vi));
+            !f.canonicalize()
+        });
+
         out.delete_unused_vertices();
         println!(
             "[INFO]: Cleaned mesh has {} faces (-{}) & {} vertices (-{})",
@@ -597,10 +629,6 @@ pub fn sample_exact(
     let iarea = iaabb.area();
     assert_ne!(iarea, 0);
 
-    if iarea == 1 {
-        todo!();
-    }
-
     let start = out.v.len();
     let start_f = out.f.len();
     for c in iaabb.iter_coords() {
@@ -619,7 +647,7 @@ pub fn sample_exact(
 
         // seems to work fine but a bit sus about it because it took so long to figure out if it
         // worked.
-        if (0..3).any(|i| barys.iter().all(|bary| bary[i] < -1e-4)) {
+        if (0..3).any(|i| barys.iter().all(|bary| bary[i] < -3e-3)) {
             continue;
         }
 
@@ -730,14 +758,16 @@ pub fn sample_exact(
         }};
     }
     // sanity check
-    for [u, v] in iaabb.iter_coords() {
-        if !pixel_map.contains_key(&[u, v]) {
-            continue;
-        }
-        let nbrs = [[u - 1, v], [u + 1, v], [u, v - 1], [u, v + 1]];
-        let has_nbr = nbrs.iter().any(|nbr| pixel_map.contains_key(nbr));
-        if !has_nbr {
-            save_bad_mesh!("Each pixel in a tri should have at least one nbr");
+    if iaabb.area() > 1 {
+        for [u, v] in iaabb.iter_coords() {
+            if !pixel_map.contains_key(&[u, v]) {
+                continue;
+            }
+            let nbrs = [[u - 1, v], [u + 1, v], [u, v - 1], [u, v + 1]];
+            let has_nbr = nbrs.iter().any(|nbr| pixel_map.contains_key(nbr));
+            if !has_nbr {
+                save_bad_mesh!("Each pixel in a tri should have at least one nbr");
+            }
         }
     }
 
@@ -841,9 +871,8 @@ pub fn sample_exact(
         let vert_pos = mesh.v[og_vi];
 
         let [og_u, og_v] = mesh.uv[CHAN][og_vi];
-        // TODO double check if this is +0.5 or -0.5
-        let u = (og_u.fract().abs() * w as F - 0.5).floor() as i32;
-        let v = (og_v.fract().abs() * h as F - 0.5).floor() as i32;
+        let u = (og_u.fract().abs() * w as F + 0.5).floor() as i32;
+        let v = (og_v.fract().abs() * h as F + 0.5).floor() as i32;
         assert!(u >= 0, "{og_u} {u} {v}");
         assert!(v >= 0, "{og_u} {u} {v}");
 
@@ -1177,8 +1206,7 @@ pub fn delete_degenerate_faces(
     mesh: &mut pars3d::Mesh,
     args: &Args,
     labels: &[FaceLabel],
-) -> usize {
-    let mut deleted = 0;
+) -> UnionFind {
     let mut remap = UnionFind::new(mesh.v.len());
 
     let mut fixed = HashSet::new();
@@ -1190,8 +1218,6 @@ pub fn delete_degenerate_faces(
                 fixed.insert(e0);
                 fixed.insert(e1);
             }
-
-            // TODO here also check planarity
         }
     }
 
@@ -1241,7 +1267,6 @@ pub fn delete_degenerate_faces(
         }
 
         *f = FaceKind::empty();
-        deleted += 1;
     }
     */
 
@@ -1288,19 +1313,59 @@ pub fn delete_degenerate_faces(
         combine(e10, e01);
 
         *f = FaceKind::empty();
-        deleted += 1;
     }
 
-    mesh.f.retain_mut(|f| {
-        if f.is_empty() {
-            return false;
+    for fi in 0..mesh.f.len() {
+        let FaceLabel::GapFill([e00, e01], [e10, e11]) = labels[fi] else {
+            continue;
+        };
+
+        macro_rules! is_valid {
+            ($a:expr, $b:expr, $c:expr, $d:expr) => {{
+                let [a, b, c, d] = [$a, $b, $c, $d].map(|vi| mesh.vert_colors[vi]);
+                if dist(a, c) > args.color_diff_threshold {
+                    continue;
+                }
+                if dist(b, d) > args.color_diff_threshold {
+                    continue;
+                }
+                let [a, b, c, d] = [$a, $b, $c, $d].map(|vi| mesh.v[vi]);
+                if dist(a, c) > 1e-4 {
+                    continue;
+                }
+                if dist(b, d) > 1e-4 {
+                    continue;
+                }
+                [$a, $b, $c, $d]
+            }};
         }
 
-        f.remap(|vi| remap.get_compress(vi));
-        !f.canonicalize()
-    });
+        let [a, b, c, d] = match [e01, e11] {
+            [usize::MAX, usize::MAX] => unreachable!(),
+            [e01, usize::MAX] => is_valid!(e00, e01, e10, e10),
+            [usize::MAX, e11] => is_valid!(e00, e00, e10, e11),
+            [e01, e11] => is_valid!(e00, e01, e10, e11),
+        };
+        // Commit to collapsing this face
+        let mut combine = |a: usize, b: usize| {
+            let a = remap.get_compress(a);
+            let b = remap.get_compress(b);
+            let new_v = kmul(0.5, add(mesh.v[a], mesh.v[b]));
+            let new_vc = kmul(0.5, add(mesh.vert_colors[a], mesh.vert_colors[b]));
+            let new_vi = a;
 
-    deleted
+            mesh.v[a] = new_v;
+            mesh.vert_colors[a] = new_vc;
+            remap.set(a, new_vi);
+            remap.set(b, new_vi);
+        };
+        combine(a, c);
+        combine(b, d);
+
+        mesh.f[fi] = FaceKind::empty();
+    }
+
+    remap
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

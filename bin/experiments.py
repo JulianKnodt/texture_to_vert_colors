@@ -74,8 +74,14 @@ experiments = {
       "-d data/spot_texture.png", False
     ),
   ],
+  "planar": [
+    run("plane.obj", "plane.ply", "-d data/vase_2k.png", False),
+  ],
   "shiba": [
     run("shiba.obj", "shiba.ply", "-d data/uv_grid.png", False),
+  ],
+  "watercolor_cake": [
+    run("watercolor_cake.obj", "watercolor_cake.ply", "-d data/watercolor_cake.tif"),
   ],
 }
 

@@ -69,7 +69,10 @@ experiments = {
     run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", False),
   ],
   "spot": [
-    run("spot_triangulated.obj", "spot_triangulated.ply", "-d data/spot_texture.png", False),
+    run(
+      "spot_triangulated.obj", "spot_triangulated.ply",
+      "-d data/spot_texture.png", False
+    ),
   ],
   "shiba": [
     run("shiba.obj", "shiba.ply", "-d data/uv_grid.png", False),

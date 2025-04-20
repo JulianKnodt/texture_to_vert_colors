@@ -3,12 +3,14 @@
 #![feature(assert_matches)]
 
 use std::assert_matches::assert_matches;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cmp::minmax;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
 use pars3d::{FaceKind, edge::EdgeKind};
+use union_find::UnionFind;
 
 use texture_to_vert_colors::aabb::AABB;
 use texture_to_vert_colors::{
@@ -33,12 +35,12 @@ pub struct Args {
     #[arg(long, short = 'k', default_value_t = SampleKind::Exact)]
     sample_kind: SampleKind,
 
-    /// Do not add corners (for debugging)
-    #[arg(long, hide = true)]
-    no_corners: bool,
+    /// Do not fill gaps between triangles (DEBUGGING)
+    #[arg(long)]
+    no_gap_fill: bool,
 
     /// Do not fill space between pixel quads (DEBUGGING)
-    #[arg(long, hide = true)]
+    #[arg(long)]
     no_fill: bool,
 
     /// Display some extra colors (DEBUGGING)
@@ -213,7 +215,7 @@ pub fn texture_to_vert_colors(
         }
     }
 
-    if args.no_corners {
+    if args.no_gap_fill {
         return out;
     }
 
@@ -343,35 +345,44 @@ pub fn texture_to_vert_colors(
             let t0_delta = (v0_front.1 - t1n).abs();
             let t1_delta = (v1_front.1 - t0n).abs();
 
-            let new_face = if (t0_delta - t1_delta).abs() < 5e-2 {
+            let (new_face, label) = if (t0_delta - t1_delta).abs() < 2e-2 {
                 let new_face = FaceKind::Quad([v0_front.0, p0n, p1n, v1_front.0]);
+                let label = FaceLabel::GapFill([v0_front.0, p0n], [v1_front.0, p1n]);
                 v0_front = (p0n, t0n);
                 v1_front = (p1n, t1n);
                 assert!(v0s.next().is_some());
                 assert!(v1s.next().is_some());
-                new_face
+                (new_face, label)
             } else if t0_delta >= t1_delta {
                 let new_face = FaceKind::Tri([v0_front.0, p0n, v1_front.0]);
+                let label = FaceLabel::GapFill([v0_front.0, p0n], [v1_front.0, usize::MAX]);
                 v0_front = (p0n, t0n);
                 assert!(v0s.next().is_some());
-                new_face
+                (new_face, label)
             } else {
                 let new_face = FaceKind::Tri([v0_front.0, p1n, v1_front.0]);
+                let label = FaceLabel::GapFill([v0_front.0, usize::MAX], [v1_front.0, p1n]);
                 v1_front = (p1n, t1n);
                 assert!(v1s.next().is_some());
-                new_face
+                (new_face, label)
             };
-            face_labels.push(FaceLabel::GapFill(f0, f1));
+            face_labels.push(label);
             out.f.push(new_face);
         }
 
         for (p0n, t) in v0s {
-            face_labels.push(FaceLabel::GapFill(f0, f1));
+            face_labels.push(FaceLabel::GapFill(
+                [v0_front.0, p0n],
+                [v1_front.0, usize::MAX],
+            ));
             out.f.push(FaceKind::Tri([v0_front.0, p0n, v1_front.0]));
             v0_front = (p0n, t);
         }
         for (p1n, t) in v1s {
-            face_labels.push(FaceLabel::GapFill(f0, f1));
+            face_labels.push(FaceLabel::GapFill(
+                [v0_front.0, usize::MAX],
+                [v1_front.0, p1n],
+            ));
             out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
             v1_front = (p1n, t);
         }
@@ -382,6 +393,7 @@ pub fn texture_to_vert_colors(
         assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
 
         if fvs.iter().any(|fv| !edge_adj.contains_key(&fv.1)) {
+            println!("aborting1");
             face_labels.push(FaceLabel::GapCorner);
             out.f.push(FaceKind::from_iter(fvs.iter().map(|fv| fv.1)));
             continue;
@@ -402,6 +414,7 @@ pub fn texture_to_vert_colors(
             4 => {
                 let mut quad = [first, 0, 0, 0];
                 let Some(&next) = edge_adj[&first].iter().find(|&&v| v != usize::MAX) else {
+                    println!("aborting2");
                     out.f
                         .push(FaceKind::Quad(std::array::from_fn(|i| fvs[i].1)));
                     continue;
@@ -410,11 +423,13 @@ pub fn texture_to_vert_colors(
                 assert_ne!(quad[0], usize::MAX);
                 for i in 2..4 {
                     let Some(n) = edge_adj.get(&quad[i - 1]) else {
+                        println!("aborting3");
                         quad = std::array::from_fn(|i| fvs[i].1);
                         break;
                     };
                     let Some(&next) = n.iter().find(|&&v| v != quad[i - 2] && v != usize::MAX)
                     else {
+                        println!("aborting4");
                         quad = std::array::from_fn(|i| fvs[i].1);
                         break;
                     };
@@ -548,36 +563,13 @@ pub fn sample_exact(
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
         [r, g, b]
     };
-    /*
-    macro_rules! emit_degen {
-        () => {{
-            println!("Emitting degen");
-            let mut new_f = f.clone();
-            new_f.remap(|og_vi| {
-                let new_vi = out.v.len();
-                let pos = mesh.v[og_vi];
-                let [u, v] = mesh.uv[CHAN][og_vi];
-                out.v.push(pos);
-                out.vert_colors.push(get_rgb(u, v));
-                corner_map
-                    .entry(pos.map(F::to_bits))
-                    .or_default()
-                    .push((fi, new_vi));
-                new_vi
-            });
-            out.f.push(new_f);
-            face_labels.push(FaceLabel::Degen);
-            return true;
-        }};
-    }
-    */
+
     for uv in f_slice.iter().map(|&vi| mesh.uv[CHAN][vi]) {
         aabb.add_point(uv);
     }
 
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
-    //aabb.expand_by(1e-4);
     let iaabb = aabb.round_to_i32();
     let uv_f = f.map_kind(|vi| mesh.uv[0][vi]);
     let v_f = f.map_kind(|vi| mesh.v[vi]);
@@ -589,12 +581,6 @@ pub fn sample_exact(
     // face normal for projecting bary
     let f_n = normalize(v_f.normal());
     assert!(length(f_n) > 1e-3);
-    /*
-    if v_f.area() < 1e-8 {
-        emit_degen!();
-    }
-    */
-    //assert!(v_f.area() > 1e-5, "{}", v_f.area());
     /*
     assert!(
         uv_f.area() > 1e-8,
@@ -632,7 +618,7 @@ pub fn sample_exact(
 
         // seems to work fine but a bit sus about it because it took so long to figure out if it
         // worked.
-        if (0..3).any(|i| barys.iter().all(|bary| bary[i] < 0.)) {
+        if (0..3).any(|i| barys.iter().all(|bary| bary[i] < -1e-4)) {
             continue;
         }
 
@@ -679,6 +665,13 @@ pub fn sample_exact(
             (new_pos, new_normal)
         });
 
+        // TODO check if this is alright?
+        /*
+        if pars3d::quad_area(new_verts.map(|vn| vn.0)) == 0. {
+          continue;
+        }
+        */
+
         // commit to this new pixel
         let new_verts = new_verts.map(|(new_vert, normal)| {
             let vi = out.v.len();
@@ -698,14 +691,9 @@ pub fn sample_exact(
         out.f.push(FaceKind::Quad(new_verts));
     }
 
-    macro_rules! save_bad_mesh {
-        ($label: expr) => {{
-            let mut tmp = pars3d::Mesh::new_geometry(
-                f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
-                vec![FaceKind::Tri([0, 1, 2])],
-            );
-
-            println!("--- Bad Triangle Diagram ---");
+    // hohoho what a funny name
+    macro_rules! triagram {
+        () => {{
             for h in iaabb.height_range() {
                 for w in iaabb.width_range() {
                     let c = if pixel_map.contains_key(&[w, h]) {
@@ -717,7 +705,18 @@ pub fn sample_exact(
                 }
                 println!();
             }
-            println!("------");
+        }};
+    }
+
+    macro_rules! save_bad_mesh {
+        ($label: expr) => {{
+            let mut tmp = pars3d::Mesh::new_geometry(
+                f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
+                vec![FaceKind::Tri([0, 1, 2])],
+            );
+
+            println!("--- Bad Triangle Diagram ---");
+            triagram!();
 
             tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
             pars3d::save("failing_tri.obj", &tmp.into_scene()).expect("Failed to save temp error");
@@ -735,6 +734,17 @@ pub fn sample_exact(
 
             return false;
         }};
+    }
+    // sanity check
+    for [u, v] in iaabb.iter_coords() {
+        if !pixel_map.contains_key(&[u, v]) {
+            continue;
+        }
+        let nbrs = [[u - 1, v], [u + 1, v], [u, v - 1], [u, v + 1]];
+        let has_nbr = nbrs.iter().any(|nbr| pixel_map.contains_key(nbr));
+        if !has_nbr {
+            save_bad_mesh!("Each pixel in a tri should have at least one nbr");
+        }
     }
 
     // --- Adding faces in between pixel quads
@@ -792,12 +802,12 @@ pub fn sample_exact(
     // compute adjacent boundary edges and trace from the corners
     for (fi, f) in out.f.iter().enumerate().skip(start_f) {
         for [e0, e1] in f.edges() {
-            debug_assert_ne!(e0, e1);
+            assert_ne!(e0, e1);
             edge_face_adj
-                .entry(std::cmp::minmax(e0, e1))
+                .entry(minmax(e0, e1))
                 .and_modify(|v| {
                     let did_ins = v.insert(fi);
-                    debug_assert!(did_ins);
+                    assert!(did_ins);
                 })
                 .or_insert(EdgeKind::Boundary(fi));
         }
@@ -806,13 +816,13 @@ pub fn sample_exact(
     // Compute adjacent vertices to each boundary vertex
     let mut vert_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
     for (&[ef0, ef1], ek) in edge_face_adj.iter() {
-        debug_assert_ne!(ef0, ef1);
+        assert_ne!(ef0, ef1);
         assert!(!ek.is_nonmanifold());
         if !ek.is_boundary() {
             continue;
         }
 
-        let mut ins = |a, b| {
+        let mut ins = |a: usize, b: usize| {
             *vert_adj
                 .entry(a)
                 .or_insert([usize::MAX; 2])
@@ -828,10 +838,6 @@ pub fn sample_exact(
         .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
     debug_assert!(check);
 
-    if args.no_corners {
-        return true;
-    }
-
     // --- Compute correspondence between original vertices and a single pixel vertex, which
     // must be a boundary.
 
@@ -839,15 +845,17 @@ pub fn sample_exact(
     let mut corner_verts: [(usize, usize); 3] = [(usize::MAX, usize::MAX /* og, new) */); 3];
     for (ci, &og_vi) in f_slice.iter().enumerate() {
         let vert_pos = mesh.v[og_vi];
-        let [u, v] = mesh.uv[CHAN][og_vi];
 
-        let u = ((u % 1.) * w as F - 0.5).floor() as i32;
-        let v = ((v % 1.) * h as F - 0.5).floor() as i32;
+        let [og_u, og_v] = mesh.uv[CHAN][og_vi];
+        let u = (og_u.fract().abs() * w as F - 0.5).floor() as i32;
+        let v = (og_v.fract().abs() * h as F - 0.5).floor() as i32;
+        assert!(u >= 0, "{og_u} {u} {v}");
+        assert!(v >= 0, "{og_u} {u} {v}");
 
         let mut nearest = 0;
         let mut best_dist = F::INFINITY;
         // TODO do this check more efficiently
-        let range = [0, -1, 1, -2, 2];
+        let range = [0, -1, 1, -2, 2, -3, 3];
         for i in range {
             for j in range {
                 let nu = u + i;
@@ -893,16 +901,13 @@ pub fn sample_exact(
         if !best_dist.is_finite() {
             save_bad_mesh!("No nearby points");
         }
-        debug_assert_ne!(best_dist, F::INFINITY);
+        assert_ne!(best_dist, F::INFINITY);
 
         let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
         debug_assert!(!fv.iter().any(|fv| fv.0 == fi));
         // check that each corner vert corresponds to a single original vertex
         let check = corner_verts.iter().any(|&(_, new_vi)| new_vi == nearest);
-        if check {
-            save_bad_mesh!("One vertex maps to multiple original corners");
-        }
-        debug_assert!(!check);
+        assert!(!check);
 
         fv.push((fi, nearest));
         corner_verts[ci] = (og_vi, nearest);
@@ -916,10 +921,17 @@ pub fn sample_exact(
         }
     }
 
+    if args.no_gap_fill {
+        return true;
+    }
+
     const INVALID_POS: [U; 3] = [U::MAX; 3];
     for &(og_vi, new_vi) in &corner_verts {
         assert!(vert_adj.contains_key(&new_vi), "{new_vi} {corner_verts:?}");
         let [l, r] = vert_adj[&new_vi];
+        assert_ne!(l, r);
+        assert_ne!(l, new_vi);
+        assert_ne!(r, new_vi);
         let mut iter = |mut curr: usize, mut prev: usize| {
             let mut c = 1;
             while !corner_verts.iter().any(|v| v.1 == curr) {
@@ -932,9 +944,18 @@ pub fn sample_exact(
                 curr = next;
                 c += 1;
             }
+            curr
         };
 
-        iter(l, new_vi);
+        // add to the edge map here, to ensure that even if the edge doesn't have any
+        // intermediate vertices it will be labeled.
+        let end_pt = iter(l, new_vi);
+        let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
+        let [e0_key, e1_key] = [og_vi, next_og_vi].map(|vi| out.v[vi].map(F::to_bits));
+        let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
+        if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
+            fvs.push((fi, vec![]));
+        }
         iter(r, new_vi);
     }
     let check = labels
@@ -947,9 +968,7 @@ pub fn sample_exact(
             out.vert_colors[new_vi] = [0.; 3];
         }
         let [og0_key, og1_key] = ogs.map(|vi| vi.1);
-        let fvs = edge_map
-            .entry(std::cmp::minmax(og0_key, og1_key))
-            .or_default();
+        let fvs = edge_map.entry(minmax(og0_key, og1_key)).or_default();
         if let Some(fv) = fvs.iter_mut().find(|fv| fv.0 == fi) {
             fv.1.push(new_vi);
         } else {
@@ -1163,8 +1182,7 @@ pub fn delete_degenerate_faces(
     labels: &[FaceLabel],
 ) -> usize {
     let mut deleted = 0;
-    // TODO make this into a union find
-    let mut remap = HashMap::new();
+    let mut remap = UnionFind::new(mesh.v.len());
 
     let mut fixed = HashSet::new();
     for f in &mesh.f {
@@ -1185,6 +1203,7 @@ pub fn delete_degenerate_faces(
 
     // for each vertex need to compute whether it can be deleted,
     // based on whether the 1 ring of the vertex all have similar values.
+    /*
     for (fi, f) in mesh.f.iter_mut().enumerate() {
         if f.is_empty() {
             continue;
@@ -1194,10 +1213,7 @@ pub fn delete_degenerate_faces(
         }
 
         let f_s = f.as_slice();
-        if f_s
-            .iter()
-            .any(|vi| remap.contains_key(vi) || fixed.contains(vi))
-        {
+        if f_s.iter().any(|vi| fixed.contains(vi)) {
             continue;
         }
         let area = f.area(&mesh.v);
@@ -1209,39 +1225,35 @@ pub fn delete_degenerate_faces(
         let n = f_s.len().max(1) as F;
         let avg_color = f_s
             .iter()
-            .map(|&vi| mesh.vert_colors[vi])
+            .map(|&vi| mesh.vert_colors[remap.get_compress(vi)])
             .fold([0.; 3], add)
             .map(|v| v / n);
 
         let new_v = f_s
             .iter()
-            .map(|&vi| mesh.v[vi])
+            .map(|&vi| mesh.v[remap.get_compress(vi)])
             .fold([0.; 3], add)
             .map(|v| v / n);
 
-        let new_vi = mesh.v.len();
-        mesh.v.push(new_v);
-        mesh.vert_colors.push(avg_color);
+        let new_vi = f_s[0];
+        mesh.v[new_vi] = new_v;
+        mesh.vert_colors[new_vi] = avg_color;
 
         for &vi in f_s {
-            remap.insert(vi, new_vi);
+            remap.set(vi, new_vi);
         }
 
         *f = FaceKind::empty();
         deleted += 1;
     }
+    */
 
-    let curr_del = deleted;
+    // --- Bridge Face Deletion
     for fi in 0..mesh.f.len() {
         let f = &mesh.f[fi];
         if f.len() != 4 {
             continue;
         }
-        // TODO this case needs to be handled
-        if f.as_slice().iter().any(|vi| remap.contains_key(vi)) {
-            continue;
-        }
-
         let FaceLabel::Bridge(fi0, fi1) = labels[fi] else {
             continue;
         };
@@ -1249,8 +1261,8 @@ pub fn delete_degenerate_faces(
         assert_matches!(labels[fi1], FaceLabel::Pixel);
 
         let [f, f0, f1] = mesh.f.get_disjoint_mut([fi, fi0, fi1]).unwrap();
-        let [e00, e01] = f.shared_edge(f0).unwrap();
-        let [e10, e11] = f.shared_edge(f1).unwrap();
+        let [e00, e01] = f.shared_edge(f0).unwrap().map(|v| remap.get_compress(v));
+        let [e10, e11] = f.shared_edge(f1).unwrap().map(|v| remap.get_compress(v));
 
         // e00 - e11 is a paired edge
         // e01 - e10 is a paired edge
@@ -1264,14 +1276,16 @@ pub fn delete_degenerate_faces(
 
         // Commit to collapsing this face
         let mut combine = |a: usize, b: usize| {
+            let a = remap.get_compress(a);
+            let b = remap.get_compress(b);
             let new_v = kmul(0.5, add(mesh.v[a], mesh.v[b]));
             let new_vc = kmul(0.5, add(mesh.vert_colors[a], mesh.vert_colors[b]));
-            let new_vi = mesh.v.len();
+            let new_vi = a;
 
-            mesh.v.push(new_v);
-            mesh.vert_colors.push(new_vc);
-            assert_eq!(remap.insert(a, new_vi), None);
-            assert_eq!(remap.insert(b, new_vi), None);
+            mesh.v[a] = new_v;
+            mesh.vert_colors[a] = new_vc;
+            remap.set(a, new_vi);
+            remap.set(b, new_vi);
         };
         combine(e00, e11);
         combine(e10, e01);
@@ -1279,13 +1293,13 @@ pub fn delete_degenerate_faces(
         *f = FaceKind::empty();
         deleted += 1;
     }
-    println!("{}", deleted - curr_del);
 
     mesh.f.retain_mut(|f| {
         if f.is_empty() {
-          return false;
+            return false;
         }
-        f.remap(|vi| remap.get(&vi).copied().unwrap_or(vi));
+
+        f.remap(|vi| remap.get_compress(vi));
         !f.canonicalize()
     });
 
@@ -1303,7 +1317,7 @@ pub enum FaceLabel {
     /// Fills in gaps between bridges
     BridgeCorner,
     /// A face intended to cover the boundary between two faces
-    GapFill(usize, usize),
+    GapFill([usize; 2], [usize; 2]),
     /// A face which covers the corner between many triangles
     GapCorner,
 }

@@ -125,11 +125,6 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         }
         self.edges[v] = nbrs;
     }
-    #[inline]
-    /// the degree of a given vertex
-    pub fn degree(&self, v: usize) -> usize {
-        self.edges[v].len()
-    }
     pub fn dedup(&mut self, v: usize) {
         self.edges[v].sort_unstable_by_key(|&v| self.vertices.find(v));
         self.edges[v].dedup_by_key(|&mut v| self.vertices.find(v));

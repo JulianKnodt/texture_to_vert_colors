@@ -4,7 +4,7 @@
 
 use std::assert_matches::assert_matches;
 use std::cmp::minmax;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::ops::Range;
 
@@ -14,7 +14,7 @@ use pars3d::{FaceKind, Mesh, edge::EdgeKind};
 use union_find::UnionFind;
 
 use texture_to_vert_colors::aabb::AABB;
-use texture_to_vert_colors::qem::{Args as QEMArgs, simplify_range_colored};
+use texture_to_vert_colors::qem::{Args as QEMArgs, QEMBuffers, simplify_range_colored};
 use texture_to_vert_colors::{
     F, U, add, cross, cross_2d, dot, kmul, len_sq, length, normalize, sub,
 };
@@ -86,9 +86,13 @@ pub struct Args {
     #[arg(long)]
     no_incremental_delete: bool,
 
-    /// Do not perform QEM incrementally, only perform a single QEM at the end (ABLATION).
+    /// Do not perform QEM incrementally, only perform a single QEM at the end (ABLATION)
     #[arg(long)]
     no_incremental_qem: bool,
+
+    /// Do not perform QEM at the end (ABLATION)
+    #[arg(long)]
+    no_final_qem: bool,
 }
 
 pub fn main() {
@@ -184,6 +188,12 @@ pub fn texture_to_vert_colors(
         diff_img.height()
     );
 
+    let qem_args = QEMArgs {
+        abs_eps: 1e-5,
+        color_diff_threshold: args.color_diff_threshold,
+        ..QEMArgs::default()
+    };
+
     let mut edge_map = BTreeMap::new();
     let mut corner_map = BTreeMap::new();
     let mut labels = BTreeMap::new();
@@ -192,6 +202,7 @@ pub fn texture_to_vert_colors(
     let mut remap = UnionFind::new_u32(0);
 
     use indicatif::ProgressIterator;
+    let mut qem_buf = QEMBuffers::default();
     for (fi, f) in mesh.f.iter().enumerate().progress() {
         let curr_f = out.f.len();
         let curr_v = out.v.len();
@@ -242,11 +253,6 @@ pub fn texture_to_vert_colors(
             // triangle.
 
             if !args.no_incremental_qem {
-                let qem_args = QEMArgs {
-                    target_vert_ratio: 0.3,
-                    abs_eps: 1e-3,
-                    ..QEMArgs::default()
-                };
                 simplify_range_colored(
                     &mut out,
                     &qem_args,
@@ -254,6 +260,7 @@ pub fn texture_to_vert_colors(
                     curr_f..new_f,
                     curr_v..new_v,
                     &mut remap,
+                    &mut qem_buf,
                 );
 
                 for f in out.f.iter_mut() {
@@ -531,7 +538,9 @@ pub fn texture_to_vert_colors(
                     face_labels
                         .iter()
                         .enumerate()
-                        .filter(|&(fi, c)| !out.f[fi].is_degenerate() && matches!(c, $p))
+                        .filter(|&(fi, c)| {
+                            !out.f[fi].is_empty() && !out.f[fi].is_degenerate() && matches!(c, $p)
+                        })
                         .count()
                 }};
             }
@@ -567,7 +576,21 @@ pub fn texture_to_vert_colors(
             f.canonicalize();
         }
 
-        mesh_stats!();
+        if !args.no_final_qem {
+            let num_f = out.f.len();
+            let num_v = out.v.len();
+            let bd_verts = out.boundary_vertices().collect::<BTreeSet<_>>();
+            simplify_range_colored(
+                &mut out,
+                &qem_args,
+                // lock boundary of the outputs
+                |vi| bd_verts.contains(&vi),
+                0..num_f,
+                0..num_v,
+                &mut remap,
+                &mut qem_buf,
+            );
+        }
 
         out.f.retain_mut(|f| {
             if f.is_empty() {
@@ -1272,8 +1295,10 @@ pub fn del_degen_bridges(
             let new_vc = kmul(0.5, add(mesh.vert_colors[a], mesh.vert_colors[b]));
             let new_vi = a;
 
-            mesh.v[a] = new_v;
-            mesh.vert_colors[a] = new_vc;
+            unsafe {
+                *mesh.v.get_unchecked_mut(a) = new_v;
+                *mesh.vert_colors.get_unchecked_mut(a) = new_vc;
+            }
             remap.set(a, new_vi);
             remap.set(b, new_vi);
         };

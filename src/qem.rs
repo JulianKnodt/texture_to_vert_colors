@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use ordered_float::NotNan;
@@ -7,7 +7,7 @@ use priority_queue::PriorityQueue;
 use union_find::UnionFind;
 
 use super::{
-    F, cross, dot, length,
+    F, cross, dist, dot, length,
     manifold::{CollapsibleManifold, EdgeKind},
     normalize,
     quadric::{AttrWeights, Quadric, QuadricAccumulator},
@@ -16,12 +16,6 @@ use super::{
 pub struct Args {
     /// During decimation, how heavily should colors be preserved?
     pub color_weight: F,
-
-    /// Target number of vertices after reduction
-    pub target_vert_ratio: F,
-
-    /// Target number of vertices after reduction
-    pub target_num_verts: usize,
 
     /// Extra weight to add on each edge based on color differences
     pub color_preservation_weight: F,
@@ -35,28 +29,43 @@ pub struct Args {
     /// Epsilon value to use when comparing quadric errors.
     pub abs_eps: F,
 
-    /// Threshold to stop quadric decimation at
-    pub quadric_threshold: F,
-
     /// The weight to use for degenerate quadrics
     pub degen_quadric_weight: F,
+
+    /// Skip edge collapses if the color is above this threshold.
+    pub color_diff_threshold: F,
 }
 
 impl Default for Args {
     fn default() -> Self {
         Self {
             color_weight: 0.5,
-            target_vert_ratio: 0.,
-            target_num_verts: 0,
             color_preservation_weight: 10.,
 
             min_face_area: 1e-2,
             min_edge_weight: 1e-2,
 
             abs_eps: 1e-4,
-            quadric_threshold: 1.,
             degen_quadric_weight: 1e-4,
+            color_diff_threshold: 2e-2,
         }
+    }
+}
+
+#[derive(Default)]
+pub struct QEMBuffers {
+    edge_face_adj: HashMap<[usize; 2], EdgeKind>,
+    pq: PriorityQueue<[usize; 2], NotNan<F>>,
+    snd_pq: PriorityQueue<[usize; 2], (u32, NotNan<F>)>,
+    recencies: BTreeMap<[usize; 2], u32>,
+}
+
+impl QEMBuffers {
+    pub fn clear(&mut self) {
+        self.edge_face_adj.clear();
+        self.pq.clear();
+        self.snd_pq.clear();
+        self.recencies.clear();
     }
 }
 
@@ -70,7 +79,11 @@ pub fn simplify_range_colored(
     vert_range: Range<usize>,
     // output which vertices got mapped to which other vertices
     remap: &mut UnionFind<u32>,
+
+    bufs: &mut QEMBuffers,
 ) {
+    bufs.clear();
+
     let offset = vert_range.start;
     let num_v = vert_range.end - offset;
 
@@ -87,25 +100,19 @@ pub fn simplify_range_colored(
             q += Quadric::new_plane(pos, d, area);
             q.area += area;
         }
-        q += Quadric::degen_attr(mesh.vert_colors[vi + offset], attr_ws) * area;
+        let vc = mesh.vert_colors[vi + offset];
+        q += Quadric::degen_attr(vc, attr_ws) * area;
         q *= args.degen_quadric_weight;
 
-        (q, pos)
+        (q, pos, vc)
     });
 
-    let target_verts = args
-        .target_num_verts
-        .max((args.target_vert_ratio.clamp(0., 1.) * (num_v as F)) as usize);
-
-    let mut edge_face_adj: HashMap<[usize; 2], EdgeKind> = HashMap::new();
-    let mut f_n = vec![[0.; 3]; mesh.f.len()];
     let mut num_edges = 0;
     let mut avg_edge_len = 0.;
     for fi in face_range.clone() {
         let f = &mesh.f[fi];
-        f_n[fi] = normalize(f.normal(&mesh.v));
         for e in f.edges_ord() {
-            edge_face_adj
+            bufs.edge_face_adj
                 .entry(e)
                 .and_modify(|p| {
                     p.insert(fi);
@@ -119,14 +126,6 @@ pub fn simplify_range_colored(
 
     avg_edge_len /= num_edges as F;
 
-    let mut color_dists = HashMap::new();
-    if !mesh.vert_colors.is_empty() {
-        for &[e0, e1] in edge_face_adj.keys() {
-            let v = length(sub(mesh.vert_colors[e0], mesh.vert_colors[e1]));
-            assert_eq!(color_dists.insert([e0, e1], v), None);
-        }
-    }
-
     for fi in face_range.clone() {
         for es in mesh.f[fi].edges() {
             let [e0, e1] = es.map(|vi| m.vertices.get_compress(vi - offset));
@@ -137,7 +136,7 @@ pub fn simplify_range_colored(
     for fi in face_range.clone() {
         let f = &mesh.f[fi];
         let area = f.area(&mesh.v).max(0.) + args.min_face_area;
-        let n = f_n[fi];
+        let n = normalize(f.normal(&mesh.v));
         if length(n) == 0. {
             // Handle this better (there will be many degenerate triangles)
             continue;
@@ -165,7 +164,9 @@ pub fn simplify_range_colored(
 
             macro_rules! dihedral_angle {
                 ($f0: expr, $f1: expr) => {{
-                    let angle = dot(f_n[$f0], f_n[$f1]);
+                    let fn0 = normalize(mesh.f[$f0].normal(&mesh.v));
+                    let fn1 = normalize(mesh.f[$f1].normal(&mesh.v));
+                    let angle = dot(fn0, fn1);
                     assert!((-1.0001..=1.0001).contains(&angle), "{angle}");
                     let angle = angle.clamp(-1., 1.);
 
@@ -175,7 +176,7 @@ pub fn simplify_range_colored(
                 }};
             }
 
-            let e_w = match edge_face_adj[&e] {
+            let e_w = match bufs.edge_face_adj[&e] {
                 EdgeKind::Boundary(_) => 4.,
                 EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) / PI,
                 EdgeKind::NonManifold(_) => 4.,
@@ -191,7 +192,8 @@ pub fn simplify_range_colored(
             let edge_dir = normalize(edge_dir);
             let edge_quadric = Quadric::new_plane(curr, normalize(cross(n, edge_dir)), 0.);
 
-            let colpw = color_dists.get(&e).copied().unwrap_or(0.) * args.color_preservation_weight;
+            let colpw =
+                dist(mesh.vert_colors[v], mesh.vert_colors[ni]) * args.color_preservation_weight;
 
             let e_w = e_w.max(colpw);
 
@@ -233,7 +235,6 @@ pub fn simplify_range_colored(
     }
 
     let mut curr_costs = vec![0.; num_v];
-    let mut pq = PriorityQueue::new();
 
     macro_rules! update_cost_of_edge {
         ($e0:expr, $e1: expr) => {{
@@ -259,48 +260,58 @@ pub fn simplify_range_colored(
         if locked(e0 + offset) || locked(e1 + offset) {
             continue;
         }
-        pq.push([e0, e1], update_cost_of_edge!(e0, e1));
+        bufs.pq.push([e0, e1], update_cost_of_edge!(e0, e1));
     }
 
-    let p = indicatif::ProgressBar::new(num_v as u64);
-    let mut buf = PriorityQueue::new();
-    let mut recencies = HashMap::new();
+    let p = if num_v > 1_000_000 {
+        Some(indicatif::ProgressBar::new(num_v as u64))
+    } else {
+        None
+    };
+
     let mut did_update = vec![];
-    'outer: while let Some((e, q)) = pq.pop() {
-        assert!(buf.is_empty());
-        buf.push(e, (0, q));
-        recencies.clear();
-        while let Some(([e0, e1], (rec, q_err))) = buf.pop() {
+    while let Some((e, q)) = bufs.pq.pop() {
+        debug_assert!(bufs.snd_pq.is_empty());
+        bufs.snd_pq.push(e, (0, q));
+        bufs.recencies.clear();
+        while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
             assert!(e0 < e1);
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
-            if -*q_err >= args.quadric_threshold || m.num_vertices() < target_verts {
-                break 'outer;
-            }
 
             let mut q_acc = QuadricAccumulator::default();
-            q_acc += m.get(e0).0;
-            q_acc += m.get(e1).0;
+            let &(q0, _, c0) = m.get(e0);
+            let &(q1, _, c1) = m.get(e1);
+            q_acc += q0;
+            q_acc += q1;
             let pos = q_acc.point();
+            let q01 = q0 + q1;
+            let attr = q01.attributes(pos, attr_ws);
+            if dist(c0, attr) > args.color_diff_threshold {
+                continue;
+            }
+            if dist(c1, attr) > args.color_diff_threshold {
+                continue;
+            }
 
-            if let Some(adj_faces) = edge_face_adj.get(&[e0, e1]) {
+            if let Some(adj_faces) = bufs.edge_face_adj.get(&[e0, e1]) {
                 for &af in adj_faces.as_slice() {
                     let f = &mesh.f[af];
                     let Some([q0, q1]) = f.quad_opp_edge(e0, e1) else {
                         continue;
                     };
-                    let r = recencies.entry(std::cmp::minmax(q0, q1)).or_insert(rec);
-                    *r += 1000;
+                    let r = bufs
+                        .recencies
+                        .entry(std::cmp::minmax(q0, q1))
+                        .or_insert(rec);
+                    *r += 100;
                 }
             };
 
-            m.merge(e0, e1, |(q0, _), (q1, _)| {
-                let q01 = *q0 + *q1;
-                curr_costs[e1] = q01
-                    .cost_attrib(pos, q01.attributes(pos, attr_ws), attr_ws)
-                    .max(0.);
-                (q01, pos)
+            m.merge(e0, e1, |_, _| {
+                curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
+                (q01, pos, attr)
             });
 
             did_update.clear();
@@ -311,8 +322,8 @@ pub fn simplify_range_colored(
                 }
                 let prio = update_cost_of_edge!(e_dst, adj);
                 let adj_e = std::cmp::minmax(e_dst, adj);
-                buf.remove(&adj_e);
-                pq.push(adj_e, prio);
+                bufs.snd_pq.remove(&adj_e);
+                bufs.pq.push(adj_e, prio);
                 did_update.push(adj_e);
             }
 
@@ -331,41 +342,42 @@ pub fn simplify_range_colored(
 
                     did_update.push(adj_e);
                     let prio = update_cost_of_edge!(adj, adj2);
-                    let recency = recencies.get(&adj_e).copied().unwrap_or(0);
+                    let recency = bufs.recencies.get(&adj_e).copied().unwrap_or(0);
 
                     if !approx_eq(*prio, *q_err, args.abs_eps) {
-                        buf.remove(&adj_e);
-                        pq.push(adj_e, prio);
+                        bufs.snd_pq.remove(&adj_e);
+                        bufs.pq.push(adj_e, prio);
                         continue;
                     }
-                    let changed = buf.change_priority(&adj_e, (recency, prio)).is_some();
+                    let changed = bufs
+                        .snd_pq
+                        .change_priority(&adj_e, (recency, prio))
+                        .is_some();
                     if !changed {
-                        pq.push(adj_e, prio);
+                        bufs.pq.push(adj_e, prio);
                     }
                 }
             }
 
-            while let Some((_e, nq_err)) = pq.peek()
+            while let Some((_e, nq_err)) = bufs.pq.peek()
                 && approx_eq(**nq_err, *q_err, args.abs_eps)
             {
-                let (e, nq_err) = pq.pop().unwrap();
-                let recency = recencies.get(&e).copied().unwrap_or(0);
-                buf.push(e, (recency, nq_err));
+                let (e, nq_err) = bufs.pq.pop().unwrap();
+                let recency = bufs.recencies.get(&e).copied().unwrap_or(0);
+                bufs.snd_pq.push(e, (recency, nq_err));
             }
 
-            p.set_position(m.num_vertices() as u64);
+            if let Some(ref p) = p {
+                p.set_position(m.num_vertices() as u64);
+            }
         }
     }
 
-    for (vi, &(q, p)) in m.vertices() {
+    for (vi, &(_, p, c)) in m.vertices() {
         let vi = vi + offset;
 
-        let attrs = q.attributes(p, attr_ws);
-        assert!(!attrs.is_empty());
-        assert!(attrs.len() == 3);
-
         mesh.v[vi] = p;
-        mesh.vert_colors[vi] = attrs.map(|c| c.clamp(0., 1.));
+        mesh.vert_colors[vi] = c.map(|c| c.clamp(0., 1.));
     }
 }
 
@@ -374,13 +386,4 @@ fn approx_eq(a: F, b: F, abs_eps: F) -> bool {
         return true;
     }
     (a - b).abs() < abs_eps
-}
-
-/// rotates f so that the minimum value is in front
-pub fn consistent_face_ordering(f: &mut [usize]) {
-    if f.is_empty() {
-        return;
-    }
-    let min_idx = f.iter().enumerate().min_by_key(|(_, idx)| **idx).unwrap().0;
-    f.rotate_left(min_idx);
 }

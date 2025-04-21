@@ -80,13 +80,17 @@ experiments = {
     ),
   ],
   "planar": [
-    run("plane.obj", "plane.ply", "-d data/vase_2k.png", False),
+    run("plane.obj", "plane_vase.ply", "-d data/vase_2k.png --no-incremental-qem"),
+    run("plane.obj", "plane_vase_with_qem.ply", "-d data/vase_2k.png"),
   ],
   "shiba": [
     run("shiba.obj", "shiba.ply", "-d data/uv_grid.png", False),
   ],
   "watercolor_cake": [
-    run("watercolor_cake.obj", "watercolor_cake.ply", "-d data/watercolor_cake.tif", False),
+    run(
+      "watercolor_cake.obj", "watercolor_cake.ply",
+      "-d data/watercolor_cake.tif --no-incremental-qem", False
+    ),
   ],
 }
 

@@ -4,15 +4,17 @@
 
 use std::assert_matches::assert_matches;
 use std::cmp::minmax;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::io::Write;
+use std::ops::Range;
 
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
-use pars3d::{FaceKind, edge::EdgeKind};
+use pars3d::{FaceKind, Mesh, edge::EdgeKind};
 use union_find::UnionFind;
 
 use texture_to_vert_colors::aabb::AABB;
+use texture_to_vert_colors::qem::{Args as QEMArgs, simplify_range_colored};
 use texture_to_vert_colors::{
     F, U, add, cross, cross_2d, dot, kmul, len_sq, length, normalize, sub,
 };
@@ -78,6 +80,15 @@ pub struct Args {
     /// Do not delete degenerate faces in the mesh (ABLATION)
     #[arg(long)]
     no_delete_degen: bool,
+
+    /// Do not delete faces in the mesh incrementally, only perform a single deletion at the
+    /// end (ABLATION).
+    #[arg(long)]
+    no_incremental_delete: bool,
+
+    /// Do not perform QEM incrementally, only perform a single QEM at the end (ABLATION).
+    #[arg(long)]
+    no_incremental_qem: bool,
 }
 
 pub fn main() {
@@ -144,11 +155,11 @@ pub fn main() {
 }
 
 pub fn texture_to_vert_colors(
-    mesh: &pars3d::Mesh,
+    mesh: &Mesh,
     materials: &[pars3d::mesh::Material],
     args: &Args,
-) -> pars3d::Mesh {
-    let mut out = pars3d::Mesh::default();
+) -> Mesh {
+    let mut out = Mesh::default();
 
     // Copy vertex colors for each input UV
     // TODO remove this assumption of a single material and copy per face with duplication
@@ -178,9 +189,12 @@ pub fn texture_to_vert_colors(
     let mut labels = BTreeMap::new();
     let mut face_labels = vec![];
     //let mut to_del = vec![];
+    let mut remap = UnionFind::new_u32(0);
 
     use indicatif::ProgressIterator;
     for (fi, f) in mesh.f.iter().enumerate().progress() {
+        let curr_f = out.f.len();
+        let curr_v = out.v.len();
         let ok = match args.sample_kind {
             SampleKind::Approx => sample(
                 mesh,
@@ -203,8 +217,6 @@ pub fn texture_to_vert_colors(
                 args,
             ),
         };
-        // For now, do not store normals since they are not well supported
-        out.n.clear();
         // Add a simplification step here, as some faces are relatively similar, and we want to
         // delete degenerate faces.
         if !ok {
@@ -212,8 +224,44 @@ pub fn texture_to_vert_colors(
             eprintln!("Exiting after saved erroneous mesh");
             std::process::exit(1);
         }
-
         assert_eq!(out.f.len(), face_labels.len());
+
+        let new_f = out.f.len();
+        let new_v = out.v.len();
+        remap.extend_by(new_v - curr_v);
+
+        if !args.no_incremental_delete {
+            del_degen_bridges(&mut remap, &mut out, args, &face_labels, curr_f..new_f);
+
+            for f in out.f.iter_mut() {
+                f.remap(|vi| remap.get_compress(vi));
+                f.canonicalize();
+            }
+
+            // Then perform edge reduction here of just edges which are internal to the this
+            // triangle.
+
+            if !args.no_incremental_qem {
+                let qem_args = QEMArgs {
+                    target_vert_ratio: 0.3,
+                    abs_eps: 1e-3,
+                    ..QEMArgs::default()
+                };
+                simplify_range_colored(
+                    &mut out,
+                    &qem_args,
+                    |vi| labels.contains_key(&vi),
+                    curr_f..new_f,
+                    curr_v..new_v,
+                    &mut remap,
+                );
+
+                for f in out.f.iter_mut() {
+                    f.remap(|vi| remap.get_compress(vi));
+                    f.canonicalize();
+                }
+            }
+        }
     }
 
     if args.no_gap_fill {
@@ -445,6 +493,7 @@ pub fn texture_to_vert_colors(
                 let Some(&next) = edge_adj[&first].iter().find(|&&v| v != usize::MAX) else {
                     out.f
                         .push(FaceKind::Poly(fvs.iter().map(|fv| fv.1).collect()));
+                    println!("aborting5");
                     continue;
                 };
                 poly.push(next);
@@ -452,6 +501,7 @@ pub fn texture_to_vert_colors(
                     let Some(n) = edge_adj.get(&poly[i - 1]) else {
                         poly.clear();
                         poly.extend(fvs.iter().map(|fv| fv.1));
+                        println!("aborting6");
                         break;
                         // not sure why this happens, but ok to ignore for now?
                     };
@@ -459,6 +509,7 @@ pub fn texture_to_vert_colors(
                     else {
                         poly.clear();
                         poly.extend(fvs.iter().map(|fv| fv.1));
+                        println!("aborting7");
                         break;
                     };
                     poly.push(next);
@@ -475,28 +526,6 @@ pub fn texture_to_vert_colors(
     // compute statistics for degenerate mesh
     macro_rules! mesh_stats {
         () => {{
-            let mut degen_degen = 0;
-            let mut degen_pixel = 0;
-            let mut degen_bridge = 0;
-            let mut degen_bridge_corner = 0;
-            let mut degen_fill = 0;
-
-            for (fi, f) in out.f.iter().enumerate() {
-                if f.is_degenerate() {
-                    continue;
-                }
-                let area = f.area(&out.v);
-                let counter = match face_labels[fi] {
-                    FaceLabel::Degen => &mut degen_degen,
-                    FaceLabel::Pixel => &mut degen_pixel,
-                    FaceLabel::Bridge(_, _) => &mut degen_bridge,
-                    FaceLabel::BridgeCorner => &mut degen_bridge_corner,
-                    FaceLabel::GapFill(_, _) | FaceLabel::GapCorner => &mut degen_fill,
-                };
-                if area < args.area_threshold {
-                    *counter += 1;
-                }
-            }
             macro_rules! count_face_label {
                 ($p: pat) => {{
                     face_labels
@@ -508,13 +537,11 @@ pub fn texture_to_vert_colors(
             }
             println!(
                 r#"
-      Degen Degen   : {degen_degen} / {}
-      Degen Pixel   : {degen_pixel} / {}
-      Degen Bridge  : {degen_bridge} / {}
-      Degen BridgeC : {degen_bridge_corner} / {}
-      Degen Fill    : {degen_fill} / {}
+      Num Pixel   : {}
+      Num Bridge  : {}
+      Num BridgeC : {}
+      Num GapFill : {}
     "#,
-                count_face_label!(FaceLabel::Degen),
                 count_face_label!(FaceLabel::Pixel),
                 count_face_label!(FaceLabel::Bridge(_, _)),
                 count_face_label!(FaceLabel::BridgeCorner),
@@ -525,12 +552,15 @@ pub fn texture_to_vert_colors(
     mesh_stats!();
 
     let init_f = out.f.len();
-    let init_v = out.v.len();
+    let init_v = out.num_used_vertices();
     println!("[INFO]: Initial generated mesh has {init_f} faces & {init_v} vertices");
 
     if !args.no_delete_degen {
         println!("[INFO]: Starting degenerate face deletion");
-        let remap = delete_degenerate_faces(&mut out, args, &face_labels);
+        if args.no_incremental_delete {
+            del_degen_bridges(&mut remap, &mut out, args, &face_labels, 0..init_f);
+        }
+        del_degen_gap_fill(&mut remap, &mut out, args, &face_labels);
 
         for f in out.f.iter_mut() {
             f.remap(|vi| remap.get_compress(vi));
@@ -562,13 +592,13 @@ pub fn texture_to_vert_colors(
 }
 
 pub fn sample_exact(
-    mesh: &pars3d::Mesh,
+    mesh: &Mesh,
     f: &FaceKind,
     fi: usize,
     diff_img: &DynamicImage,
 
     // destination for all attributes
-    out: &mut pars3d::Mesh,
+    out: &mut Mesh,
 
     // map from edge -> (original face idx, vertices), which stores vertices along every half edge
     corner_map: &mut BTreeMap<[U; 3], Vec<(usize, usize)>>,
@@ -732,7 +762,7 @@ pub fn sample_exact(
 
     macro_rules! save_bad_mesh {
         ($label: expr) => {{
-            let mut tmp = pars3d::Mesh::new_geometry(
+            let mut tmp = Mesh::new_geometry(
                 f_slice.iter().map(|vi| mesh.v[*vi]).collect(),
                 vec![FaceKind::Tri([0, 1, 2])],
             );
@@ -1017,7 +1047,7 @@ pub fn sample_exact(
 }
 
 pub fn sample(
-    mesh: &pars3d::Mesh,
+    mesh: &Mesh,
     f: &FaceKind,
     diff_img: &DynamicImage,
     out_faces: &mut Vec<FaceKind>,
@@ -1201,77 +1231,15 @@ pub enum SampleKind {
 
 impl_display!(SampleKind, Approx => "approx", Exact => "exact");
 
-/// Deletes degenerate faces by merging all vertices of the face together
-pub fn delete_degenerate_faces(
+pub fn del_degen_bridges(
+    remap: &mut UnionFind<u32>,
     mesh: &mut pars3d::Mesh,
     args: &Args,
     labels: &[FaceLabel],
-) -> UnionFind {
-    let mut remap = UnionFind::new(mesh.v.len());
-
-    let mut fixed = HashSet::new();
-    for f in &mesh.f {
-        for [e0, e1] in f.edges() {
-            let [vc0, vc1] = [e0, e1].map(|vi| mesh.vert_colors[vi]);
-            let lock = dist(vc0, vc1) > args.color_diff_threshold;
-            if lock {
-                fixed.insert(e0);
-                fixed.insert(e1);
-            }
-        }
-    }
-
-    // First, delete degenerate fill faces, they can be taken as the average of all of their
-    // components.
-
-    // for each vertex need to compute whether it can be deleted,
-    // based on whether the 1 ring of the vertex all have similar values.
-    /*
-    for (fi, f) in mesh.f.iter_mut().enumerate() {
-        if f.is_empty() {
-            continue;
-        }
-        if !matches!(labels[fi], FaceLabel::GapFill(_, _) | FaceLabel::GapCorner) {
-            continue;
-        }
-
-        let f_s = f.as_slice();
-        if f_s.iter().any(|vi| fixed.contains(vi)) {
-            continue;
-        }
-        let area = f.area(&mesh.v);
-        assert!(area >= 0.);
-        assert!(area.is_finite());
-        if area > args.area_threshold {
-            continue;
-        }
-        let n = f_s.len().max(1) as F;
-        let avg_color = f_s
-            .iter()
-            .map(|&vi| mesh.vert_colors[remap.get_compress(vi)])
-            .fold([0.; 3], add)
-            .map(|v| v / n);
-
-        let new_v = f_s
-            .iter()
-            .map(|&vi| mesh.v[remap.get_compress(vi)])
-            .fold([0.; 3], add)
-            .map(|v| v / n);
-
-        let new_vi = f_s[0];
-        mesh.v[new_vi] = new_v;
-        mesh.vert_colors[new_vi] = avg_color;
-
-        for &vi in f_s {
-            remap.set(vi, new_vi);
-        }
-
-        *f = FaceKind::empty();
-    }
-    */
-
-    // --- Bridge Face Deletion
-    for fi in 0..mesh.f.len() {
+    face_range: Range<usize>,
+) -> usize {
+    let mut del = 0;
+    for fi in face_range {
         let f = &mesh.f[fi];
         if f.len() != 4 {
             continue;
@@ -1313,7 +1281,19 @@ pub fn delete_degenerate_faces(
         combine(e10, e01);
 
         *f = FaceKind::empty();
+        del += 1;
     }
+    del
+}
+
+/// Deletes degenerate faces by merging all vertices of the face together
+pub fn del_degen_gap_fill(
+    remap: &mut UnionFind<u32>,
+    mesh: &mut Mesh,
+    args: &Args,
+    labels: &[FaceLabel],
+) -> usize {
+    let mut del = 0;
 
     for fi in 0..mesh.f.len() {
         let FaceLabel::GapFill([e00, e01], [e10, e11]) = labels[fi] else {
@@ -1363,15 +1343,13 @@ pub fn delete_degenerate_faces(
         combine(b, d);
 
         mesh.f[fi] = FaceKind::empty();
+        del += 1;
     }
-
-    remap
+    del
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FaceLabel {
-    /// A triangle representing a face which is too small for any pixels
-    Degen,
     /// New pixel from a given face
     Pixel,
     /// Bridge between two pixels within a given face

@@ -1,12 +1,12 @@
 use crate::inv_map::InverseMap;
-use union_find::UnionFind;
+use union_find::{UnionFind, UnionFindOp};
 
 /// A mesh representation which is suitable for collapsing vertices.
 /// It can associate data with each vertex, and each edge.
 /// Associated edge data is oriented.
 #[derive(Debug, Clone)]
-pub struct CollapsibleManifold<T> {
-    vertices: UnionFind,
+pub struct CollapsibleManifold<T, UF: UnionFindOp> {
+    pub(crate) vertices: UF,
 
     pub edges: Vec<Vec<usize>>,
 
@@ -15,37 +15,57 @@ pub struct CollapsibleManifold<T> {
     pub data: Vec<T>,
 }
 
-impl<T> CollapsibleManifold<T> {
-    #[inline]
-    pub fn new(size: usize) -> Self
-    where
-        T: Default + Clone,
-    {
-        Self {
-            vertices: UnionFind::new(size),
-            edges: vec![],
-            inv_map: InverseMap::new(size),
-            data: vec![T::default(); size],
-        }
-    }
+impl<T> CollapsibleManifold<T, UnionFind<u32>> {
     pub fn new_with(size: usize, f: impl Fn(usize) -> T) -> Self {
         let mut data = Vec::with_capacity(size);
         for i in 0..size {
             data.push(f(i));
         }
         Self {
-            vertices: UnionFind::new(size),
+            vertices: UnionFind::new_u32(size),
             edges: vec![vec![]; size],
             inv_map: InverseMap::new(size),
 
             data,
         }
     }
+
+    #[inline]
+    pub fn new(size: usize) -> Self
+    where
+        T: Default + Clone,
+    {
+        Self {
+            vertices: UnionFind::new_u32(size),
+            edges: vec![],
+            inv_map: InverseMap::new(size),
+            data: vec![T::default(); size],
+        }
+    }
+}
+
+impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
+    pub(crate) fn new_with_remapping(remap: UF, f: impl Fn(usize) -> T) -> Self {
+        let size = remap.capacity();
+        let mut data = Vec::with_capacity(size);
+        for i in 0..size {
+            data.push(f(i));
+        }
+        let inv_map = InverseMap::from_merged(size, |vi| remap.find(vi));
+
+        Self {
+            vertices: remap,
+            edges: vec![vec![]; size],
+            inv_map,
+
+            data,
+        }
+    }
     pub fn get_new_vertex(&self, old: usize) -> usize {
-        self.vertices.get_compress(old)
+        self.vertices.find(old)
     }
     pub fn num_vertices(&self) -> usize {
-        self.vertices.curr_len()
+        self.vertices.len()
     }
     pub fn vertices(&self) -> impl Iterator<Item = (usize, &T)> + '_ {
         (0..self.vertices.capacity())
@@ -73,35 +93,6 @@ impl<T> CollapsibleManifold<T> {
         self.edges[v1].dedup_by_key(|&mut dst| dst);
     }
 
-    pub fn quad_parallel_edges(
-        &self,
-        e0: usize,
-        e1: usize,
-    ) -> impl Iterator<Item = [usize; 2]> + '_ {
-        assert!(self.is_adj(e0, e1));
-        let e0_nbrs = self
-            .vertex_adj(e0)
-            .filter(move |&e0_adj| e0_adj != e1 && !self.is_adj(e0_adj, e1))
-            .filter(move |&e0_adj| self.degree(e0_adj) == 4)
-            .filter(move |&e0_adj| {
-                self.vertex_adj(e0_adj)
-                    .filter(|&nbr| nbr != e0)
-                    .all(|e0_aa| !self.is_adj(e0_aa, e1))
-            })
-            .map(move |e0_adj| [e0, e0_adj]);
-        let e1_nbrs = self
-            .vertex_adj(e1)
-            .filter(move |&e1_adj| e1_adj != e0 && !self.is_adj(e1_adj, e0))
-            .filter(move |&e1_adj| self.degree(e1_adj) == 4)
-            .filter(move |&e1_adj| {
-                self.vertex_adj(e1_adj)
-                    .filter(|&nbr| nbr != e1)
-                    .all(|e1_aa| !self.is_adj(e1_aa, e0))
-            })
-            .map(move |e1_adj| [e1, e1_adj]);
-        e0_nbrs.chain(e1_nbrs)
-    }
-
     /*
     /// Adds a face to this `CollapsibleManifold`.
     pub fn add_const_face<const N: usize>(&mut self, face: [usize; N]) {
@@ -122,9 +113,7 @@ impl<T> CollapsibleManifold<T> {
 
     /// Returns adjacent vertices (should always be in sorted order)
     pub fn vertex_adj(&self, v: usize) -> impl Iterator<Item = usize> + '_ {
-        self.edges[v]
-            .iter()
-            .map(|&dst| self.vertices.get_compress(dst))
+        self.edges[v].iter().map(|&dst| self.vertices.find(dst))
     }
     /// Fix up a one ring to not contain duplicates
     pub fn dedup_one_ring(&mut self, v: usize) {
@@ -142,19 +131,19 @@ impl<T> CollapsibleManifold<T> {
         self.edges[v].len()
     }
     pub fn dedup(&mut self, v: usize) {
-        self.edges[v].sort_unstable_by_key(|&v| self.vertices.get_compress(v));
-        self.edges[v].dedup_by_key(|&mut v| self.vertices.get(v));
+        self.edges[v].sort_unstable_by_key(|&v| self.vertices.find(v));
+        self.edges[v].dedup_by_key(|&mut v| self.vertices.find(v));
     }
 
     /// Returns whether two vertices v0 and v1 are adjacent.
     /// v0 and v1 can be merged into other vertices.
     #[inline]
     pub fn is_adj(&self, v0: usize, v1: usize) -> bool {
-        let v0 = self.vertices.get_compress(v0);
-        let v1 = self.vertices.get_compress(v1);
+        let v0 = self.vertices.find(v0);
+        let v1 = self.vertices.find(v1);
         self.edges[v0]
             .iter()
-            .any(|&dst| self.vertices.get_compress(dst) == v1)
+            .any(|&dst| self.vertices.find(dst) == v1)
     }
 
     /// An iterator over the shared one ring of v0 and v1.
@@ -192,7 +181,7 @@ impl<T> CollapsibleManifold<T> {
     /*
     pub fn par_vertex_adj(&self, v: usize) -> impl ParallelIterator<Item = usize> + '_ {
         let vs = &self.vertices;
-        self.edges[v].par_iter().map(|&dst| vs.get_compress(dst))
+        self.edges[v].par_iter().map(|&dst| vs.find(dst))
     }
     */
 
@@ -207,7 +196,7 @@ impl<T> CollapsibleManifold<T> {
         assert!(!self.is_deleted(dst));
         assert!(self.is_adj(src, dst));
 
-        self.vertices.set(src, dst);
+        self.vertices.union(src, dst);
 
         self.inv_map.merge(src, dst);
 
@@ -216,16 +205,16 @@ impl<T> CollapsibleManifold<T> {
 
         let mut src_e = std::mem::take(&mut self.edges[src]);
         self.edges[dst].append(&mut src_e);
-        self.edges[dst].retain(|&e1| self.vertices.get_compress(e1) != dst);
-        self.edges[dst].sort_by_key(|&e1| self.vertices.get(e1));
-        self.edges[dst].dedup_by_key(|&mut e1| self.vertices.get(e1));
+        self.edges[dst].retain(|&e1| self.vertices.find(e1) != dst);
+        self.edges[dst].sort_by_key(|&e1| self.vertices.find(e1));
+        self.edges[dst].dedup_by_key(|&mut e1| self.vertices.find(e1));
 
         let tmp = std::mem::take(&mut self.edges[dst]);
         for &adj in &tmp {
-            let adj = self.vertices.get_compress(adj);
+            let adj = self.vertices.find(adj);
             assert_ne!(adj, dst);
-            self.edges[adj].sort_unstable_by_key(|&v| self.vertices.get_compress(v));
-            self.edges[adj].dedup_by_key(|&mut v| self.vertices.get(v));
+            self.edges[adj].sort_unstable_by_key(|&v| self.vertices.find(v));
+            self.edges[adj].dedup_by_key(|&mut v| self.vertices.find(v));
         }
         self.edges[dst] = tmp;
     }
@@ -234,10 +223,10 @@ impl<T> CollapsibleManifold<T> {
     }
 
     pub fn get(&self, v: usize) -> &T {
-        &self.data[self.vertices.get(v)]
+        &self.data[self.vertices.find(v)]
     }
     pub fn set(&mut self, v: usize, t: T) {
-        self.data[self.vertices.get(v)] = t;
+        self.data[self.vertices.find(v)] = t;
     }
 
     /// All the edges of this manifold mesh, with v0-v1 in original order
@@ -251,9 +240,9 @@ impl<T> CollapsibleManifold<T> {
     #[inline]
     pub fn edges_post_merge(&self) -> impl Iterator<Item = [usize; 2]> + '_ {
         self.edges.iter().enumerate().flat_map(move |(src, dsts)| {
-            let src = self.vertices.get_compress(src);
+            let src = self.vertices.find(src);
             dsts.iter()
-                .map(move |&dst| [src, self.vertices.get_compress(dst)])
+                .map(move |&dst| [src, self.vertices.find(dst)])
                 .filter(|[a, b]| a < b)
         })
     }

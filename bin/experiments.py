@@ -59,6 +59,11 @@ experiments = {
   "basic-cube": [
     run("cube.obj", "cube.ply", "-d data/colors.png", False),
   ],
+  # Simple test case for checking that the QEM is correct
+  "plane-simple": [
+    run("plane.obj", "plane.ply", "-d data/small.png --no-incremental-qem"),
+    run("plane.obj", "plane_with_qem.ply", "-d data/small.png"),
+  ],
   "sphere": [
     run("sphere.obj", "sphere.ply", "-d data/uv_grid.png", False),
   ],
@@ -71,7 +76,7 @@ experiments = {
   "spot": [
     run(
       "spot_triangulated.obj", "spot_triangulated.ply",
-      "-d data/spot_texture.png", False
+      "-d data/spot_texture.png --no-incremental-delete", False
     ),
   ],
   "planar": [
@@ -81,7 +86,7 @@ experiments = {
     run("shiba.obj", "shiba.ply", "-d data/uv_grid.png", False),
   ],
   "watercolor_cake": [
-    run("watercolor_cake.obj", "watercolor_cake.ply", "-d data/watercolor_cake.tif"),
+    run("watercolor_cake.obj", "watercolor_cake.ply", "-d data/watercolor_cake.tif", False),
   ],
 }
 

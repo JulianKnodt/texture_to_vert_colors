@@ -11,6 +11,17 @@ impl InverseMap {
         }
         Self { next }
     }
+    pub fn from_merged(size: usize, get_root: impl Fn(usize) -> usize) -> Self {
+        let mut next = vec![0; size];
+        for (i, ni) in next.iter_mut().enumerate() {
+            *ni = i;
+        }
+        let mut s = Self { next };
+        for i in 0..size {
+            s.merge(get_root(i), i);
+        }
+        s
+    }
     /// merges v0 and v1, must not already be merged.
     pub fn merge(&mut self, v0: usize, v1: usize) {
         //assert!(!self.is_merged(v0, v1));

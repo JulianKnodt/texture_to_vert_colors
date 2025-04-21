@@ -701,7 +701,6 @@ checksum = "1fc81956842c57dac11422a97c3b8195a1ff727f06e85c84ed2e8aa277c9a0fd"
 [[package]]
 name = "union-find"
 version = "0.1.0"
-source = "git+https://github.com/JulianKnodt/union-find.git#6cdd91ab37b44589b2a3618245f4dd25ae40ec79"
 
 [[package]]
 name = "urlencoding"

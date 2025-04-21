@@ -64,10 +64,13 @@ def main():
 
 
   og_to_new = og_to_new if type(og_to_new) == str else og_to_new.max()
+  print()
   print(f"hausdorff(new to original) = {new_to_og.max()}")
   print(f"hausdorff(original to new) = {og_to_new}")
   print(f"hausdorff = {hausdorff}")
+  print()
   print(f"chamfer(new to input) = {new_to_og.mean()}")
+  print(f"chamfer(input to new) = {og_to_new.mean()}")
   print(f"chamfer = {chamfer}")
   stats = {}
   if args.stats is not None and os.path.exists(args.stats):

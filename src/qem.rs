@@ -1,120 +1,93 @@
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
-#![feature(cmp_minmax)]
-#![feature(let_chains)]
-
 use std::collections::HashMap;
+use std::ops::Range;
 
-use clap::Parser;
 use ordered_float::NotNan;
 use pars3d::FaceKind;
 use priority_queue::PriorityQueue;
+use union_find::UnionFind;
 
-use texture_to_vert_colors::{
+use super::{
     F, cross, dot, length,
     manifold::{CollapsibleManifold, EdgeKind},
     normalize,
     quadric::{AttrWeights, Quadric, QuadricAccumulator},
     sub,
 };
-
-/// A utility for converting a mesh with texture into a mesh with vertex colors without
-/// drop in visual quality.
-#[derive(Debug, Clone, PartialEq, Parser)]
-#[clap(group(
-  clap::ArgGroup::new("target")
-    .required(true)
-    .args(&["quadric_threshold", "target_vert_ratio", "target_num_verts"])
-))]
 pub struct Args {
-    /// Input mesh path.
-    #[arg(long, short)]
-    input: String,
-    /// Output mesh path (PLY).
-    #[arg(long, short)]
-    output: String,
-
-    /// Do not normalize the mesh before processing (for debugging)
-    #[arg(long, hide = true)]
-    no_normalize: bool,
-
-    /// Output stats to this file
-    #[arg(long, default_value = "")]
-    stats: String,
-
     /// During decimation, how heavily should colors be preserved?
-    #[arg(long, default_value_t = 0.5)]
-    color_weight: F,
+    pub color_weight: F,
 
     /// Target number of vertices after reduction
-    #[arg(long, short = 'v', default_value_t = 0.)]
-    target_vert_ratio: F,
+    pub target_vert_ratio: F,
 
     /// Target number of vertices after reduction
-    #[arg(long, short = 'V', default_value_t = 0)]
-    target_num_verts: usize,
+    pub target_num_verts: usize,
 
     /// Extra weight to add on each edge based on color differences
-    #[arg(long, default_value_t = 10.)]
-    color_preservation_weight: F,
+    pub color_preservation_weight: F,
 
     /// Minimum face area during decimation.
-    #[arg(long, default_value_t = 5e-2)]
-    min_face_area: F,
+    pub min_face_area: F,
 
     /// Minimum edge weight for each edge.
-    #[arg(long, default_value_t = 1e-2)]
-    min_edge_weight: F,
+    pub min_edge_weight: F,
 
     /// Epsilon value to use when comparing quadric errors.
-    #[arg(long, default_value_t = 1e-4)]
-    abs_eps: F,
+    pub abs_eps: F,
 
     /// Threshold to stop quadric decimation at
-    #[arg(long, default_value_t = 1.)]
-    quadric_threshold: F,
+    pub quadric_threshold: F,
 
     /// The weight to use for degenerate quadrics
-    #[arg(long, default_value_t = 1e-4)]
-    degen_quadric_weight: F,
+    pub degen_quadric_weight: F,
 }
 
-pub fn main() {
-    let args = Args::parse();
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            color_weight: 0.5,
+            target_vert_ratio: 0.,
+            target_num_verts: 0,
+            color_preservation_weight: 10.,
 
-    let mut scene = pars3d::load(&args.input).expect("Failed to parse input");
-    let mut mesh = scene.into_flattened_mesh();
-    let (s, t) = mesh.normalize();
+            min_face_area: 1e-2,
+            min_edge_weight: 1e-2,
 
-    let mut out_mesh = simplify_colored(mesh, &args);
-    out_mesh.denormalize(s, t);
-    out_mesh.repopulate_scene(&mut scene);
-
-    pars3d::save(&args.output, &scene).expect("Failed to save output mesh");
+            abs_eps: 1e-4,
+            quadric_threshold: 1.,
+            degen_quadric_weight: 1e-4,
+        }
+    }
 }
 
-pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
-    let start_time = std::time::Instant::now();
+/// In-place simplification of planar faces of a mesh
+pub fn simplify_range_colored(
+    mesh: &mut pars3d::Mesh,
+    args: &Args,
+    // function which indicates if a vertex is locked
+    locked: impl Fn(usize) -> bool,
+    face_range: Range<usize>,
+    vert_range: Range<usize>,
+    // output which vertices got mapped to which other vertices
+    remap: &mut UnionFind<u32>,
+) {
+    let offset = vert_range.start;
+    let num_v = vert_range.end - offset;
 
-    let cw = if mesh.vert_colors.is_empty() {
-        0.
-    } else {
-        println!("[INFO]: Also decimating vertex colors");
-        args.color_weight
-    };
+    assert!(!mesh.vert_colors.is_empty());
+    let cw = args.color_weight;
     let attr_ws = AttrWeights { ws: [cw; 3] };
 
-    let mut m = CollapsibleManifold::new_with(mesh.v.len(), |vi| {
-        let pos = mesh.v[vi];
+    let mut m = CollapsibleManifold::new_with_remapping(remap.subset(vert_range.clone()), |vi| {
+        assert!(vert_range.contains(&(vi + offset)));
+        let pos = mesh.v[vi + offset];
         let area = 1e-6;
         let mut q = Quadric::<3>::zero();
         for d in [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]] {
             q += Quadric::new_plane(pos, d, area);
             q.area += area;
         }
-        if !mesh.vert_colors.is_empty() {
-            q += Quadric::degen_attr(mesh.vert_colors[vi], attr_ws) * area;
-        }
+        q += Quadric::degen_attr(mesh.vert_colors[vi + offset], attr_ws) * area;
         q *= args.degen_quadric_weight;
 
         (q, pos)
@@ -122,13 +95,14 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
 
     let target_verts = args
         .target_num_verts
-        .max((args.target_vert_ratio.clamp(0., 1.) * (mesh.v.len() as F)) as usize);
+        .max((args.target_vert_ratio.clamp(0., 1.) * (num_v as F)) as usize);
 
     let mut edge_face_adj: HashMap<[usize; 2], EdgeKind> = HashMap::new();
     let mut f_n = vec![[0.; 3]; mesh.f.len()];
     let mut num_edges = 0;
     let mut avg_edge_len = 0.;
-    for (fi, f) in mesh.f.iter().enumerate() {
+    for fi in face_range.clone() {
+        let f = &mesh.f[fi];
         f_n[fi] = normalize(f.normal(&mesh.v));
         for e in f.edges_ord() {
             edge_face_adj
@@ -153,11 +127,15 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         }
     }
 
-    for f in mesh.f.iter() {
-        m.add_face(f.as_slice());
+    for fi in face_range.clone() {
+        for es in mesh.f[fi].edges() {
+            let [e0, e1] = es.map(|vi| m.vertices.get_compress(vi - offset));
+            m.add_edge(e0, e1);
+        }
     }
 
-    for (fi, f) in mesh.f.iter().enumerate() {
+    for fi in face_range.clone() {
+        let f = &mesh.f[fi];
         let area = f.area(&mesh.v).max(0.) + args.min_face_area;
         let n = f_n[fi];
         if length(n) == 0. {
@@ -181,7 +159,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             };
             let mut q = Quadric::new_plane(curr, n, area) * interior_angle;
             q.area = area;
-            m.data[v].0 += q;
+            m.data[v - offset].0 += q;
 
             const PI: F = std::f64::consts::PI as F;
 
@@ -221,12 +199,8 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             let mut edge_quadric = edge_quadric * total_e_w.max(1e-4);
             edge_quadric.area = 0.;
 
-            m.data[v].0 += edge_quadric;
-            m.data[ni].0 += edge_quadric;
-        }
-
-        if mesh.vert_colors.is_empty() {
-            continue;
+            m.data[v - offset].0 += edge_quadric;
+            m.data[ni - offset].0 += edge_quadric;
         }
 
         macro_rules! q_n_attribs(
@@ -254,11 +228,11 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         };
 
         for &vi in f.as_slice() {
-            m.data[vi].0 += q_attr * area;
+            m.data[vi - offset].0 += q_attr * area;
         }
     }
 
-    let mut curr_costs = vec![0.; m.num_vertices()];
+    let mut curr_costs = vec![0.; num_v];
     let mut pq = PriorityQueue::new();
 
     macro_rules! update_cost_of_edge {
@@ -282,10 +256,13 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
     }
 
     for [e0, e1] in m.ord_edges() {
+        if locked(e0 + offset) || locked(e1 + offset) {
+            continue;
+        }
         pq.push([e0, e1], update_cost_of_edge!(e0, e1));
     }
 
-    let p = indicatif::ProgressBar::new(m.num_vertices() as u64);
+    let p = indicatif::ProgressBar::new(num_v as u64);
     let mut buf = PriorityQueue::new();
     let mut recencies = HashMap::new();
     let mut did_update = vec![];
@@ -329,6 +306,9 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             did_update.clear();
             let e_dst = m.get_new_vertex(e1);
             for adj in m.vertex_adj(e_dst) {
+                if locked(adj + offset) {
+                    continue;
+                }
                 let prio = update_cost_of_edge!(e_dst, adj);
                 let adj_e = std::cmp::minmax(e_dst, adj);
                 buf.remove(&adj_e);
@@ -337,11 +317,18 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             }
 
             for adj in m.vertex_adj(e_dst) {
+                if locked(adj + offset) {
+                    continue;
+                }
                 for adj2 in m.vertex_adj(adj) {
+                    if locked(adj2 + offset) {
+                        continue;
+                    }
                     let adj_e = std::cmp::minmax(adj, adj2);
                     if adj2 == e_dst || did_update.contains(&adj_e) {
                         continue;
                     }
+
                     did_update.push(adj_e);
                     let prio = update_cost_of_edge!(adj, adj2);
                     let recency = recencies.get(&adj_e).copied().unwrap_or(0);
@@ -370,73 +357,15 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         }
     }
 
-    let mut remap: HashMap<usize, usize> = HashMap::new();
-    let mut new_positions = vec![];
-    let mut new_colors = vec![];
-
-    for (curr_vi, (vi, &(q, p))) in m.vertices().enumerate() {
-        let prev = remap.insert(vi, curr_vi);
-        assert_eq!(prev, None);
-        new_positions.push(p);
+    for (vi, &(q, p)) in m.vertices() {
+        let vi = vi + offset;
 
         let attrs = q.attributes(p, attr_ws);
         assert!(!attrs.is_empty());
         assert!(attrs.len() == 3);
-        new_colors.push(attrs.map(|c| c.clamp(0., 1.)));
-    }
 
-    let mut face_set = std::collections::BTreeSet::new();
-    let mut vertex_buf = vec![];
-    for (fi, f) in mesh.f.iter().enumerate() {
-        vertex_buf.clear();
-        vertex_buf.extend_from_slice(f.as_slice());
-        for v in vertex_buf.iter_mut() {
-            *v = remap[&m.get_new_vertex(*v)];
-        }
-        vertex_buf.dedup();
-        while !vertex_buf.is_empty() && vertex_buf.first() == vertex_buf.last() {
-            vertex_buf.pop();
-        }
-        if vertex_buf.len() < 3 {
-            continue;
-        }
-        consistent_face_ordering(&mut vertex_buf);
-        let face = match vertex_buf.as_slice() {
-            &[] | &[_] | &[_, _] => unreachable!(),
-            &[a, b, c] => FaceKind::Tri([a, b, c]),
-            &[a, b, c, d] => FaceKind::Quad([a, b, c, d]),
-            x => FaceKind::Poly(x.to_vec()),
-        };
-        face_set.insert((
-            face,
-            mesh.face_mesh_idx.get(fi).copied().unwrap_or(0),
-            mesh.mat_for_face(fi),
-        ));
-    }
-
-    let mut fs = vec![];
-    let mut og_mis = vec![];
-    let mut og_mats = vec![];
-    for (f, mi, mat) in face_set.into_iter() {
-        fs.push(f);
-        og_mis.push(mi);
-        og_mats.push(mat);
-    }
-    let face_set = fs;
-
-    println!("[INFO]: Took {:?} for decimation", start_time.elapsed());
-    pars3d::Mesh {
-        v: new_positions,
-        uv: std::array::from_fn(|_| vec![]),
-        n: vec![],
-        f: face_set,
-        face_mesh_idx: og_mis,
-        face_mat_idx: pars3d::mesh::convert_opt_usize(&og_mats),
-
-        joint_weights: vec![],
-        joint_idxs: vec![],
-        vert_colors: new_colors,
-        name: String::new(),
+        mesh.v[vi] = p;
+        mesh.vert_colors[vi] = attrs.map(|c| c.clamp(0., 1.));
     }
 }
 

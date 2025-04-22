@@ -333,7 +333,7 @@ impl<const N: usize> Quadric<N> {
         weights: AttrWeights<N>,
     ) -> Self {
         assert!(np > 2);
-        assert!(np > 4, "Internal error");
+        assert!(np > 4, "Internal error, expected > 4, got: {np}");
         // TODO maybe make these a small vec of size 4?
         let mut q_buf = vec![];
         let mut pn = vec![[0.; 4]; np + 1];

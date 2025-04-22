@@ -111,6 +111,10 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         }
     }
 
+    pub fn degree(&self, v: usize) -> usize {
+        self.edges[v].len()
+    }
+
     /// Returns adjacent vertices (should always be in sorted order)
     pub fn vertex_adj(&self, v: usize) -> impl Iterator<Item = usize> + '_ {
         self.edges[v].iter().map(|&dst| self.vertices.find(dst))

@@ -34,6 +34,11 @@ pub struct Args {
 
     /// Skip edge collapses if the color is above this threshold.
     pub color_diff_threshold: F,
+
+    /// Check if any faces would invert when an edge is collapsed
+    pub no_check_face_inversion: bool,
+
+    pub max_degree: usize,
 }
 
 impl Default for Args {
@@ -42,12 +47,17 @@ impl Default for Args {
             color_weight: 0.5,
             color_preservation_weight: 10.,
 
-            min_face_area: 1e-2,
-            min_edge_weight: 1e-2,
+            min_face_area: 5e-2,
+            min_edge_weight: 1e-4,
 
             abs_eps: 1e-4,
-            degen_quadric_weight: 1e-4,
+            degen_quadric_weight: 5e-4,
             color_diff_threshold: 2e-2,
+
+            no_check_face_inversion: false,
+
+            // do not check max degree by default (this is just a stupidly high value)
+            max_degree: 100,
         }
     }
 }
@@ -58,6 +68,8 @@ pub struct QEMBuffers {
     pq: PriorityQueue<[usize; 2], NotNan<F>>,
     snd_pq: PriorityQueue<[usize; 2], (u32, NotNan<F>)>,
     recencies: BTreeMap<[usize; 2], u32>,
+    did_update: Vec<[usize; 2]>,
+    face_normals: Vec<[F; 3]>,
 }
 
 impl QEMBuffers {
@@ -66,6 +78,8 @@ impl QEMBuffers {
         self.pq.clear();
         self.snd_pq.clear();
         self.recencies.clear();
+        self.did_update.clear();
+        self.face_normals.clear();
     }
 }
 
@@ -109,8 +123,13 @@ pub fn simplify_range_colored(
 
     let mut num_edges = 0;
     let mut avg_edge_len = 0.;
+
+    let mut face_verts = vec![vec![]; num_v];
+    bufs.face_normals.resize(mesh.f.len(), [0.; 3]);
     for fi in face_range.clone() {
         let f = &mesh.f[fi];
+        bufs.face_normals[fi] = normalize(f.normal(&mesh.v));
+
         for e in f.edges_ord() {
             bufs.edge_face_adj
                 .entry(e)
@@ -122,6 +141,14 @@ pub fn simplify_range_colored(
             let [e0, e1] = e.map(|vi| mesh.v[vi]);
             avg_edge_len += length(sub(e1, e0));
         }
+
+        for vi in f.as_slice() {
+            face_verts[m.vertices.get_compress(vi - offset)].push(fi);
+        }
+    }
+    for fv in &mut face_verts {
+        fv.sort_unstable();
+        fv.dedup();
     }
 
     avg_edge_len /= num_edges as F;
@@ -136,7 +163,8 @@ pub fn simplify_range_colored(
     for fi in face_range.clone() {
         let f = &mesh.f[fi];
         let area = f.area(&mesh.v).max(0.) + args.min_face_area;
-        let n = normalize(f.normal(&mesh.v));
+        let n = normalize(bufs.face_normals[fi]);
+
         if length(n) == 0. {
             // Handle this better (there will be many degenerate triangles)
             continue;
@@ -164,8 +192,8 @@ pub fn simplify_range_colored(
 
             macro_rules! dihedral_angle {
                 ($f0: expr, $f1: expr) => {{
-                    let fn0 = normalize(mesh.f[$f0].normal(&mesh.v));
-                    let fn1 = normalize(mesh.f[$f1].normal(&mesh.v));
+                    let fn0 = normalize(bufs.face_normals[$f0]);
+                    let fn1 = normalize(bufs.face_normals[$f1]);
                     let angle = dot(fn0, fn1);
                     assert!((-1.0001..=1.0001).contains(&angle), "{angle}");
                     let angle = angle.clamp(-1., 1.);
@@ -178,7 +206,7 @@ pub fn simplify_range_colored(
 
             let e_w = match bufs.edge_face_adj[&e] {
                 EdgeKind::Boundary(_) => 4.,
-                EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) / PI,
+                EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) * 10.,
                 EdgeKind::NonManifold(_) => 4.,
             };
             let e_w = e_w.max(args.min_edge_weight);
@@ -269,14 +297,59 @@ pub fn simplify_range_colored(
         None
     };
 
-    let mut did_update = vec![];
+    let mut edge_counts = BTreeMap::new();
+    let mut seen_faces = vec![];
+    let mut adj_verts = vec![];
     while let Some((e, q)) = bufs.pq.pop() {
         debug_assert!(bufs.snd_pq.is_empty());
         bufs.snd_pq.push(e, (0, q));
         bufs.recencies.clear();
-        while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
+        'inner: while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
             assert!(e0 < e1);
             if m.is_deleted(e0) || m.is_deleted(e1) {
+                continue;
+            }
+
+            if m.degree(e0) > args.max_degree || m.degree(e1) > args.max_degree {
+                continue;
+            }
+
+            // check if an output edge would be non-manifold
+            edge_counts.clear();
+            seen_faces.clear();
+            adj_verts.clear();
+            for e in [e0, e1] {
+                for &adj_fi in &face_verts[e] {
+                    if seen_faces.contains(&adj_fi) {
+                        continue;
+                    }
+                    seen_faces.push(adj_fi);
+                    let mut adj_f = mesh.f[adj_fi].clone();
+                    adj_f.remap(|vi| {
+                        if vi == e0 + offset || vi == e1 + offset {
+                            e1 + offset
+                        } else {
+                            m.vertices.get_compress(vi - offset) + offset
+                        }
+                    });
+                    if adj_f.canonicalize() {
+                        continue;
+                    }
+                    for e in adj_f.all_pairs_ord() {
+                        assert_ne!(e[0], e[1]);
+                        *edge_counts.entry(e).or_insert(0) += 1;
+                    }
+                    for e in adj_f.edges() {
+                        if e[0] == e1 + offset {
+                            adj_verts.push(e[1]);
+                        } else if e[1] == e1 + offset {
+                            adj_verts.push(e[0]);
+                        }
+                    }
+                }
+            }
+            // there is a non-manifold edge introduced
+            if edge_counts.values().any(|&v| v > 2) {
                 continue;
             }
 
@@ -294,6 +367,36 @@ pub fn simplify_range_colored(
             if dist(c1, attr) > args.color_diff_threshold {
                 continue;
             }
+
+            macro_rules! check_normal_orientation {
+              ($e: expr) => {{
+                for &adj_fi in &face_verts[$e] {
+                    let mut adj_f = mesh.f[adj_fi].clone();
+                    adj_f.remap(|vi| {
+                        if vi == e0 + offset || vi == e1 + offset {
+                            e1 + offset
+                        } else {
+                            m.vertices.get_compress(vi - offset) + offset
+                        }
+                    });
+                    if adj_f.canonicalize() {
+                        continue;
+                    }
+                    let new_n = adj_f.normal_with(|vi| if vi == e1 { pos } else { m.get(vi - offset).1 });
+                    let prev_n = bufs.face_normals[adj_fi];
+                    if dot(prev_n, new_n) < 0. {
+                        continue 'inner;
+                    }
+                }
+              }}
+            }
+
+            if !args.no_check_face_inversion {
+                check_normal_orientation!(e0);
+                check_normal_orientation!(e1);
+            }
+
+            // -- Commit
 
             if let Some(adj_faces) = bufs.edge_face_adj.get(&[e0, e1]) {
                 for &af in adj_faces.as_slice() {
@@ -313,8 +416,22 @@ pub fn simplify_range_colored(
                 curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
                 (q01, pos, attr)
             });
+            assert!(m.is_deleted(e0));
+            assert!(!m.is_deleted(e1));
 
-            did_update.clear();
+            let [ef0, ef1] = face_verts.get_disjoint_mut([e0, e1]).unwrap();
+            ef1.append(ef0);
+            ef1.sort_unstable();
+            ef1.retain(|&fi| {
+                mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
+                !mesh.f[fi].canonicalize()
+            });
+            for &mut fi in ef1 {
+                bufs.face_normals[fi] =
+                    normalize(mesh.f[fi].normal_with(|vi| m.get(vi - offset).1));
+            }
+
+            bufs.did_update.clear();
             let e_dst = m.get_new_vertex(e1);
             for adj in m.vertex_adj(e_dst) {
                 if locked(adj + offset) {
@@ -324,7 +441,7 @@ pub fn simplify_range_colored(
                 let adj_e = std::cmp::minmax(e_dst, adj);
                 bufs.snd_pq.remove(&adj_e);
                 bufs.pq.push(adj_e, prio);
-                did_update.push(adj_e);
+                bufs.did_update.push(adj_e);
             }
 
             for adj in m.vertex_adj(e_dst) {
@@ -336,11 +453,11 @@ pub fn simplify_range_colored(
                         continue;
                     }
                     let adj_e = std::cmp::minmax(adj, adj2);
-                    if adj2 == e_dst || did_update.contains(&adj_e) {
+                    if adj2 == e_dst || bufs.did_update.contains(&adj_e) {
                         continue;
                     }
 
-                    did_update.push(adj_e);
+                    bufs.did_update.push(adj_e);
                     let prio = update_cost_of_edge!(adj, adj2);
                     let recency = bufs.recencies.get(&adj_e).copied().unwrap_or(0);
 

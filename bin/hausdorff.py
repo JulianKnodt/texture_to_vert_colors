@@ -72,6 +72,7 @@ def main():
   print(f"chamfer(new to input) = {new_to_og.mean()}")
   print(f"chamfer(input to new) = {og_to_new.mean()}")
   print(f"chamfer = {chamfer}")
+  print()
   stats = {}
   if args.stats is not None and os.path.exists(args.stats):
     with open(args.stats, "r") as f:

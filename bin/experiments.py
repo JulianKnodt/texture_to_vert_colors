@@ -23,9 +23,12 @@ def run(src, dst, flags, is_abl=True, src_dir="data"):
       f"{bin_file} -i {src_dir}/{src} -o {out_dir(is_abl)}/{dst} {flags} --stats {out_json}",
     ]
     if not args.no_eval:
-      cmds.append(
-        f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_dir(is_abl)}/{dst} --stats {out_json}"
-      )
+      if ".fbx" in src:
+        cmds.append('echo "FBX is not currently supported for Hausdorff"')
+      else:
+        cmds.append(
+          f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_dir(is_abl)}/{dst} --stats {out_json}"
+        )
 
     return cmds
   return cb
@@ -61,7 +64,9 @@ experiments = {
   ],
   # Simple test case for checking that the QEM is correct
   "plane-simple": [
-    run("plane.obj", "plane.ply", "-d data/small.png --no-incremental-qem"),
+    run("plane.obj", "plane.ply", "-d data/small.png --no-incremental-qem --no-final-qem"),
+    run("plane.obj", "plane_incremental_only.ply", "-d data/small.png --no-final-qem"),
+    run("plane.obj", "plane_final_only.ply", "-d data/small.png --no-incremental-qem"),
     run("plane.obj", "plane_with_qem.ply", "-d data/small.png"),
   ],
   "sphere": [
@@ -88,8 +93,14 @@ experiments = {
   ],
   "watercolor_cake": [
     run(
-      "watercolor_cake.obj", "watercolor_cake.ply",
-      "-d data/watercolor_cake.tif --no-incremental-qem", False
+      "watercolor_cake.fbx", "watercolor_cake.ply",
+      "-d data/watercolor_cake.tif --no-final-qem --no-delete-degen --no-incremental-delete --no-incremental-qem", False
+    ),
+  ],
+  "flowers-in-vase": [
+    run(
+      "flowers_in_vase.obj", "flowers_in_vase.ply",
+      "-d data/flowers_in_vase.jpg --no-incremental-qem --no-final-qem --no-incremental-delete", False,
     ),
   ],
 }

@@ -7,7 +7,7 @@ use priority_queue::PriorityQueue;
 use union_find::UnionFind;
 
 use super::{
-    F, cross, dist, dot, length,
+    F, add, cross, dist, dot, kmul, length,
     manifold::{CollapsibleManifold, EdgeKind},
     normalize,
     quadric::{AttrWeights, Quadric, QuadricAccumulator},
@@ -51,18 +51,15 @@ pub struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            /*
-            color_weight: 0.5,
-            color_preservation_weight: 10.,
-            */
-            color_weight: 1e-3,
-            color_preservation_weight: 0.,
+            //color_weight: 0.5,
+            color_weight: 1e-2,
+            color_preservation_weight: 1.,
 
             min_face_area: 1e-2,
-            min_edge_weight: 5e-4,
+            min_edge_weight: 5e-3,
 
-            abs_eps: 3e-5,
-            degen_quadric_weight: 1e-4,
+            abs_eps: 0.,
+            degen_quadric_weight: 1e-3,
 
             no_check_face_inversion: false,
 
@@ -73,7 +70,7 @@ impl Default for Args {
             display_progress: false,
 
             target_tri_ratio: 0.,
-            target_tri_num: 0,
+            target_tri_num: 100,
         }
     }
 }
@@ -121,6 +118,68 @@ pub fn simplify_range_colored(
     let cw = args.color_weight;
     let attr_ws = AttrWeights { ws: [cw; 3] };
 
+    let target_verts =
+        (remap.curr_len() as F * args.target_vert_ratio.clamp(0., 1.)).floor() as usize;
+    // ensure the faces are correct at this stage
+    for f in &mut mesh.f[face_range.clone()] {
+        f.remap(|vi| remap.get_compress(vi));
+    }
+    let num_tris = mesh.f[face_range.clone()]
+        .iter()
+        .map(|f| f.num_tris())
+        .sum::<usize>();
+    let target_num_tris = (num_tris as F * args.target_tri_ratio).floor() as usize;
+    let target_num_tris = target_num_tris.max(args.target_tri_num);
+    if num_tris <= target_num_tris {
+        return;
+    }
+
+    // normalize all vertices to [-1., 1]
+    use std::array::from_fn;
+    // Normalize the geometry of this mesh to lay in the unit box.
+    let present_verts = vert_range.clone().filter(|&v| remap.is_root(v));
+    let [l, h] = present_verts
+        .clone()
+        .map(|vi| mesh.v[vi])
+        .fold([[F::INFINITY; 3], [F::NEG_INFINITY; 3]], |[l, h], n| {
+            [from_fn(|i| l[i].min(n[i])), from_fn(|i| h[i].max(n[i]))]
+        });
+    let center = kmul(0.5, add(l, h));
+    for vi in present_verts.clone() {
+        mesh.v[vi] = sub(mesh.v[vi], center);
+    }
+    macro_rules! rescale_attr {
+        ($attr: expr) => {{
+            let largest_val = present_verts
+                .clone()
+                .map(|vi| $attr[vi])
+                .fold(0. as F, |m, [v0, v1, v2]| m.max(v0).max(v1).max(v2));
+            let scale = if largest_val == 0. {
+                1.
+            } else {
+                largest_val.recip()
+            };
+            for v in present_verts.clone() {
+                $attr[v] = kmul(scale, $attr[v]);
+            }
+            scale
+        }};
+    }
+    let pos_scale = rescale_attr!(mesh.v);
+
+    // also normalize colors
+    let [l, h] = present_verts
+        .clone()
+        .map(|vi| mesh.vert_colors[vi])
+        .fold([[F::INFINITY; 3], [F::NEG_INFINITY; 3]], |[l, h], n| {
+            [from_fn(|i| l[i].min(n[i])), from_fn(|i| h[i].max(n[i]))]
+        });
+    let mid_col = kmul(0.5, add(l, h));
+    for vi in present_verts.clone() {
+        mesh.vert_colors[vi] = sub(mesh.vert_colors[vi], mid_col);
+    }
+    let col_scale = rescale_attr!(mesh.vert_colors);
+
     let mut m = CollapsibleManifold::new_with_remapping(remap.subset(vert_range.clone()), |vi| {
         assert!(vert_range.contains(&(vi + offset)));
         let pos = mesh.v[vi + offset];
@@ -136,16 +195,9 @@ pub fn simplify_range_colored(
 
         (q, pos)
     });
-    let target_verts =
-        (m.num_vertices() as F * args.target_vert_ratio.clamp(0., 1.)).floor() as usize;
-    // ensure the faces are correct at this stage
-    for f in &mut mesh.f {
-        f.remap(|vi| m.vertices.get_compress(vi - offset) + offset);
+    if args.display_progress {
+        println!("[INFO(QEM)]: target tris: {num_tris} -> {target_num_tris}");
     }
-    let num_tris = mesh.f.iter().map(|f| f.num_tris()).sum::<usize>();
-    let target_num_tris = (num_tris as F * args.target_tri_ratio).floor() as usize;
-    let target_num_tris = target_num_tris.max(args.target_tri_num);
-    println!("[INFO(QEM)]: target tris: {num_tris} -> {target_num_tris}");
 
     let mut num_edges = 0;
     let mut avg_edge_len = 0.;
@@ -189,7 +241,11 @@ pub fn simplify_range_colored(
 
     for fi in face_range.clone() {
         let f = &mesh.f[fi];
-        let area = f.area(&mesh.v).max(0.) + args.min_face_area;
+        if f.is_empty() {
+            continue;
+        }
+        let area = f.area(&mesh.v).max(0.);
+        let area = area + args.min_face_area;
         let n = normalize(bufs.face_normals[fi]);
 
         if length(n) == 0. {
@@ -295,15 +351,17 @@ pub fn simplify_range_colored(
         ($e0:expr, $e1: expr) => {{
             let [e0, e1] = std::cmp::minmax($e1, $e0);
             let mut q_acc = QuadricAccumulator::default();
-            q_acc += m.get(e0).0;
-            q_acc += m.get(e1).0;
-            let p = q_acc.point();
+            let &(q0, p0) = m.get(e0);
+            q_acc += q0;
+            let &(q1, p1) = m.get(e1);
+            q_acc += q1;
+            let p = q_acc.point_with_volume_opt().unwrap_or_else(|| kmul(0.5, add(p0, p1)));
             assert!(p.iter().copied().all(F::is_finite));
             let mut total_cost = 0.;
 
             let q01f = m.get(e0).0 + m.get(e1).0;
             // colors are also automatically clamped to [0., 1.].
-            let attrs = q01f.attributes(p, attr_ws).map(|v| v.clamp(0., 1.));
+            let attrs = q01f.attributes(p, attr_ws);
             total_cost -=
                 q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1];
 
@@ -319,7 +377,9 @@ pub fn simplify_range_colored(
         .iter()
         .map(|f| f.num_tris())
         .sum::<usize>();
-    let p = Some(indicatif::ProgressBar::new(curr_tris as u64));
+    let p = args
+        .display_progress
+        .then(|| indicatif::ProgressBar::new(curr_tris as u64));
 
     let mut edge_counts = BTreeMap::new();
     let mut seen_faces = vec![];
@@ -385,11 +445,11 @@ pub fn simplify_range_colored(
             }
 
             let mut q_acc = QuadricAccumulator::default();
-            let &(q0, _) = m.get(e0);
-            let &(q1, _) = m.get(e1);
+            let &(q0, p0) = m.get(e0);
+            let &(q1, p1) = m.get(e1);
             q_acc += q0;
             q_acc += q1;
-            let pos = q_acc.point();
+            let pos = q_acc.point_with_volume_opt().unwrap_or_else(|| kmul(0.5, add(p0, p1)));
             let q01 = q0 + q1;
             let attr = q01.attributes(pos, attr_ws);
 
@@ -441,8 +501,8 @@ pub fn simplify_range_colored(
                 curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
                 (q01, pos)
             });
-            assert!(m.is_deleted(e0));
-            assert!(!m.is_deleted(e1));
+            debug_assert!(m.is_deleted(e0));
+            debug_assert!(!m.is_deleted(e1));
 
             let [ef0, ef1] = face_verts.get_disjoint_mut([e0, e1]).unwrap();
             ef1.append(ef0);
@@ -514,7 +574,17 @@ pub fn simplify_range_colored(
 
         mesh.v[vi] = p;
         let c = q.attributes(p, attr_ws);
-        mesh.vert_colors[vi] = c.map(|c| c.clamp(0., 1.));
+        mesh.vert_colors[vi] = c;
+    }
+
+    // denormalize all output vertices
+    let present_verts = vert_range.clone().filter(|&v| remap.is_root(v));
+    let inv_pos_scale = pos_scale.recip();
+    let inv_col_scale = col_scale.recip();
+    for vi in present_verts {
+        mesh.v[vi] = add(kmul(inv_pos_scale, mesh.v[vi]), center);
+        mesh.vert_colors[vi] =
+            add(kmul(inv_col_scale, mesh.vert_colors[vi]), mid_col).map(|c| c.clamp(0., 1.));
     }
 }
 
@@ -524,3 +594,5 @@ fn approx_eq(a: F, b: F, abs_eps: F) -> bool {
     }
     (a - b).abs() < abs_eps
 }
+
+//fn denormalize(s: F, t: [F;3],

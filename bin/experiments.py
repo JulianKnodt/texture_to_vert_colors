@@ -59,10 +59,11 @@ def runnable_cmds(cmds, stage_kind="run"):
   return cb
 
 dataset = [
-  #("cabbage.obj", "cabbage_diffuse.jpg"),
+  ("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 0.5),
+  ("cabbage.obj", "cabbage_diffuse.jpg", 0.5),
   #("scan_vase.obj", "scan_vase_texture.jpg"),
   #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg"),
-  ("shiba.obj", "shiba_texture.png", 0.3),
+  ("shiba.fbx", "shiba_texture.png", 0.4),
 ]
 
 experiments = {
@@ -78,21 +79,22 @@ experiments = {
     run("sphere.obj", "sphere.ply", "-d data/uv_grid.png", False),
   ],
   "rot-uv": [
-    run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/colors.png", False),
+    run(
+      "cube_rotated_uv.obj", "cube_rot_uv.ply",
+      "-d data/uv_grid.png --no-final-qem",
+      False
+    ),
   ],
   "thin-tri": [
     run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", False),
   ],
   "spot": [
-    run(
-      "spot_triangulated.obj", "spot_triangulated.ply", "-d data/spot_texture.png", False
-    ),
+    run("spot_triangulated.obj", "spot_triangulated.ply", "-d data/spot_texture.png", False),
   ],
-  "planar": [ run("plane.obj", "plane.ply", "-d data/hokusai.jpg") ],
+  "hokusai": [ run("plane.obj", "hokusai_plane.ply", "-d data/hokusai.jpg --no-incremental-qem --target-tri-ratio 0.4") ],
   "watercolor_cake": [
     run(
-      "watercolor_cake.fbx", "watercolor_cake.ply",
-      "-d data/watercolor_cake.tif --no-final-qem --no-delete-degen --no-incremental-delete", False
+      "watercolor_cake.fbx", "watercolor_cake.ply", "-d data/watercolor_cake.tif --no-final-qem", False
     ),
   ],
   "vase": [
@@ -107,7 +109,11 @@ experiments = {
 
   "dataset": [
     *[
-      run(model, model[:-4] + ".ply", f"-d data/{texture} --target-tri-ratio {tri_ratio}", is_abl=False)
+      run(
+        model, model[:-4] + ".ply",
+        f"-d data/{texture} --target-tri-ratio {tri_ratio} --no-incremental-qem",
+        is_abl=False
+      )
       for (model, texture, tri_ratio) in dataset
     ],
   ],

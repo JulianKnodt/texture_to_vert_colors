@@ -9,6 +9,7 @@ use std::io::Write;
 use std::ops::Range;
 
 type Map<K, V> = HashMap<K, V>;
+const CHAN: usize = 0;
 
 use clap::Parser;
 use pars3d::image::{self, DynamicImage, GenericImageView};
@@ -22,7 +23,7 @@ use texture_to_vert_colors::{
 };
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
-/// drop in visual quality.
+/// changing visual quality.
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
     /// Input mesh path.
@@ -60,7 +61,7 @@ pub struct Args {
     stats: String,
 
     /// How much to separate each pixel by (DEBUGGING)
-    #[arg(long, default_value_t = 0.995)]
+    #[arg(long, default_value_t = 0.99)]
     pixel_sep: F,
 
     /// How much to pull each vertex associated with an edge toward it.
@@ -88,11 +89,10 @@ pub struct Args {
     #[arg(long)]
     no_incremental_delete: bool,
 
-    /*
     /// Do not perform QEM incrementally, only perform a single QEM at the end (ABLATION)
     #[arg(long)]
     no_incremental_qem: bool,
-     */
+
     /// Do not perform QEM at the end (ABLATION)
     #[arg(long)]
     no_final_qem: bool,
@@ -100,6 +100,10 @@ pub struct Args {
     /// Target tri ratio
     #[arg(long, default_value_t = 0.5)]
     target_tri_ratio: F,
+
+    /// Target number of final tris
+    #[arg(long, default_value_t = 0)]
+    target_tri_num: usize,
 }
 
 pub fn main() {
@@ -221,6 +225,11 @@ pub fn texture_to_vert_colors(
 
     use indicatif::ProgressIterator;
 
+    let target_tri_ratio = if args.no_final_qem ^ args.no_incremental_qem {
+      args.target_tri_ratio
+    } else {
+      args.target_tri_ratio.sqrt()
+    };
     let mut qem_buf = QEMBuffers::default();
     for (fi, f) in mesh.f.iter().enumerate().progress() {
         let curr_f = out.f.len();
@@ -229,10 +238,13 @@ pub fn texture_to_vert_colors(
             SampleKind::Approx => sample(
                 mesh,
                 f,
+                fi,
                 &diff_img,
-                &mut out.f,
-                &mut out.v,
-                &mut out.vert_colors,
+                &mut out,
+                &mut face_labels,
+                &mut corner_map,
+                &mut edge_map,
+                &mut labels,
             ),
             SampleKind::Exact => sample_exact(
                 mesh,
@@ -268,13 +280,11 @@ pub fn texture_to_vert_colors(
                 f.canonicalize();
             }
         }
-        /*
         // Then perform edge reduction here of just edges which are internal to the this
         // triangle.
         if !args.no_incremental_qem {
             let qem_args = QEMArgs {
-                color_diff_threshold: args.color_diff_threshold,
-                target_tri_ratio: 0.5,
+                target_tri_ratio,
                 ..QEMArgs::default()
             };
             simplify_range_colored(
@@ -292,7 +302,6 @@ pub fn texture_to_vert_colors(
                 f.canonicalize();
             }
         }
-        */
     }
 
     if args.no_gap_fill {
@@ -591,11 +600,16 @@ pub fn texture_to_vert_colors(
     mesh_stats!("Initial Generation");
 
     let init_f = out.f.len();
+    let num_tris = out.num_tris();
     let init_v = out.num_used_vertices();
-    println!("[INFO]: Initial generated mesh has {init_f} faces & {init_v} vertices");
+    println!(
+        "[INFO]: Initial generated mesh has {init_f} faces (Tris = {num_tris}) & {init_v} vertices"
+    );
 
     let qem_args = QEMArgs {
-        target_tri_ratio: args.target_tri_ratio,
+        target_tri_ratio,
+        target_tri_num: args.target_tri_num,
+        display_progress: true,
         ..QEMArgs::default()
     };
 
@@ -642,9 +656,10 @@ pub fn texture_to_vert_colors(
     out.delete_unused_vertices();
     if init_f != out.f.len() {
         println!(
-            "[INFO]: Cleaned mesh has {} faces (-{}) & {} vertices (-{})",
+            "[INFO]: Cleaned mesh has {} faces (-{}, Tris = {}) & {} vertices (-{})",
             out.f.len(),
             init_f - out.f.len(),
+            out.num_tris(),
             out.v.len(),
             init_v - out.v.len(),
         );
@@ -675,7 +690,6 @@ pub fn sample_exact(
 
     args: &Args,
 ) -> bool {
-    const CHAN: usize = 0;
     let mut aabb = AABB::<F, 2>::new();
     let f_slice = f.as_slice();
 
@@ -752,7 +766,7 @@ pub fn sample_exact(
             let pos = raw_pos[i];
             let normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
             let (ti, bs) = bary.tri_idx_and_coords();
-            if !bs.iter().any(|&b| b < 0.) {
+            if !bs.iter().any(|&b| b < -1e-3) {
                 return (pos, normal);
             };
 
@@ -782,7 +796,9 @@ pub fn sample_exact(
                 v_f.barycentric(new_pos)
                     .coords()
                     .iter()
-                    .all(|v| (0.0..=1.0).contains(v))
+                    .all(|v| (-1e-3..=1.001).contains(v)),
+                "{:?}",
+                v_f.barycentric(new_pos).coords(),
             );
             (new_pos, new_normal)
         });
@@ -872,8 +888,15 @@ pub fn sample_exact(
                 continue;
             }
             let nbrs = [[u - 1, v], [u + 1, v], [u, v - 1], [u, v + 1]];
+            let diags = [
+                [u - 1, v - 1],
+                [u - 1, v + 1],
+                [u + 1, v - 1],
+                [u + 1, v + 1],
+            ];
             let has_nbr = nbrs.iter().any(|nbr| pixel_map.contains_key(nbr));
-            if !has_nbr {
+            let has_diag = diags.iter().any(|d| pixel_map.contains_key(d));
+            if !has_nbr && has_diag {
                 //save_bad_mesh!("Each pixel in a tri should have at least one direct nbr");
                 let pix_verts = FaceKind::Quad(pixel_map.remove(&[u, v]).unwrap());
                 // this is rare, so it's ok for it to be expensive
@@ -1130,36 +1153,47 @@ pub fn sample_exact(
 pub fn sample(
     mesh: &Mesh,
     f: &FaceKind,
+    fi: usize,
     diff_img: &DynamicImage,
-    out_faces: &mut Vec<FaceKind>,
-    out_verts: &mut Vec<[F; 3]>,
-    out_colors: &mut Vec<[F; 3]>,
+    out: &mut Mesh,
+    face_labels: &mut Vec<FaceLabel>,
+
+    // map from edge -> (original face idx, vertices), which stores vertices along every half edge
+    corner_map: &mut HashMap<[U; 3], Vec<(usize, usize)>>,
+    // map from edge -> (original face idx, vertices on face)
+    _edge_map: &mut HashMap<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
+    // map from new vertex index to original vertex position and distance
+    _labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
 ) -> bool {
     let mut aabb = AABB::<F, 2>::new();
-    for uv in f.as_slice().iter().map(|&vi| mesh.uv[0][vi]) {
+    let f_slice = f.as_slice();
+    for uv in f_slice.iter().map(|&vi| mesh.uv[CHAN][vi]) {
         aabb.add_point(uv);
     }
     // TODO should these have -1?
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
-    aabb.expand_by(1e-3);
     let iaabb = aabb.round_to_i32();
 
-    let uv_f = f.map_kind(|v| mesh.uv[0][v]);
+    let uv_f = f.map_kind(|v| mesh.uv[CHAN][v]);
     let v_f = f.map_kind(|v| mesh.v[v]);
     let mut pixel_map = BTreeMap::new();
 
+    let start = out.v.len();
+    let start_f = out.f.len();
     for c in iaabb.iter_coords() {
         let cf = c.map(|v| v as F + 0.5);
         let cf = [cf[0] / w as F, cf[1] / h as F];
-        let bary = uv_f.barycentric_tri(cf);
+        let bary = uv_f.barycentric(cf);
         // small epsilon to handle points which are very close to edges.
-        const EPS: F = 1e-2;
-        if !bary.iter().all(|v| (-EPS..=(1. + EPS)).contains(v)) {
-            // outside the triangle
+        let outside_all = uv_f.as_triangle_fan().all(|uv_t| {
+            let t_bary = pars3d::barycentric_2d(cf, uv_t);
+            (0..3).any(|i| t_bary[i] < -1e-3)
+        });
+        if outside_all {
             continue;
         }
-        let [u, v] = uv_f.from_barycentric_tri(bary);
+        let [u, v] = uv_f.from_barycentric(bary);
         // compute color
         let u = u % 1.;
         let u = if u < 0. { 1. + u } else { u };
@@ -1168,20 +1202,29 @@ pub fn sample(
         let rgba = image::imageops::sample_bilinear(diff_img, u as f32, v as f32).unwrap();
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
 
-        // this is 0-1 so vertices align across edges
-        let clamped_bary = bary.map(|v| v.clamp(0., 1.));
-        let sum = clamped_bary.into_iter().sum::<F>();
-        let clamped_bary = clamped_bary.map(|v| v / sum);
-        let new_vert = v_f.from_barycentric_tri(clamped_bary);
+        let new_vert = v_f.from_barycentric(bary);
 
-        let vi = out_verts.len();
-        out_verts.push(new_vert);
-        out_colors.push([r, g, b]);
+        let vi = out.v.len();
+        out.v.push(new_vert);
+        out.vert_colors.push([r, g, b]);
         assert!(pixel_map.insert(c, vi).is_none());
     }
 
-    // compute faces for each new vertex
+    if start == out.v.len() {
+        assert_eq!(iaabb.area(), 1);
+        //let c = iaabb.iter_coords().next().unwrap();
+        todo!();
+    }
+
+    // compute faces for each new vertex (these are all pixels)
     for (&[u, v], &vi) in pixel_map.iter() {
+        if !pixel_map.contains_key(&[u - 1, v - 1])
+            && let Some(&r) = pixel_map.get(&[u - 1, v])
+            && let Some(&d) = pixel_map.get(&[u, v - 1])
+        {
+            face_labels.push(FaceLabel::Pixel);
+            out.f.push(FaceKind::Tri([vi, r, d]));
+        }
         // TODO determine if this is +1 or -1?
         let up = pixel_map.get(&[u, v + 1]).copied();
         let left = pixel_map.get(&[u + 1, v]).copied();
@@ -1199,8 +1242,117 @@ pub fn sample(
             // All doubles are steep triangles along the edge (handled elsewhere)
             (Some(_), None, None) | (None, Some(_), None) | (None, None, Some(_)) => continue,
         };
-        out_faces.push(new_face);
+        face_labels.push(FaceLabel::Pixel);
+        out.f.push(new_face);
     }
+
+    let mut edge_face_adj: BTreeMap<[usize; 2], EdgeKind> = BTreeMap::new();
+    // compute adjacent boundary edges and trace from the corners
+    for (fi, f) in out.f.iter().enumerate().skip(start_f) {
+        for [e0, e1] in f.edges() {
+            assert_ne!(e0, e1);
+            edge_face_adj
+                .entry(minmax(e0, e1))
+                .and_modify(|v| {
+                    let did_ins = v.insert(fi);
+                    assert!(did_ins);
+                })
+                .or_insert(EdgeKind::Boundary(fi));
+        }
+    }
+
+    // Compute adjacent vertices to each boundary vertex
+    let mut vert_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
+    for (&[ef0, ef1], ek) in edge_face_adj.iter() {
+        assert_ne!(ef0, ef1);
+        assert!(!ek.is_nonmanifold());
+        if !ek.is_boundary() {
+            continue;
+        }
+
+        let mut ins = |a: usize, b: usize| {
+            *vert_adj
+                .entry(a)
+                .or_insert([usize::MAX; 2])
+                .iter_mut()
+                .find(|v| **v == usize::MAX)
+                .unwrap() = b;
+        };
+        ins(ef0, ef1);
+        ins(ef1, ef0);
+    }
+    let check = vert_adj
+        .values()
+        .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
+    debug_assert!(check);
+
+    let mut corner_verts = f.map_kind(|_| (usize::MAX, usize::MAX) /* (og, new) */);
+    let corner_verts_s = corner_verts.as_mut_slice();
+    for (ci, &og_vi) in f_slice.iter().enumerate() {
+        let vert_pos = mesh.v[og_vi];
+
+        let [og_u, og_v] = mesh.uv[CHAN][og_vi];
+        let u = (og_u.fract().abs() * w as F + 0.5).floor() as i32;
+        let v = (og_v.fract().abs() * h as F + 0.5).floor() as i32;
+        assert!(u >= 0, "{og_u} {u} {v}");
+        assert!(v >= 0, "{og_u} {u} {v}");
+
+        let mut nearest = 0;
+        let mut best_dist = F::INFINITY;
+        // TODO do this check more efficiently
+        let range = [0, -1, 1, -2, 2, -3, 3];
+        for i in range {
+            for j in range {
+                let nu = u + i;
+                let nu = if nu >= 0 { nu } else { w as i32 + nu };
+                let nu = if nu >= w as i32 { nu - w as i32 } else { nu };
+                let nv = v + j;
+                let nv = if nv >= 0 { nv } else { h as i32 + nv };
+                let nv = if nv >= h as i32 { nv - h as i32 } else { nv };
+                let p = [nu, nv];
+                let Some(&vi) = pixel_map.get(&p) else {
+                    continue;
+                };
+                // only boundary vertices
+                if !vert_adj.contains_key(&vi) {
+                    continue;
+                }
+                // unique mapping
+                if corner_verts_s.iter().any(|&(_, p)| p == vi) {
+                    continue;
+                }
+                let d = dist(out.v[vi], vert_pos);
+                if d < best_dist {
+                    nearest = vi;
+                    best_dist = d;
+                }
+            }
+        }
+        if !best_dist.is_finite() {
+            // naive search thru everything
+            for (&new_vi, _) in vert_adj.range(start..) {
+                if corner_verts_s.iter().any(|&(_, p)| p == new_vi) {
+                    continue;
+                }
+                let d = dist(out.v[new_vi], vert_pos);
+                if d < best_dist {
+                    nearest = new_vi;
+                    best_dist = d;
+                }
+            }
+        }
+        assert_ne!(best_dist, F::INFINITY);
+
+        let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
+        debug_assert!(!fv.iter().any(|fv| fv.0 == fi));
+        // check that each corner vert corresponds to a single original vertex
+        let check = corner_verts_s.iter().any(|&(_, new_vi)| new_vi == nearest);
+        assert!(!check);
+
+        fv.push((fi, nearest));
+        corner_verts_s[ci] = (og_vi, nearest);
+    }
+
     true
 }
 
@@ -1390,7 +1542,6 @@ pub fn del_degen_gap_fill(
                 if dist(b, d) > args.color_diff_threshold {
                     continue;
                 }
-                /*
                 let [a, b, c, d] = [$a, $b, $c, $d].map(|vi| mesh.v[vi]);
                 if dist(a, c) > 1e-3 {
                     continue;
@@ -1398,7 +1549,6 @@ pub fn del_degen_gap_fill(
                 if dist(b, d) > 1e-3 {
                     continue;
                 }
-                */
                 [$a, $b, $c, $d]
             }};
         }

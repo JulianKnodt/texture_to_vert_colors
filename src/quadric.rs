@@ -48,7 +48,7 @@ impl QuadricAccumulator {
             return [0.; 3];
         }
         let inv_a = self.area.recip();
-        assert!(inv_a.is_finite(), "{}", self.area);
+        debug_assert!(inv_a.is_finite(), "{}", self.area);
 
         let a = self.a - self.ggt * inv_a;
         let b = sub(self.b, kmul(inv_a, self.gd));
@@ -91,12 +91,18 @@ impl QuadricAccumulator {
         if self.area < F::EPSILON {
             return [0.; 3];
         }
+        self.point_with_volume_opt().unwrap_or_else(|| self.point())
+    }
+    pub fn point_with_volume_opt(&self) -> Option<[F; 3]> {
+        if self.area < F::EPSILON {
+            return None;
+        }
         let inv_a = self.area.recip();
         assert!(inv_a.is_finite(), "{}", self.area);
         let a = self.a - self.ggt * inv_a;
 
         let b = sub(self.b, kmul(inv_a, self.gd));
-        invert_quadric_volume(a, b, self.nv, self.dv).unwrap_or_else(|| self.point())
+        invert_quadric_volume(a, b, self.nv, self.dv)
     }
 }
 
@@ -448,6 +454,30 @@ impl<const N: usize> Quadric<N> {
         Some(kmul(denom, numer))
     }
 
+    /*
+    pub fn attributes_opt(&self, p: [F; 3], ws: AttrWeights<N>) -> [Option<F>; N] {
+        from_fn(|i| {
+            let w = ws.ws[i];
+            if w <= 0. {
+                return 0.;
+            }
+            let s = dot(self.g[i], p) + self.d[i];
+            debug_assert!(s.is_finite(), "{p:?} {:?} {:?}", self.g[i], self.d[i]);
+            let denom = w * self.area;
+            if denom.abs() < 1e-4 {
+                return None;
+            }
+            assert!(
+                denom > 1e-14,
+                "Expected non-degenerate denom, denom = {denom} w = {w} area = {}",
+                self.area
+            );
+            let out = s / denom;
+            assert!(out.is_finite(), "{s}/{denom}");
+            Some(out)
+        })
+    }
+    */
     pub fn attributes(&self, p: [F; 3], ws: AttrWeights<N>) -> [F; N] {
         from_fn(|i| {
             let w = ws.ws[i];
@@ -457,7 +487,8 @@ impl<const N: usize> Quadric<N> {
             let s = dot(self.g[i], p) + self.d[i];
             debug_assert!(s.is_finite(), "{p:?} {:?} {:?}", self.g[i], self.d[i]);
             let denom = w * self.area;
-            if denom == 0. {
+            if denom.abs() < 1e-8 {
+                todo!();
                 return 0.;
             }
             assert!(

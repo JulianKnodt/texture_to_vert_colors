@@ -58,15 +58,20 @@ def runnable_cmds(cmds, stage_kind="run"):
     return [ c + missing_only for c in cmds ]
   return cb
 
+dataset = [
+  #("cabbage.obj", "cabbage_diffuse.jpg"),
+  #("scan_vase.obj", "scan_vase_texture.jpg"),
+  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg"),
+  ("shiba.obj", "shiba_texture.png", 0.3),
+]
+
 experiments = {
   "basic-cube": [
-    run("cube.obj", "cube.ply", "-d data/colors.png", False),
+    run("cube.obj", "cube.ply", "-d data/colors.png --no-incremental-delete --target-tri-ratio 0.5", False),
   ],
   # Simple test case for checking that the QEM is correct
   "plane-simple": [
-    run("plane.obj", "plane.ply", "-d data/small.png --no-incremental-qem --no-final-qem"),
-    run("plane.obj", "plane_incremental_only.ply", "-d data/small.png --no-final-qem"),
-    run("plane.obj", "plane_final_only.ply", "-d data/small.png --no-incremental-qem"),
+    run("plane.obj", "plane.ply", "-d data/small.png --no-final-qem"),
     run("plane.obj", "plane_with_qem.ply", "-d data/small.png"),
   ],
   "sphere": [
@@ -80,30 +85,34 @@ experiments = {
   ],
   "spot": [
     run(
-      "spot_triangulated.obj", "spot_triangulated.ply",
-      "-d data/spot_texture.png --no-incremental-delete", False
+      "spot_triangulated.obj", "spot_triangulated.ply", "-d data/spot_texture.png", False
     ),
   ],
-  "planar": [
-    run("plane.obj", "plane_vase.ply", "-d data/vase_2k.png --no-incremental-qem"),
-    run("plane.obj", "plane_vase_with_qem.ply", "-d data/vase_2k.png"),
-  ],
-  "shiba": [
-    run("shiba.obj", "shiba.ply", "-d data/uv_grid.png", False),
-  ],
+  "planar": [ run("plane.obj", "plane.ply", "-d data/hokusai.jpg") ],
   "watercolor_cake": [
     run(
       "watercolor_cake.fbx", "watercolor_cake.ply",
-      "-d data/watercolor_cake.tif --no-final-qem --no-delete-degen --no-incremental-delete --no-incremental-qem", False
+      "-d data/watercolor_cake.tif --no-final-qem --no-delete-degen --no-incremental-delete", False
     ),
+  ],
+  "vase": [
+    run("vase.fbx", "vase.ply", "-d data/vase_2k.png", False),
   ],
   "flowers-in-vase": [
     run(
       "flowers_in_vase.obj", "flowers_in_vase.ply",
-      "-d data/flowers_in_vase.jpg --no-incremental-qem --no-final-qem --no-incremental-delete", False,
+      "-d data/flowers_in_vase.jpg --no-final-qem --no-incremental-delete", False,
     ),
   ],
+
+  "dataset": [
+    *[
+      run(model, model[:-4] + ".ply", f"-d data/{texture} --target-tri-ratio {tri_ratio}", is_abl=False)
+      for (model, texture, tri_ratio) in dataset
+    ],
+  ],
 }
+
 
 def arguments():
   a = argparse.ArgumentParser()

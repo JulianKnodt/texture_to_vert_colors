@@ -32,32 +32,48 @@ pub struct Args {
     /// The weight to use for degenerate quadrics
     pub degen_quadric_weight: F,
 
-    /// Skip edge collapses if the color is above this threshold.
-    pub color_diff_threshold: F,
-
     /// Check if any faces would invert when an edge is collapsed
     pub no_check_face_inversion: bool,
 
     pub max_degree: usize,
+
+    /// What percentage of verts should be retained at the end?
+    pub target_vert_ratio: F,
+
+    /// What percentage of faces should be retained at the end?
+    pub target_tri_ratio: F,
+    pub target_tri_num: usize,
+
+    /// If progress should be displayed
+    pub display_progress: bool,
 }
 
 impl Default for Args {
     fn default() -> Self {
         Self {
+            /*
             color_weight: 0.5,
             color_preservation_weight: 10.,
+            */
+            color_weight: 1e-3,
+            color_preservation_weight: 0.,
 
-            min_face_area: 5e-2,
-            min_edge_weight: 1e-4,
+            min_face_area: 1e-2,
+            min_edge_weight: 5e-4,
 
-            abs_eps: 1e-4,
-            degen_quadric_weight: 5e-4,
-            color_diff_threshold: 2e-2,
+            abs_eps: 3e-5,
+            degen_quadric_weight: 1e-4,
 
             no_check_face_inversion: false,
 
-            // do not check max degree by default (this is just a stupidly high value)
             max_degree: 100,
+
+            target_vert_ratio: 0.,
+
+            display_progress: false,
+
+            target_tri_ratio: 0.,
+            target_tri_num: 0,
         }
     }
 }
@@ -118,12 +134,23 @@ pub fn simplify_range_colored(
         q += Quadric::degen_attr(vc, attr_ws) * area;
         q *= args.degen_quadric_weight;
 
-        (q, pos, vc)
+        (q, pos)
     });
+    let target_verts =
+        (m.num_vertices() as F * args.target_vert_ratio.clamp(0., 1.)).floor() as usize;
+    // ensure the faces are correct at this stage
+    for f in &mut mesh.f {
+        f.remap(|vi| m.vertices.get_compress(vi - offset) + offset);
+    }
+    let num_tris = mesh.f.iter().map(|f| f.num_tris()).sum::<usize>();
+    let target_num_tris = (num_tris as F * args.target_tri_ratio).floor() as usize;
+    let target_num_tris = target_num_tris.max(args.target_tri_num);
+    println!("[INFO(QEM)]: target tris: {num_tris} -> {target_num_tris}");
 
     let mut num_edges = 0;
     let mut avg_edge_len = 0.;
 
+    // faces for each vertex
     let mut face_verts = vec![vec![]; num_v];
     bufs.face_normals.resize(mesh.f.len(), [0.; 3]);
     for fi in face_range.clone() {
@@ -153,8 +180,8 @@ pub fn simplify_range_colored(
 
     avg_edge_len /= num_edges as F;
 
-    for fi in face_range.clone() {
-        for es in mesh.f[fi].edges() {
+    for f in &mesh.f[face_range.clone()] {
+        for es in f.edges() {
             let [e0, e1] = es.map(|vi| m.vertices.get_compress(vi - offset));
             m.add_edge(e0, e1);
         }
@@ -205,8 +232,8 @@ pub fn simplify_range_colored(
             }
 
             let e_w = match bufs.edge_face_adj[&e] {
-                EdgeKind::Boundary(_) => 4.,
-                EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) * 10.,
+                EdgeKind::Boundary(_) => 256.,
+                EdgeKind::Manifold([a, b]) => dihedral_angle!(a, b) / PI,
                 EdgeKind::NonManifold(_) => 4.,
             };
             let e_w = e_w.max(args.min_edge_weight);
@@ -285,22 +312,19 @@ pub fn simplify_range_colored(
     }
 
     for [e0, e1] in m.ord_edges() {
-        if locked(e0 + offset) || locked(e1 + offset) {
-            continue;
-        }
         bufs.pq.push([e0, e1], update_cost_of_edge!(e0, e1));
     }
 
-    let p = if num_v > 1_000_000 {
-        Some(indicatif::ProgressBar::new(num_v as u64))
-    } else {
-        None
-    };
+    let mut curr_tris = mesh.f[face_range.clone()]
+        .iter()
+        .map(|f| f.num_tris())
+        .sum::<usize>();
+    let p = Some(indicatif::ProgressBar::new(curr_tris as u64));
 
     let mut edge_counts = BTreeMap::new();
     let mut seen_faces = vec![];
     let mut adj_verts = vec![];
-    while let Some((e, q)) = bufs.pq.pop() {
+    'outer: while let Some((e, q)) = bufs.pq.pop() {
         debug_assert!(bufs.snd_pq.is_empty());
         bufs.snd_pq.push(e, (0, q));
         bufs.recencies.clear();
@@ -309,9 +333,14 @@ pub fn simplify_range_colored(
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
-
-            if m.degree(e0) > args.max_degree || m.degree(e1) > args.max_degree {
+            if locked(e0 + offset) || locked(e1 + offset) {
                 continue;
+            }
+            if m.num_vertices() < target_verts {
+                break 'outer;
+            }
+            if curr_tris < target_num_tris {
+                break 'outer;
             }
 
             // check if an output edge would be non-manifold
@@ -336,7 +365,9 @@ pub fn simplify_range_colored(
                         continue;
                     }
                     for e in adj_f.all_pairs_ord() {
-                        assert_ne!(e[0], e[1]);
+                        if e[0] == e[1] {
+                            continue;
+                        }
                         *edge_counts.entry(e).or_insert(0) += 1;
                     }
                     for e in adj_f.edges() {
@@ -354,19 +385,13 @@ pub fn simplify_range_colored(
             }
 
             let mut q_acc = QuadricAccumulator::default();
-            let &(q0, _, c0) = m.get(e0);
-            let &(q1, _, c1) = m.get(e1);
+            let &(q0, _) = m.get(e0);
+            let &(q1, _) = m.get(e1);
             q_acc += q0;
             q_acc += q1;
             let pos = q_acc.point();
             let q01 = q0 + q1;
             let attr = q01.attributes(pos, attr_ws);
-            if dist(c0, attr) > args.color_diff_threshold {
-                continue;
-            }
-            if dist(c1, attr) > args.color_diff_threshold {
-                continue;
-            }
 
             macro_rules! check_normal_orientation {
               ($e: expr) => {{
@@ -414,7 +439,7 @@ pub fn simplify_range_colored(
 
             m.merge(e0, e1, |_, _| {
                 curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
-                (q01, pos, attr)
+                (q01, pos)
             });
             assert!(m.is_deleted(e0));
             assert!(!m.is_deleted(e1));
@@ -422,6 +447,7 @@ pub fn simplify_range_colored(
             let [ef0, ef1] = face_verts.get_disjoint_mut([e0, e1]).unwrap();
             ef1.append(ef0);
             ef1.sort_unstable();
+            ef1.dedup();
             ef1.retain(|&fi| {
                 mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
                 !mesh.f[fi].canonicalize()
@@ -434,9 +460,6 @@ pub fn simplify_range_colored(
             bufs.did_update.clear();
             let e_dst = m.get_new_vertex(e1);
             for adj in m.vertex_adj(e_dst) {
-                if locked(adj + offset) {
-                    continue;
-                }
                 let prio = update_cost_of_edge!(e_dst, adj);
                 let adj_e = std::cmp::minmax(e_dst, adj);
                 bufs.snd_pq.remove(&adj_e);
@@ -445,13 +468,7 @@ pub fn simplify_range_colored(
             }
 
             for adj in m.vertex_adj(e_dst) {
-                if locked(adj + offset) {
-                    continue;
-                }
                 for adj2 in m.vertex_adj(adj) {
-                    if locked(adj2 + offset) {
-                        continue;
-                    }
                     let adj_e = std::cmp::minmax(adj, adj2);
                     if adj2 == e_dst || bufs.did_update.contains(&adj_e) {
                         continue;
@@ -484,16 +501,19 @@ pub fn simplify_range_colored(
                 bufs.snd_pq.push(e, (recency, nq_err));
             }
 
+            // can assume it's usually 2 since it's manifold
+            curr_tris -= 2;
             if let Some(ref p) = p {
-                p.set_position(m.num_vertices() as u64);
+                p.set_position(curr_tris as u64);
             }
         }
     }
 
-    for (vi, &(_, p, c)) in m.vertices() {
+    for (vi, &(q, p)) in m.vertices() {
         let vi = vi + offset;
 
         mesh.v[vi] = p;
+        let c = q.attributes(p, attr_ws);
         mesh.vert_colors[vi] = c.map(|c| c.clamp(0., 1.));
     }
 }

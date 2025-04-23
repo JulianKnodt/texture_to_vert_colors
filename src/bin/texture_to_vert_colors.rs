@@ -76,7 +76,7 @@ pub struct Args {
     area_threshold: F,
 
     /// Distance below which colors are considered similar
-    #[arg(long, default_value_t = 3e-2)]
+    #[arg(long, default_value_t = 5e-2)]
     color_diff_threshold: F,
 
     /// Do not delete degenerate faces in the mesh (ABLATION)
@@ -88,13 +88,18 @@ pub struct Args {
     #[arg(long)]
     no_incremental_delete: bool,
 
+    /*
     /// Do not perform QEM incrementally, only perform a single QEM at the end (ABLATION)
     #[arg(long)]
     no_incremental_qem: bool,
-
+     */
     /// Do not perform QEM at the end (ABLATION)
     #[arg(long)]
     no_final_qem: bool,
+
+    /// Target tri ratio
+    #[arg(long, default_value_t = 0.5)]
+    target_tri_ratio: F,
 }
 
 pub fn main() {
@@ -206,12 +211,6 @@ pub fn texture_to_vert_colors(
         diff_img.height()
     );
 
-    let qem_args = QEMArgs {
-        abs_eps: 0.,
-        color_diff_threshold: args.color_diff_threshold,
-        ..QEMArgs::default()
-    };
-
     let mut edge_map = Map::new();
     let mut corner_map = Map::new();
     // This is required to be a BTreeMap for the range function.
@@ -269,9 +268,15 @@ pub fn texture_to_vert_colors(
                 f.canonicalize();
             }
         }
+        /*
         // Then perform edge reduction here of just edges which are internal to the this
         // triangle.
         if !args.no_incremental_qem {
+            let qem_args = QEMArgs {
+                color_diff_threshold: args.color_diff_threshold,
+                target_tri_ratio: 0.5,
+                ..QEMArgs::default()
+            };
             simplify_range_colored(
                 &mut out,
                 &qem_args,
@@ -287,6 +292,7 @@ pub fn texture_to_vert_colors(
                 f.canonicalize();
             }
         }
+        */
     }
 
     if args.no_gap_fill {
@@ -552,7 +558,7 @@ pub fn texture_to_vert_colors(
 
     // compute statistics for degenerate mesh
     macro_rules! mesh_stats {
-        () => {{
+        ($label: expr) => {{
             macro_rules! count_face_label {
                 ($p: pat) => {{
                     face_labels
@@ -564,37 +570,46 @@ pub fn texture_to_vert_colors(
                         .count()
                 }};
             }
+            assert_eq!(face_labels.len(), out.f.len());
             println!(
-                r#"
+                r#"--- {}
       Num Pixel   : {}
-      Num Bridge  : {}
-      Num BridgeC : {}
-      Num GapFill : {}
-    "#,
+      Num Bridge  : {}, BridgeCorner  : {}
+      Num GapFill : {}, GapFillCorner : {}
+      Total       : {} (#Tris = {})"#,
+                $label,
                 count_face_label!(FaceLabel::Pixel),
                 count_face_label!(FaceLabel::Bridge(_, _)),
                 count_face_label!(FaceLabel::BridgeCorner),
-                count_face_label!(FaceLabel::GapFill(_, _) | FaceLabel::GapCorner),
+                count_face_label!(FaceLabel::GapFill(_, _)),
+                count_face_label!(FaceLabel::GapCorner),
+                count_face_label!(_),
+                out.f.iter().map(|f| f.num_tris()).sum::<usize>()
             );
         }};
     }
-    mesh_stats!();
+    mesh_stats!("Initial Generation");
 
     let init_f = out.f.len();
     let init_v = out.num_used_vertices();
     println!("[INFO]: Initial generated mesh has {init_f} faces & {init_v} vertices");
 
+    let qem_args = QEMArgs {
+        target_tri_ratio: args.target_tri_ratio,
+        ..QEMArgs::default()
+    };
+
     if !args.no_delete_degen {
         println!("[INFO]: Starting degenerate face deletion");
-        if args.no_incremental_delete {
-            del_degen_bridges(&mut remap, &mut out, args, &face_labels, 0..init_f);
-        }
+        del_degen_bridges(&mut remap, &mut out, args, &face_labels, 0..init_f);
         del_degen_gap_fill(&mut remap, &mut out, args, &face_labels);
 
         for f in out.f.iter_mut() {
             f.remap(|vi| remap.get_compress(vi));
             f.canonicalize();
         }
+
+        mesh_stats!("After deleting bridges and gap fill");
 
         if !args.no_final_qem {
             let num_f = out.f.len();
@@ -605,23 +620,27 @@ pub fn texture_to_vert_colors(
                 &qem_args,
                 // lock boundary of the outputs
                 |vi| bd_verts.contains(&vi),
+                //|vi| false,
                 0..num_f,
                 0..num_v,
                 &mut remap,
                 &mut qem_buf,
             );
+            mesh_stats!("After QEM");
+        }
+    }
+
+    out.f.retain_mut(|f| {
+        if f.is_empty() {
+            return false;
         }
 
-        out.f.retain_mut(|f| {
-            if f.is_empty() {
-                return false;
-            }
+        f.remap(|vi| remap.get_compress(vi));
+        !f.canonicalize()
+    });
 
-            f.remap(|vi| remap.get_compress(vi));
-            !f.canonicalize()
-        });
-
-        out.delete_unused_vertices();
+    out.delete_unused_vertices();
+    if init_f != out.f.len() {
         println!(
             "[INFO]: Cleaned mesh has {} faces (-{}) & {} vertices (-{})",
             out.f.len(),
@@ -863,7 +882,7 @@ pub fn sample_exact(
                     .position(|f| f == &pix_verts)
                     .unwrap();
                 out.f[start_f..][del_f] = FaceKind::empty();
-                face_labels[start_f..][del_f] = FaceLabel::Nuked;
+                face_labels[start_f..][del_f] = FaceLabel::Deleted;
             }
         }
     }
@@ -1332,14 +1351,12 @@ pub fn del_degen_bridges(
             let b = remap.get_compress(b);
             let new_v = kmul(0.5, add(mesh.v[a], mesh.v[b]));
             let new_vc = kmul(0.5, add(mesh.vert_colors[a], mesh.vert_colors[b]));
-            let new_vi = a;
 
             unsafe {
                 *mesh.v.get_unchecked_mut(a) = new_v;
                 *mesh.vert_colors.get_unchecked_mut(a) = new_vc;
             }
-            remap.set(a, new_vi);
-            remap.set(b, new_vi);
+            remap.set(b, a);
         };
         combine(e00, e11);
         combine(e10, e01);
@@ -1373,13 +1390,15 @@ pub fn del_degen_gap_fill(
                 if dist(b, d) > args.color_diff_threshold {
                     continue;
                 }
+                /*
                 let [a, b, c, d] = [$a, $b, $c, $d].map(|vi| mesh.v[vi]);
-                if dist(a, c) > 1e-4 {
+                if dist(a, c) > 1e-3 {
                     continue;
                 }
-                if dist(b, d) > 1e-4 {
+                if dist(b, d) > 1e-3 {
                     continue;
                 }
+                */
                 [$a, $b, $c, $d]
             }};
         }
@@ -1409,6 +1428,47 @@ pub fn del_degen_gap_fill(
         mesh.f[fi] = FaceKind::empty();
         del += 1;
     }
+
+    for fi in 0..mesh.f.len() {
+        let FaceLabel::GapCorner = labels[fi] else {
+            continue;
+        };
+
+        // attempt to replace corners with a single vertex
+        let f = &mesh.f[fi];
+        if f.is_empty() {
+            continue;
+        }
+        let f_s = f.as_slice();
+        let avg_color = f_s
+            .iter()
+            .map(|&vi| mesh.vert_colors[remap.get_compress(vi)])
+            .fold([0.; 3], add);
+        let avg_color = kmul(1. / f.len() as F, avg_color);
+        let any_diff = f_s.iter().any(|&vi| {
+            dist(mesh.vert_colors[remap.get_compress(vi)], avg_color) > args.color_diff_threshold
+        });
+        if any_diff {
+            continue;
+        }
+
+        let avg_pos = f_s
+            .iter()
+            .map(|&vi| mesh.v[remap.get_compress(vi)])
+            .fold([0.; 3], add);
+        let avg_pos = kmul(1. / f.len() as F, avg_pos);
+
+        let kept = f_s[0];
+        mesh.v[kept] = avg_pos;
+        mesh.vert_colors[kept] = avg_color;
+
+        for &vi in &f_s[1..] {
+            remap.set(vi, kept);
+        }
+
+        mesh.f[fi] = FaceKind::empty();
+        del += 1;
+    }
     del
 }
 
@@ -1425,8 +1485,8 @@ pub enum FaceLabel {
     /// A face which covers the corner between many triangles
     GapCorner,
 
-    /// A face which was removed
-    Nuked,
+    /// A face which was removed because it didn't have any neighbors when it should've.
+    Deleted,
 }
 
 fn dist<const N: usize>(a: [F; N], b: [F; N]) -> F {

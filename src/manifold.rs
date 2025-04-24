@@ -1,4 +1,3 @@
-use crate::inv_map::InverseMap;
 use union_find::{UnionFind, UnionFindOp};
 
 /// A mesh representation which is suitable for collapsing vertices.
@@ -9,8 +8,6 @@ pub struct CollapsibleManifold<T, UF: UnionFindOp> {
     pub(crate) vertices: UF,
 
     pub edges: Vec<Vec<usize>>,
-
-    inv_map: InverseMap,
 
     pub data: Vec<T>,
 }
@@ -24,7 +21,6 @@ impl<T> CollapsibleManifold<T, UnionFind<u32>> {
         Self {
             vertices: UnionFind::new_u32(size),
             edges: vec![vec![]; size],
-            inv_map: InverseMap::new(size),
 
             data,
         }
@@ -38,7 +34,6 @@ impl<T> CollapsibleManifold<T, UnionFind<u32>> {
         Self {
             vertices: UnionFind::new_u32(size),
             edges: vec![],
-            inv_map: InverseMap::new(size),
             data: vec![T::default(); size],
         }
     }
@@ -51,12 +46,10 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         for i in 0..size {
             data.push(f(i));
         }
-        let inv_map = InverseMap::from_merged(size, |vi| remap.find(vi));
 
         Self {
             vertices: remap,
             edges: vec![vec![]; size],
-            inv_map,
 
             data,
         }
@@ -189,40 +182,60 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
     where
         T: Clone,
     {
-        assert_ne!(v0, v1);
+        debug_assert_ne!(v0, v1);
         let [src, dst] = std::cmp::minmax(v0, v1);
-        assert!(!self.is_deleted(src));
-        assert!(!self.is_deleted(dst));
-        assert!(self.is_adj(src, dst));
+        debug_assert!(!self.is_deleted(src));
+        debug_assert!(!self.is_deleted(dst));
+        debug_assert!(self.is_adj(src, dst));
 
         self.vertices.union(src, dst);
 
-        self.inv_map.merge(src, dst);
+        let [data_dst, data_src] = unsafe { self.data.get_disjoint_unchecked_mut([src, dst]) };
+        let new_data = merge(&data_dst, &data_src);
+        *data_src = new_data.clone();
+        *data_dst = new_data;
+        // data_src should no longer be accessed
 
-        self.data[dst] = merge(&self.data[dst], &self.data[src]);
-        self.data[src] = self.data[dst].clone();
-
-        let mut src_e = std::mem::take(&mut self.edges[src]);
-        self.edges[dst].append(&mut src_e);
-        self.edges[dst].retain(|&e1| self.vertices.find(e1) != dst);
-        self.edges[dst].sort_by_key(|&e1| self.vertices.find(e1));
-        self.edges[dst].dedup_by_key(|&mut e1| self.vertices.find(e1));
+        let [src_e, dst_e] = unsafe { self.edges.get_disjoint_unchecked_mut([src, dst]) };
+        let mut src_e = std::mem::take(src_e);
+        /*
+        for e in dst_e.iter_mut() {
+            *e = self.vertices.find(*e);
+        }
+        let curr_dst_len = dst_e.len();
+        for e in src_e {
+            let e = self.vertices.find(*e);
+            if e == dst || dst_e[0..curr_dst_len].contains(e) {
+                continue;
+            }
+            dst_e.push(e);
+        }
+        */
+        dst_e.append(&mut src_e);
+        dst_e.retain_mut(|e1| {
+            let new_v = self.vertices.find(*e1);
+            *e1 = new_v;
+            new_v != dst
+        });
+        dst_e.sort_unstable();
+        dst_e.dedup();
 
         let tmp = std::mem::take(&mut self.edges[dst]);
         for &adj in &tmp {
             let adj = self.vertices.find(adj);
-            assert_ne!(adj, dst);
-            self.edges[adj].sort_unstable_by_key(|&v| self.vertices.find(v));
-            self.edges[adj].dedup_by_key(|&mut v| self.vertices.find(v));
+            debug_assert_ne!(adj, dst);
+            let adj_e = unsafe { self.edges.get_unchecked_mut(adj) };
+            for e in adj_e.iter_mut() {
+                *e = self.vertices.find(*e);
+            }
+            adj_e.sort_unstable();
+            adj_e.dedup();
         }
         self.edges[dst] = tmp;
     }
-    pub fn merged_vertices(&self, v0: usize) -> impl Iterator<Item = usize> + Clone + '_ {
-        self.inv_map.merged(v0)
-    }
 
     pub fn get(&self, v: usize) -> &T {
-        &self.data[self.vertices.find(v)]
+        unsafe { self.data.get_unchecked(self.vertices.find(v)) }
     }
     pub fn set(&mut self, v: usize, t: T) {
         self.data[self.vertices.find(v)] = t;

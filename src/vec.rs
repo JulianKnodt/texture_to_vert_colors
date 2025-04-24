@@ -24,6 +24,13 @@ pub fn add<const N: usize>(a: [F; N], b: [F; N]) -> [F; N] {
 }
 
 #[inline]
+pub fn add_assign<const N: usize>(a: &mut [F; N], b: [F; N]) {
+    for i in 0..N {
+        a[i] += b[i];
+    }
+}
+
+#[inline]
 pub fn sub<const N: usize>(a: [F; N], b: [F; N]) -> [F; N] {
     from_fn(|i| a[i] - b[i])
 }
@@ -50,14 +57,6 @@ pub fn norm_inf<const N: usize>(v: [F; N]) -> F {
 pub fn to_3<const N: usize>(v: [F; N]) -> [F; 3] {
     assert!(N >= 3);
     [v[0], v[1], v[2]]
-}
-
-pub fn zero_cat([v0, v1, v2]: [F; 3]) -> [F; 4] {
-    [v0, v1, v2, 0.]
-}
-
-pub fn one_cat([v0, v1, v2]: [F; 3]) -> [F; 4] {
-    [v0, v1, v2, 1.]
 }
 
 #[inline]

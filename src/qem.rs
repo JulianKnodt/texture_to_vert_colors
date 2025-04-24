@@ -29,16 +29,10 @@ pub struct Args {
     /// Epsilon value to use when comparing quadric errors.
     pub abs_eps: F,
 
-    /// The weight to use for degenerate quadrics
-    pub degen_quadric_weight: F,
-
     /// Check if any faces would invert when an edge is collapsed
     pub no_check_face_inversion: bool,
 
     pub max_degree: usize,
-
-    /// What percentage of verts should be retained at the end?
-    pub target_vert_ratio: F,
 
     /// What percentage of faces should be retained at the end?
     pub target_tri_ratio: F,
@@ -52,20 +46,17 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             //color_weight: 0.5,
-            color_weight: 1e-2,
-            color_preservation_weight: 1.,
+            color_weight: 0.1,
+            color_preservation_weight: 5.,
 
-            min_face_area: 1e-2,
+            min_face_area: 3e-2,
             min_edge_weight: 5e-3,
 
             abs_eps: 0.,
-            degen_quadric_weight: 1e-3,
 
-            no_check_face_inversion: false,
+            no_check_face_inversion: true,
 
             max_degree: 100,
-
-            target_vert_ratio: 0.,
 
             display_progress: false,
 
@@ -118,8 +109,6 @@ pub fn simplify_range_colored(
     let cw = args.color_weight;
     let attr_ws = AttrWeights { ws: [cw; 3] };
 
-    let target_verts =
-        (remap.curr_len() as F * args.target_vert_ratio.clamp(0., 1.)).floor() as usize;
     // ensure the faces are correct at this stage
     for f in &mut mesh.f[face_range.clone()] {
         f.remap(|vi| remap.get_compress(vi));
@@ -183,17 +172,8 @@ pub fn simplify_range_colored(
     let mut m = CollapsibleManifold::new_with_remapping(remap.subset(vert_range.clone()), |vi| {
         assert!(vert_range.contains(&(vi + offset)));
         let pos = mesh.v[vi + offset];
-        let area = 1e-6;
-        let mut q = Quadric::<3>::zero();
-        for d in [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]] {
-            q += Quadric::new_plane(pos, d, area);
-            q.area += area;
-        }
         let vc = mesh.vert_colors[vi + offset];
-        q += Quadric::degen_attr(vc, attr_ws) * area;
-        q *= args.degen_quadric_weight;
-
-        (q, pos)
+        (Quadric::zero(), pos, vc)
     });
     if args.display_progress {
         println!("[INFO(QEM)]: target tris: {num_tris} -> {target_num_tris}");
@@ -351,17 +331,26 @@ pub fn simplify_range_colored(
         ($e0:expr, $e1: expr) => {{
             let [e0, e1] = std::cmp::minmax($e1, $e0);
             let mut q_acc = QuadricAccumulator::default();
-            let &(q0, p0) = m.get(e0);
+            let &(q0, p0, a0) = m.get(e0);
             q_acc += q0;
-            let &(q1, p1) = m.get(e1);
+            let &(q1, p1, a1) = m.get(e1);
             q_acc += q1;
-            let p = q_acc.point_with_volume_opt().unwrap_or_else(|| kmul(0.5, add(p0, p1)));
+            let p = q_acc
+                .point_with_volume_opt()
+                .unwrap_or_else(|| kmul(0.5, add(p0, p1)));
             assert!(p.iter().copied().all(F::is_finite));
             let mut total_cost = 0.;
 
             let q01f = m.get(e0).0 + m.get(e1).0;
             // colors are also automatically clamped to [0., 1.].
-            let attrs = q01f.attributes(p, attr_ws);
+            let attrs = q01f.attributes_opt(p, attr_ws);
+            let attrs = std::array::from_fn(|i| {
+                if let Some(a) = attrs[i] {
+                    a
+                } else {
+                    (a0[i] + a1[i]) / 2.
+                }
+            });
             total_cost -=
                 q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1];
 
@@ -389,15 +378,12 @@ pub fn simplify_range_colored(
         bufs.snd_pq.push(e, (0, q));
         bufs.recencies.clear();
         'inner: while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
-            assert!(e0 < e1);
+            debug_assert!(e0 < e1);
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
             if locked(e0 + offset) || locked(e1 + offset) {
                 continue;
-            }
-            if m.num_vertices() < target_verts {
-                break 'outer;
             }
             if curr_tris < target_num_tris {
                 break 'outer;
@@ -445,13 +431,22 @@ pub fn simplify_range_colored(
             }
 
             let mut q_acc = QuadricAccumulator::default();
-            let &(q0, p0) = m.get(e0);
-            let &(q1, p1) = m.get(e1);
+            let &(q0, p0, a0) = m.get(e0);
+            let &(q1, p1, a1) = m.get(e1);
             q_acc += q0;
             q_acc += q1;
-            let pos = q_acc.point_with_volume_opt().unwrap_or_else(|| kmul(0.5, add(p0, p1)));
+            let pos = q_acc
+                .point_with_volume_opt()
+                .unwrap_or_else(|| kmul(0.5, add(p0, p1)));
             let q01 = q0 + q1;
-            let attr = q01.attributes(pos, attr_ws);
+            let attr = q01.attributes_opt(pos, attr_ws);
+            let attr = std::array::from_fn(|i| {
+                if let Some(a) = attr[i] {
+                    a
+                } else {
+                    (a0[i] + a1[i]) / 2.
+                }
+            });
 
             macro_rules! check_normal_orientation {
               ($e: expr) => {{
@@ -499,7 +494,7 @@ pub fn simplify_range_colored(
 
             m.merge(e0, e1, |_, _| {
                 curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
-                (q01, pos)
+                (q01, pos, attr)
             });
             debug_assert!(m.is_deleted(e0));
             debug_assert!(!m.is_deleted(e1));
@@ -508,14 +503,25 @@ pub fn simplify_range_colored(
             ef1.append(ef0);
             ef1.sort_unstable();
             ef1.dedup();
+            let prev_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
             ef1.retain(|&fi| {
                 mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
-                !mesh.f[fi].canonicalize()
+                let retain = !mesh.f[fi].canonicalize();
+                if !retain {
+                  // necessary for triangle counting
+                  mesh.f[fi] = FaceKind::empty();
+                }
+                retain
             });
+            let new_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
+            curr_tris -= prev_tri - new_tri;
+
             for &mut fi in ef1 {
                 bufs.face_normals[fi] =
                     normalize(mesh.f[fi].normal_with(|vi| m.get(vi - offset).1));
             }
+
+            // TEMPORARY check that face verts is correct
 
             bufs.did_update.clear();
             let e_dst = m.get_new_vertex(e1);
@@ -562,19 +568,17 @@ pub fn simplify_range_colored(
             }
 
             // can assume it's usually 2 since it's manifold
-            curr_tris -= 2;
             if let Some(ref p) = p {
                 p.set_position(curr_tris as u64);
             }
         }
     }
 
-    for (vi, &(q, p)) in m.vertices() {
+    for (vi, &(_, p, a)) in m.vertices() {
         let vi = vi + offset;
 
         mesh.v[vi] = p;
-        let c = q.attributes(p, attr_ws);
-        mesh.vert_colors[vi] = c;
+        mesh.vert_colors[vi] = a;
     }
 
     // denormalize all output vertices

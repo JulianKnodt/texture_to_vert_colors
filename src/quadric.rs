@@ -1,5 +1,5 @@
 use super::sym::SymMatrix3;
-use super::{F, add, dot, kmul, sub};
+use super::{F, add, add_assign, dot, kmul, sub};
 
 use core::array::from_fn;
 use core::ops::{Add, AddAssign, Mul, MulAssign};
@@ -27,17 +27,19 @@ pub struct QuadricAccumulator {
 }
 
 impl<const N: usize> AddAssign<Quadric<N>> for QuadricAccumulator {
+    #[inline]
     fn add_assign(&mut self, q: Quadric<N>) {
-        self.a = self.a + q.a;
-        self.b = add(self.b, q.b);
-        self.area += q.area;
+        self.a += q.a;
 
         for i in 0..N {
-            self.ggt = self.ggt + SymMatrix3::outer(q.g[i]);
-            self.gd = add(self.gd, kmul(q.d[i], q.g[i]));
+            self.ggt += SymMatrix3::outer(q.g[i]);
+            add_assign(&mut self.gd, kmul(q.d[i], q.g[i]));
         }
 
-        self.nv = add(self.nv, q.nv);
+        add_assign(&mut self.b, q.b);
+        add_assign(&mut self.nv, q.nv);
+
+        self.area += q.area;
         self.dv += q.dv;
     }
 }
@@ -161,7 +163,7 @@ fn invert_quadric_volume(
 
     let det = invx * vx + invy * vy + invz * vz;
 
-    if det < 1e-6 {
+    if det < 1e-5 {
         return None;
     }
 
@@ -454,17 +456,16 @@ impl<const N: usize> Quadric<N> {
         Some(kmul(denom, numer))
     }
 
-    /*
     pub fn attributes_opt(&self, p: [F; 3], ws: AttrWeights<N>) -> [Option<F>; N] {
         from_fn(|i| {
             let w = ws.ws[i];
             if w <= 0. {
-                return 0.;
+                return Some(0.);
             }
             let s = dot(self.g[i], p) + self.d[i];
             debug_assert!(s.is_finite(), "{p:?} {:?} {:?}", self.g[i], self.d[i]);
             let denom = w * self.area;
-            if denom.abs() < 1e-4 {
+            if denom.abs() < 1e-8 {
                 return None;
             }
             assert!(
@@ -477,7 +478,6 @@ impl<const N: usize> Quadric<N> {
             Some(out)
         })
     }
-    */
     pub fn attributes(&self, p: [F; 3], ws: AttrWeights<N>) -> [F; N] {
         from_fn(|i| {
             let w = ws.ws[i];
@@ -488,16 +488,15 @@ impl<const N: usize> Quadric<N> {
             debug_assert!(s.is_finite(), "{p:?} {:?} {:?}", self.g[i], self.d[i]);
             let denom = w * self.area;
             if denom.abs() < 1e-8 {
-                todo!();
                 return 0.;
             }
-            assert!(
+            debug_assert!(
                 denom > 1e-14,
                 "Expected non-degenerate denom, denom = {denom} w = {w} area = {}",
                 self.area
             );
             let out = s / denom;
-            assert!(out.is_finite(), "{s}/{denom}");
+            debug_assert!(out.is_finite(), "{s}/{denom}");
             out
         })
     }
@@ -518,6 +517,7 @@ fn test_local_quadric() {
 
 impl<const N: usize> Add for Quadric<N> {
     type Output = Self;
+    #[inline]
     fn add(self, o: Self) -> Self {
         Self {
             a: self.a + o.a,

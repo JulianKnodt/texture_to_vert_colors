@@ -671,6 +671,7 @@ dependencies = [
  "ordered-float",
  "pars3d",
  "priority-queue",
+ "rayon",
  "smallvec",
  "union-find",
 ]

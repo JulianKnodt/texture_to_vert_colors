@@ -4,7 +4,7 @@
 
 use std::assert_matches::debug_assert_matches;
 use std::cmp::minmax;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::ops::Range;
 
@@ -65,11 +65,11 @@ pub struct Args {
     pixel_sep: F,
 
     /// How much to pull each vertex associated with an edge toward it.
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(long, default_value_t = 0.0)]
     edge_pull: F,
 
     /// How much to pull each vertex associated with a vertex toward it.
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(long, default_value_t = 0.0)]
     vertex_pull: F,
 
     /// Area below which faces can be deleted
@@ -89,9 +89,9 @@ pub struct Args {
     #[arg(long)]
     no_incremental_delete: bool,
 
-    /// Do not perform QEM incrementally, only perform a single QEM at the end (ABLATION)
+    /// Perform QEM incrementally, on top of a single QEM at the end (ABLATION)
     #[arg(long)]
-    no_incremental_qem: bool,
+    incremental_qem: bool,
 
     /// Do not perform QEM at the end (ABLATION)
     #[arg(long)]
@@ -225,10 +225,10 @@ pub fn texture_to_vert_colors(
 
     use indicatif::ProgressIterator;
 
-    let target_tri_ratio = if args.no_final_qem ^ args.no_incremental_qem {
-      args.target_tri_ratio
+    let target_tri_ratio = if args.no_final_qem ^ !args.incremental_qem {
+        args.target_tri_ratio
     } else {
-      args.target_tri_ratio.sqrt()
+        args.target_tri_ratio.sqrt()
     };
     let mut qem_buf = QEMBuffers::default();
     for (fi, f) in mesh.f.iter().enumerate().progress() {
@@ -282,7 +282,7 @@ pub fn texture_to_vert_colors(
         }
         // Then perform edge reduction here of just edges which are internal to the this
         // triangle.
-        if !args.no_incremental_qem {
+        if args.incremental_qem {
             let qem_args = QEMArgs {
                 target_tri_ratio,
                 ..QEMArgs::default()
@@ -628,13 +628,12 @@ pub fn texture_to_vert_colors(
         if !args.no_final_qem {
             let num_f = out.f.len();
             let num_v = out.v.len();
-            let bd_verts = out.boundary_vertices().collect::<BTreeSet<_>>();
             simplify_range_colored(
                 &mut out,
                 &qem_args,
                 // lock boundary of the outputs
-                |vi| bd_verts.contains(&vi),
-                //|vi| false,
+                //|vi| bd_verts.contains(&vi),
+                |_| false,
                 0..num_f,
                 0..num_v,
                 &mut remap,

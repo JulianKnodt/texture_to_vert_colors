@@ -55,7 +55,7 @@ where
             (Some(a), Some(b)) => match a.cmp(b) {
                 Ordering::Equal => {
                     let v = self.0.next();
-                    assert!(v == self.1.next());
+                    debug_assert!(v == self.1.next());
                     Both(v?)
                 }
                 Ordering::Less => Left(self.0.next()?),

@@ -63,7 +63,7 @@ dataset = [
   ("cabbage.obj", "cabbage_diffuse.jpg", 0.5),
   #("scan_vase.obj", "scan_vase_texture.jpg"),
   #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg"),
-  ("shiba.fbx", "shiba_texture.png", 0.4),
+  ("shiba.fbx", "shiba_texture.png", 0.02),
 ]
 
 experiments = {
@@ -80,9 +80,7 @@ experiments = {
   ],
   "rot-uv": [
     run(
-      "cube_rotated_uv.obj", "cube_rot_uv.ply",
-      "-d data/uv_grid.png --no-final-qem",
-      False
+      "cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png", False
     ),
   ],
   "thin-tri": [
@@ -111,7 +109,7 @@ experiments = {
     *[
       run(
         model, model[:-4] + ".ply",
-        f"-d data/{texture} --target-tri-ratio {tri_ratio} --no-incremental-qem",
+        f"-d data/{texture} --target-tri-ratio {tri_ratio}",
         is_abl=False
       )
       for (model, texture, tri_ratio) in dataset

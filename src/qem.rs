@@ -45,14 +45,13 @@ pub struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            //color_weight: 0.5,
-            color_weight: 0.1,
-            color_preservation_weight: 5.,
+            color_weight: 0.5,
+            color_preservation_weight: 1.,
+            //color_preservation_weight: 0.,
+            min_face_area: 5e-2,
+            min_edge_weight: 1e-2,
 
-            min_face_area: 3e-2,
-            min_edge_weight: 5e-3,
-
-            abs_eps: 0.,
+            abs_eps: 1e-5,
 
             no_check_face_inversion: true,
 
@@ -106,6 +105,7 @@ pub fn simplify_range_colored(
     let num_v = vert_range.end - offset;
 
     assert!(!mesh.vert_colors.is_empty());
+
     let cw = args.color_weight;
     let attr_ws = AttrWeights { ws: [cw; 3] };
 
@@ -508,8 +508,8 @@ pub fn simplify_range_colored(
                 mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
                 let retain = !mesh.f[fi].canonicalize();
                 if !retain {
-                  // necessary for triangle counting
-                  mesh.f[fi] = FaceKind::empty();
+                    // necessary for triangle counting
+                    mesh.f[fi] = FaceKind::empty();
                 }
                 retain
             });

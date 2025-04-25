@@ -59,16 +59,16 @@ def runnable_cmds(cmds, stage_kind="run"):
   return cb
 
 dataset = [
-  ("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 0.5),
-  ("cabbage.obj", "cabbage_diffuse.jpg", 0.5),
-  #("scan_vase.obj", "scan_vase_texture.jpg"),
-  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg"),
+  ("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 0.1),
+  ("cabbage.obj", "cabbage_diffuse.jpg", 0.1),
+  ("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 0.05),
   ("shiba.fbx", "shiba_texture.png", 0.02),
+  ("scan_vase.obj", "scan_vase_texture.jpg", 0.2),
 ]
 
 experiments = {
   "basic-cube": [
-    run("cube.obj", "cube.ply", "-d data/colors.png --no-incremental-delete --target-tri-ratio 0.5", False),
+    run("cube.obj", "cube.ply", "-d data/uv_grid.png --target-tri-ratio 0.5", False),
   ],
   # Simple test case for checking that the QEM is correct
   "plane-simple": [
@@ -76,12 +76,10 @@ experiments = {
     run("plane.obj", "plane_with_qem.ply", "-d data/small.png"),
   ],
   "sphere": [
-    run("sphere.obj", "sphere.ply", "-d data/uv_grid.png", False),
+    run("sphere.obj", "sphere.ply", "-d data/uv_grid.png --no-final-qem", False),
   ],
   "rot-uv": [
-    run(
-      "cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png", False
-    ),
+    run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png --target-tri-ratio 0.1", False),
   ],
   "thin-tri": [
     run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", False),
@@ -89,10 +87,11 @@ experiments = {
   "spot": [
     run("spot_triangulated.obj", "spot_triangulated.ply", "-d data/spot_texture.png", False),
   ],
-  "hokusai": [ run("plane.obj", "hokusai_plane.ply", "-d data/hokusai.jpg --no-incremental-qem --target-tri-ratio 0.4") ],
+  "hokusai": [ run("plane.obj", "hokusai_plane.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3") ],
   "watercolor_cake": [
     run(
-      "watercolor_cake.fbx", "watercolor_cake.ply", "-d data/watercolor_cake.tif --no-final-qem", False
+      "watercolor_cake.fbx", "watercolor_cake.ply",
+      "-d data/watercolor_cake.tif --target-tri-ratio 0.1", False
     ),
   ],
   "vase": [

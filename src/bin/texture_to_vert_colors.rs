@@ -207,6 +207,15 @@ pub fn texture_to_vert_colors(
 ) -> Mesh {
     let mut out = Mesh::default();
 
+    if !args.correspondence.is_empty() {
+        // TODO determine if this is really true
+        assert!(
+            args.no_delete_degen,
+            "If preserving correspondence for downstream modification
+            it is required that the boundary of each tri remain untouched"
+        );
+    }
+
     // Copy vertex colors for each input UV
     // TODO remove this assumption of a single material and copy per face with duplication
     let diff_img = if args.diffuse_img.is_empty() {

@@ -87,7 +87,7 @@ fn main() {
             &m0.vert_colors,
         );
         pars3d::image::imageops::flip_vertical_in_place(&mut img);
-        if let Err(e) = img.save(args.bake_texture) {
+        if let Err(e) = img.save(&args.bake_texture) {
             eprintln!("Failed to save image due to {e:?}");
         }
         let nf = m0.f.len();
@@ -95,14 +95,14 @@ fn main() {
             kind: pars3d::mesh::TextureKind::Diffuse,
             mul: [1.; 4],
             image: Some(img.into()),
-            original_path: String::new(),
+            original_path: args.bake_texture,
         };
         let ti = scene.textures.len();
         scene.textures.push(new_texture);
         let new_mat = pars3d::mesh::Material {
             textures: vec![ti],
-            name: String::new(),
-            path: String::new(),
+            name: format!("BakedVertexColors0"),
+            path: args.output[..args.output.len() - 4].to_string() + ".mtl",
         };
         let mi = scene.materials.len();
         scene.materials.push(new_mat);

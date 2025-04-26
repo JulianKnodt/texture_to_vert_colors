@@ -8,3 +8,4 @@ experiment_log.json
 *.ply
 *.png
 *.svg
+*.mtl

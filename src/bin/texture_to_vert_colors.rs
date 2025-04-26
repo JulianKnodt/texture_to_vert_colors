@@ -113,6 +113,10 @@ pub struct Args {
     /// How to color the output mesh.
     #[arg(long, default_value_t = ColorMethod::Diffuse)]
     color_method: ColorMethod,
+
+    /// Where to store correspondence between input and output
+    #[arg(long, default_value_t = String::new())]
+    correspondence_json: String,
 }
 
 pub fn main() {
@@ -236,7 +240,8 @@ pub fn texture_to_vert_colors(
 
     // For each UV coordinate, which faces are associated with it?
     let mut pix_map = BTreeMap::new();
-    // For each face, also should store which pixels are adjacent to it.
+
+    let mut all_corner_verts = BTreeMap::new();
 
     use indicatif::ProgressIterator;
 
@@ -272,6 +277,7 @@ pub fn texture_to_vert_colors(
                 &mut labels,
                 &mut face_labels,
                 &mut pix_map,
+                &mut all_corner_verts,
                 args,
             ),
         };
@@ -750,6 +756,9 @@ pub fn sample_exact(
     // which faces are stored for each pixel
     pix_map: &mut BTreeMap<[i32; 2], Vec<usize>>,
 
+    // Which original vertices on each face correspond with which new vertices
+    all_corner_verts: &mut BTreeMap<(usize, usize), usize>,
+
     args: &Args,
 ) -> bool {
     let mut aabb = AABB::<F, 2>::new();
@@ -1140,6 +1149,7 @@ pub fn sample_exact(
 
         fv.push((fi, nearest));
         corner_verts_s[ci] = (og_vi, nearest);
+        assert_eq!(all_corner_verts.insert((fi, og_vi), nearest), None);
 
         // Pull to a corner to make it tight (larger T is tighter)
         let t = args.vertex_pull;

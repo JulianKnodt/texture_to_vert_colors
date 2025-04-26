@@ -5,24 +5,22 @@ import time
 import json
 from itertools import chain
 
-if os.name == "nt":
-  bin_file = ...
-else:
-  bin_file = "target/release/texture_to_vert_colors"
+bin_file = "target/release/texture_to_vert_colors"
+tutte_bin = "target/release/colored_tutte_param"
 
 args = None
 
 out_dir = lambda is_ablation=False: "ablations" if is_ablation else "outputs"
 
-def run(src, dst, flags, is_abl=True, src_dir="data"):
+def run(src, dst, flags, is_abl=True, src_dir="data", bin=bin_file, eval=True):
   def cb():
     if "run" not in args.stages: return []
     if args.match_output is not None and args.match_output not in dst: return []
     out_json = f"{out_dir(is_abl)}/{dst[:-4]}.json"
     cmds = [
-      f"{bin_file} -i {src_dir}/{src} -o {out_dir(is_abl)}/{dst} {flags} --stats {out_json}",
+      f"{bin} -i {src_dir}/{src} -o {out_dir(is_abl)}/{dst} {flags} --stats {out_json}",
     ]
-    if not args.no_eval:
+    if (not args.no_eval) and eval:
       if ".fbx" in src:
         cmds.append('echo "FBX is not currently supported for Hausdorff"')
       else:
@@ -101,6 +99,24 @@ experiments = {
     run(
       "flowers_in_vase.obj", "flowers_in_vase.ply",
       "-d data/flowers_in_vase.jpg --no-final-qem --no-incremental-delete", False,
+    ),
+  ],
+
+  "tutte-param-example": [
+    #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.9"),
+    run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.3"),
+    run(
+      "../ablations/open_top_box.ply",
+      "open_top_box_mv.obj",
+      "--weighting mean-value --bake-texture mv.png --uv-svg ablations/mv.svg",
+      bin=tutte_bin, eval=False,
+    ),
+    run(
+      "../ablations/open_top_box.ply",
+      "open_top_box_cmv.obj",
+      "--weighting colored-mean-value --pos-color-norm mul --bake-texture cmv.png \
+       --uv-svg ablations/cmv.svg",
+      bin=tutte_bin, eval=False,
     ),
   ],
 

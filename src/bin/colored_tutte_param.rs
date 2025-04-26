@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use pars3d::{self, Mesh};
 use std::collections::BTreeMap;
 
-use texture_to_vert_colors::{F, add, dist, dot, kmul, normalize, sub};
+use texture_to_vert_colors::{F, add, cross, dist, dot, kmul, length, normalize, sub};
 
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
@@ -36,6 +36,14 @@ pub struct Args {
     /// Bake vertex colors to a texture
     #[arg(long, default_value_t = String::new())]
     bake_texture: String,
+
+    /// Unused for now
+    #[arg(long, default_value_t = String::new())]
+    stats: String,
+
+    /// How many iterations to do for the lazy tutte.
+    #[arg(long, default_value_t = 15000)]
+    iters: usize,
 }
 
 fn main() {
@@ -87,9 +95,6 @@ fn main() {
             &m0.vert_colors,
         );
         pars3d::image::imageops::flip_vertical_in_place(&mut img);
-        if let Err(e) = img.save(&args.bake_texture) {
-            eprintln!("Failed to save image due to {e:?}");
-        }
         let nf = m0.f.len();
         let new_texture = pars3d::mesh::Texture {
             kind: pars3d::mesh::TextureKind::Diffuse,
@@ -153,18 +158,21 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
     let mut edge_face_adj = BTreeMap::new();
     for (fi, f) in mesh.f.iter().enumerate() {
         for e in f.edges_ord() {
-            let slot = edge_face_adj
-                .entry(e)
-                .or_insert([usize::MAX; 2])
-                .iter_mut()
-                .find(|v| **v == usize::MAX)
-                .unwrap();
+            let slots = edge_face_adj.entry(e).or_insert([usize::MAX; 2]);
+            let slot = slots.iter_mut().find(|v| **v == usize::MAX || **v == fi);
+            let Some(slot) = slot else {
+                for &fi in slots.iter() {
+                    println!("Previous {:?}", mesh.f[fi]);
+                }
+                println!("To be inserted {:?}", mesh.f[fi]);
+                panic!("Failed to find slot for {fi} in {slots:?} with edge {e:?}");
+            };
             *slot = fi;
         }
     }
 
     let per_face_info = match args.weighting {
-        WeightingKind::Uniform => vec![[0.; 3]; mesh.f.len()],
+        WeightingKind::Uniform => vec![],
         WeightingKind::ColoredMeanValue | WeightingKind::MeanValue => mesh
             .f
             .iter()
@@ -174,8 +182,8 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
                     let ar = normalize(sub(a, r));
                     let br = normalize(sub(b, r));
                     let cos_ang = dot(ar, br);
-                    assert!((1. + cos_ang).abs() > 1e-8);
                     let v = (1. - cos_ang) / (1. + cos_ang);
+                    assert!(v.is_finite());
                     assert!(v >= 0.);
                     v.sqrt()
                 };
@@ -186,7 +194,44 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
                 ]
             })
             .collect::<Vec<_>>(),
-        WeightingKind::Laplacian => todo!(),
+        WeightingKind::Laplacian => mesh
+            .f
+            .iter()
+            .map(|f| {
+                let [v0, v1, v2] = f.as_tri().unwrap().map(|vi| mesh.v[vi]);
+                let cot_ang = |r, a, b| {
+                    let ar = normalize(sub(a, r));
+                    let br = normalize(sub(b, r));
+                    let cos = dot(ar, br);
+                    let sin = length(cross(ar, br));
+                    let cot = cos / sin;
+                    assert!(cot.is_finite());
+                    cot
+                };
+                [
+                    cot_ang(v0, v1, v2),
+                    cot_ang(v1, v2, v0),
+                    cot_ang(v2, v0, v1),
+                ]
+            })
+            .collect::<Vec<_>>(),
+    };
+
+    let per_vert_weights = if matches!(args.weighting, WeightingKind::Laplacian) {
+        let mut vw = vec![0.; mesh.v.len()];
+        for (fi, f) in mesh.f.iter().enumerate() {
+            let vis = f.as_tri().unwrap();
+            let vs = vis.map(|vi| mesh.v[vi]);
+            let cots = per_face_info[fi];
+            for i in 0..3 {
+                let n = (i + 1) % 3;
+                let nn = (n + 1) % 3;
+                vw[vis[i]] += (dist(vs[n], vs[i]) * cots[nn] + dist(vs[nn], vs[i]) * cots[n]) / 8.;
+            }
+        }
+        vw
+    } else {
+        vec![]
     };
 
     macro_rules! mean_value {
@@ -210,6 +255,7 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
             (get_val(f0) + get_val(f1))
         }};
     }
+
     // Compute per vertex weights
     let vert_adj = vert_adj.map(|adj, v0, v1, ()| match args.weighting {
         WeightingKind::Uniform => 1. / adj.degree(v0) as F,
@@ -225,10 +271,25 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
             assert!(w.is_finite());
             w.recip() * mean_value!(v0, v1)
         }
-        _ => todo!(),
+        WeightingKind::Laplacian => {
+            let [f0, f1] = edge_face_adj[&std::cmp::minmax(v0, v1)];
+            if f0 == usize::MAX || f1 == usize::MAX {
+                return 0.;
+            }
+            let get_val = |fi: usize| {
+                let idx = mesh.f[fi]
+                    .as_slice()
+                    .iter()
+                    .position(|&vi| vi != v0 && vi != v1)
+                    .unwrap();
+                per_face_info[fi][idx]
+            };
+            let w = get_val(f0) + get_val(f1);
+            w * per_vert_weights[v0]
+        }
     });
 
-    for _ in 0..10000 {
+    for _ in 0..args.iters {
         for vi in 0..mesh.v.len() {
             if bd_loops.contains_key(&vi) {
                 continue;

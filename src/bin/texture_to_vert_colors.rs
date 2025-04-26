@@ -148,7 +148,7 @@ pub fn main() {
         }
         assert!(!mesh.uv[0].is_empty());
         assert_eq!(mesh.uv[0].len(), mesh.v.len());
-        let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &args);
+        let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &scene.textures, &args);
         new_mesh.denormalize(s, t);
         out_scene.meshes[mi] = new_mesh;
     }
@@ -198,6 +198,7 @@ pub fn main() {
 pub fn texture_to_vert_colors(
     mesh: &Mesh,
     materials: &[pars3d::mesh::Material],
+    textures: &[pars3d::mesh::Texture],
     args: &Args,
 ) -> Mesh {
     let mut out = Mesh::default();
@@ -210,7 +211,7 @@ pub fn texture_to_vert_colors(
             .expect("No material or more than 1 material for this mesh");
         let mat = &materials[mati];
         let diff_tex = mat
-            .textures_by_kind(pars3d::mesh::TextureKind::Diffuse)
+            .textures_by_kind(textures, pars3d::mesh::TextureKind::Diffuse)
             .next()
             .expect("No diffuse texture?");
         diff_tex.image.as_ref().expect("No diffuse image?").flipv()
@@ -596,7 +597,7 @@ pub fn texture_to_vert_colors(
                     new_fvs.retain(|fv| !curr_poly.contains(&fv.1));
 
                     if curr_poly.len() < 3 {
-                      continue;
+                        continue;
                     }
                     /*
                     assert!(

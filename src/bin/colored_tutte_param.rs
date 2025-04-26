@@ -1,3 +1,5 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
 
 use clap::{Parser, ValueEnum};
@@ -22,6 +24,18 @@ pub struct Args {
     /// Which UV channel to store the tutte parameterization into.
     #[arg(long, default_value_t = 0)]
     target_uv: usize,
+
+    /// How to combine position and color when computing norms.
+    #[arg(long, default_value_t = PosColorNorm::Mul)]
+    pos_color_norm: PosColorNorm,
+
+    /// Save SVG of UV to this destination. If empty will not save.
+    #[arg(long, default_value_t = String::new())]
+    uv_svg: String,
+
+    /// Bake vertex colors to a texture
+    #[arg(long, default_value_t = String::new())]
+    bake_texture: String,
 }
 
 fn main() {
@@ -31,20 +45,69 @@ fn main() {
 
     let start = std::time::Instant::now();
     for m in scene.meshes.iter_mut() {
+        // if the input mesh is not triangular, copy the input faces then reapply them later
+        let og_faces = if m.f.len() != m.num_tris() {
+            Some(m.f.clone())
+        } else {
+            None
+        };
+        m.triangulate();
         let (s, t) = m.normalize();
-        assert_eq!(
-            m.num_tris(),
-            m.f.len(),
-            "Assumes the input mesh is entirely triangles"
-        );
+        let (sc, tc) = m.normalize_colors();
         tutte_param(m, &args);
         m.denormalize(s, t);
+        m.denormalize_colors(sc, tc);
+        if let Some(og_faces) = og_faces {
+            m.f = og_faces;
+        }
     }
     println!(
         "[INFO]: Took {:?} for tutte parameterization",
         start.elapsed()
     );
 
+    if !args.uv_svg.is_empty() {
+        assert!(
+            args.uv_svg.ends_with(".svg"),
+            "Only SVG export is supported, incorrect extension for {}",
+            args.uv_svg
+        );
+        let m0 = &scene.meshes[0];
+        if let Err(e) = pars3d::svg::save_uv(args.uv_svg, &m0.uv[args.target_uv], &m0.f, 0.0003) {
+            eprintln!("Failed to save SVG due to {e:?}");
+        }
+    }
+
+    if !args.bake_texture.is_empty() {
+        let m0 = &scene.meshes[0];
+        let mut img = pars3d::coloring::bake_vertex_colors_to_texture(
+            [512, 512],
+            &m0.uv[args.target_uv],
+            &m0.f,
+            &m0.vert_colors,
+        );
+        pars3d::image::imageops::flip_vertical_in_place(&mut img);
+        if let Err(e) = img.save(args.bake_texture) {
+            eprintln!("Failed to save image due to {e:?}");
+        }
+        let nf = m0.f.len();
+        let new_texture = pars3d::mesh::Texture {
+            kind: pars3d::mesh::TextureKind::Diffuse,
+            mul: [1.; 4],
+            image: Some(img.into()),
+            original_path: String::new(),
+        };
+        let ti = scene.textures.len();
+        scene.textures.push(new_texture);
+        let new_mat = pars3d::mesh::Material {
+            textures: vec![ti],
+            name: String::new(),
+            path: String::new(),
+        };
+        let mi = scene.materials.len();
+        scene.materials.push(new_mat);
+        scene.meshes[0].face_mat_idx = vec![((0..nf), mi)];
+    }
     pars3d::save(&args.output, &scene).expect("Failed to save output");
 }
 
@@ -151,15 +214,16 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
     let vert_adj = vert_adj.map(|adj, v0, v1, ()| match args.weighting {
         WeightingKind::Uniform => 1. / adj.degree(v0) as F,
         WeightingKind::MeanValue => {
-            let d = dist(mesh.v[v0], mesh.v[v1]);
+            let d = dist(mesh.v[v0], mesh.v[v1]) + 1e-6;
             let mv = mean_value!(v0, v1);
             d.recip() * mv
         }
         WeightingKind::ColoredMeanValue => {
             let d = dist(mesh.v[v0], mesh.v[v1]);
-            let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]);
-            let mv = mean_value!(v0, v1);
-            (d * cd).recip() * mv
+            let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]) + 3e-3;
+            let w = args.pos_color_norm.apply(d, cd);
+            assert!(w.is_finite());
+            w.recip() * mean_value!(v0, v1)
         }
         _ => todo!(),
     });
@@ -215,3 +279,34 @@ impl_display!(
 
     ColoredMeanValue => "colored-mean-value",
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum PosColorNorm {
+    Add,
+    Mul,
+    Min,
+    Max,
+    GeometricMean,
+}
+
+impl_display!(
+  PosColorNorm,
+  Add => "add",
+  Mul => "mul",
+  Min => "min",
+  Max => "max",
+  GeometricMean => "geometric-mean"
+);
+
+impl PosColorNorm {
+    pub fn apply(self, pos: F, color: F) -> F {
+        use PosColorNorm::*;
+        match self {
+            Add => pos + color,
+            Mul => pos * color,
+            Min => pos.min(color),
+            Max => pos.max(color),
+            GeometricMean => (pos * color).sqrt(),
+        }
+    }
+}

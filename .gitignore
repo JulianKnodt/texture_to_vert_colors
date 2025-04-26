@@ -6,3 +6,5 @@ outputs/
 experiment_log.json
 *.obj
 *.ply
+*.png
+*.svg

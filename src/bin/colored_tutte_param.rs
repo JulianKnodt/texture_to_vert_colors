@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use pars3d::{self, Mesh};
 use std::collections::BTreeMap;
 
-use texture_to_vert_colors::{F, add, cross, dist, dot, kmul, length, normalize, sub};
+use texture_to_vert_colors::{F, add, cross, dist, dist_sq, dot, kmul, length, normalize, sub};
 
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
@@ -26,7 +26,7 @@ pub struct Args {
     target_uv: usize,
 
     /// How to combine position and color when computing norms.
-    #[arg(long, default_value_t = PosColorNorm::Mul)]
+    #[arg(long, default_value_t = PosColorNorm::GeometricMean)]
     pos_color_norm: PosColorNorm,
 
     /// Save SVG of UV to this destination. If empty will not save.
@@ -42,7 +42,7 @@ pub struct Args {
     stats: String,
 
     /// How many iterations to do for the lazy tutte.
-    #[arg(long, default_value_t = 15000)]
+    #[arg(long, default_value_t = 10000)]
     iters: usize,
 }
 
@@ -70,8 +70,9 @@ fn main() {
         }
     }
     println!(
-        "[INFO]: Took {:?} for tutte parameterization",
-        start.elapsed()
+        "[INFO]: Took {:?} for tutte parameterization with {}",
+        start.elapsed(),
+        args.weighting,
     );
 
     if !args.uv_svg.is_empty() {
@@ -147,14 +148,22 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
     }
 
     mesh.uv[args.target_uv].clear();
-    mesh.uv[args.target_uv].resize(mesh.v.len(), [0.5; 2]);
+    mesh.uv[args.target_uv].resize(mesh.v.len(), [0.; 2]);
     let mut uvs = &mut mesh.uv[args.target_uv];
+    for (i, uv) in uvs.iter_mut().enumerate() {
+        let i = i as F;
+        // stupid randomness but it probably works better than 0.5
+        let rand_x = (i * 238471.32 + 11.45).sin();
+        let rand_y = (i * 15437.65 + 2.13).cos();
+        assert!(rand_x.is_finite() && rand_y.is_finite());
+        assert!((-1.0..=1.0).contains(&rand_x));
+        assert!((-1.0..=1.0).contains(&rand_y));
+        *uv = [rand_x, rand_y].map(|v| (v + 1.) / 2.);
+    }
 
     for (vi, l) in bd {
         uvs[vi] = [(l.cos() + 1.) / 2., (l.sin() + 1.) / 2.];
     }
-    let mut next = uvs.clone();
-
     let mut edge_face_adj = BTreeMap::new();
     for (fi, f) in mesh.f.iter().enumerate() {
         for e in f.edges_ord() {
@@ -172,18 +181,19 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
     }
 
     let per_face_info = match args.weighting {
-        WeightingKind::Uniform => vec![],
+        WeightingKind::Uniform | WeightingKind::Length | WeightingKind::ColorLength => vec![],
         WeightingKind::ColoredMeanValue | WeightingKind::MeanValue => mesh
             .f
             .iter()
             .map(|f| {
-                let [v0, v1, v2] = f.as_tri().unwrap().map(|vi| mesh.v[vi]);
+                let vis = f.as_tri().unwrap();
+                let [v0, v1, v2] = vis.map(|vi| mesh.v[vi]);
                 let tan_ang = |r, a, b| {
                     let ar = normalize(sub(a, r));
                     let br = normalize(sub(b, r));
                     let cos_ang = dot(ar, br);
-                    let v = (1. - cos_ang) / (1. + cos_ang);
-                    assert!(v.is_finite());
+                    let v = (1. - cos_ang) / (1. + cos_ang + 1e-4);
+                    assert!(v.is_finite(), "{v} {cos_ang} {vis:?}");
                     assert!(v >= 0.);
                     v.sqrt()
                 };
@@ -204,8 +214,10 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
                     let br = normalize(sub(b, r));
                     let cos = dot(ar, br);
                     let sin = length(cross(ar, br));
+                    // numerical stability
+                    let sin = (sin.abs() + 1e-4).copysign(sin);
                     let cot = cos / sin;
-                    assert!(cot.is_finite());
+                    assert!(cot.is_finite(), "{cot:?}");
                     cot
                 };
                 [
@@ -226,7 +238,8 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
             for i in 0..3 {
                 let n = (i + 1) % 3;
                 let nn = (n + 1) % 3;
-                vw[vis[i]] += (dist(vs[n], vs[i]) * cots[nn] + dist(vs[nn], vs[i]) * cots[n]) / 8.;
+                let a = dist_sq(vs[n], vs[i]) * cots[nn] + dist_sq(vs[nn], vs[i]) * cots[n];
+                vw[vis[i]] += a / 8.;
             }
         }
         vw
@@ -257,8 +270,16 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
     }
 
     // Compute per vertex weights
-    let vert_adj = vert_adj.map(|adj, v0, v1, ()| match args.weighting {
-        WeightingKind::Uniform => 1. / adj.degree(v0) as F,
+    let vert_adj = vert_adj.map(|_, v0, v1, ()| match args.weighting {
+        WeightingKind::Uniform => 1.,
+        WeightingKind::Length => dist(mesh.v[v0], mesh.v[v1]).recip(),
+        WeightingKind::ColorLength => args
+            .pos_color_norm
+            .apply(
+                dist(mesh.v[v0], mesh.v[v1]),
+                dist(mesh.vert_colors[v0], mesh.vert_colors[v1]) + 3e-3,
+            )
+            .recip(),
         WeightingKind::MeanValue => {
             let d = dist(mesh.v[v0], mesh.v[v1]) + 1e-6;
             let mv = mean_value!(v0, v1);
@@ -285,26 +306,77 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
                 per_face_info[fi][idx]
             };
             let w = get_val(f0) + get_val(f1);
-            w * per_vert_weights[v0]
+            let voronoi_area = per_vert_weights[v0];
+            assert_ne!(voronoi_area, 0.);
+            let w = w * (2. * voronoi_area).recip();
+            w.max(1e-4)
         }
     });
+    let mut buf = uvs.clone();
+    /*
+    let mut triplets = vec![];
+    let nv = mesh.v.len();
+    for vi in 0..nv {
+        if bd_loops.contains_key(&vi) {
+            triplets.push(([vi, vi], 1.));
+            continue;
+        }
+        let mut total_w = 0.;
+        for (adj, w) in vert_adj.adj_data(vi) {
+            assert_ne!(adj as usize, vi);
+            triplets.push(([vi, adj as usize], w));
+            total_w += w;
+        }
+        assert!(total_w.is_finite());
+        triplets.push(([vi, vi], -total_w));
+    }
+    triplets.sort_unstable_by_key(|a| a.0);
+    triplets.dedup_by_key(|a| a.0);
+    let csc =
+        sparse_lu::Csc::from_triplets(nv, nv, &mut triplets).expect("Failed to construct csc?");
+    let lu = sparse_lu::LeftLookingLUFactorization::new(&csc);
 
-    for _ in 0..args.iters {
-        for vi in 0..mesh.v.len() {
+    let t = std::time::Instant::now();
+    for i in 0..10 {
+        lu.solve_arr(uvs, &mut buf);
+        println!("{i} in {:?}", t.elapsed());
+    }
+    if true {
+        return;
+    }
+    */
+
+    // TODO here set up array instead of using stupid iterations
+    use indicatif::ProgressIterator;
+    for _ in (0..args.iters).progress() {
+        buf.fill([0.; 2]);
+        for (&b, _) in &bd_loops {
+            buf[b] = uvs[b];
+        }
+        use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+        //for (vi, dst) in buf.iter_mut().enumerate() {
+        buf.par_iter_mut().enumerate().for_each(|(vi, dst)| {
             if bd_loops.contains_key(&vi) {
-                continue;
+                //continue;
+                return;
             }
-            next[vi].fill(0.);
 
             let mut total_w = 0.;
             for (adj, w) in vert_adj.adj_data(vi) {
+                // negative values cause this to explode
                 total_w += w;
-                next[vi] = add(next[vi], kmul(w as F, uvs[adj as usize]));
+                *dst = add(
+                    *dst,
+                    kmul(w as F, unsafe { *uvs.get_unchecked(adj as usize) }),
+                );
             }
-            next[vi] = next[vi].map(|c| c / total_w);
-        }
+            *dst = kmul(total_w.recip(), *dst);
+            debug_assert!(dst[0].is_finite());
+            debug_assert!(dst[1].is_finite(), "{total_w:?} {:?}", *dst);
+        });
+        //}
 
-        std::mem::swap(&mut next, &mut uvs);
+        std::mem::swap(&mut buf, &mut uvs);
     }
 }
 
@@ -326,7 +398,10 @@ macro_rules! impl_display {
 pub enum WeightingKind {
     Uniform,
     Laplacian,
-    //ColoredUniform,
+
+    Length,
+    ColorLength,
+
     //ColoredLaplacian,
     MeanValue,
     ColoredMeanValue,
@@ -335,6 +410,10 @@ pub enum WeightingKind {
 impl_display!(
     WeightingKind,
     Uniform => "uniform",
+
+    Length => "length",
+    ColorLength => "color-length",
+
     Laplacian => "laplacian",
     MeanValue => "mean-value",
 

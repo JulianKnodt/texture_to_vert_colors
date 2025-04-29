@@ -47,6 +47,8 @@ impl Default for Args {
         Self {
             color_weight: 0.5,
             color_preservation_weight: 1.,
+
+            //color_weight: 1e-4,
             //color_preservation_weight: 0.,
             min_face_area: 5e-2,
             min_edge_weight: 1e-2,

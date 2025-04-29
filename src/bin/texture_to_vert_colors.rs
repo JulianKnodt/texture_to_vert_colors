@@ -2,9 +2,9 @@
 #![feature(let_chains)]
 #![feature(assert_matches)]
 
-use std::assert_matches::debug_assert_matches;
+use std::assert_matches::assert_matches;
 use std::cmp::minmax;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::ops::Range;
 
@@ -19,7 +19,7 @@ use union_find::UnionFind;
 use texture_to_vert_colors::aabb::AABB;
 use texture_to_vert_colors::qem::{Args as QEMArgs, QEMBuffers, simplify_range_colored};
 use texture_to_vert_colors::{
-    F, U, add, cross, cross_2d, dist, dot, kmul, len_sq, length, normalize, sub,
+    F, U, add, cross, cross_2d, dist, dot, kmul, len_sq, length, normalize, orthogonal, sub,
 };
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
@@ -42,9 +42,10 @@ pub struct Args {
     #[arg(long, short, default_value = "")]
     diffuse_img: String,
 
+    /*
     #[arg(long, short = 'k', default_value_t = SampleKind::Exact)]
     sample_kind: SampleKind,
-
+    */
     /// Do not fill gaps between triangles (DEBUGGING)
     #[arg(long)]
     no_gap_fill: bool,
@@ -154,6 +155,7 @@ pub fn main() {
         assert_eq!(mesh.uv[0].len(), mesh.v.len());
         let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &scene.textures, &args);
         new_mesh.denormalize(s, t);
+        assert_matches!(new_mesh.num_edge_kinds(), (_, _, 0));
         out_scene.meshes[mi] = new_mesh;
     }
     let elapsed = start.elapsed();
@@ -207,15 +209,6 @@ pub fn texture_to_vert_colors(
 ) -> Mesh {
     let mut out = Mesh::default();
 
-    if !args.correspondence.is_empty() {
-        // TODO determine if this is really true
-        assert!(
-            args.no_delete_degen,
-            "If preserving correspondence for downstream modification
-            it is required that the boundary of each tri remain untouched"
-        );
-    }
-
     // Copy vertex colors for each input UV
     // TODO remove this assumption of a single material and copy per face with duplication
     let diff_img = if args.diffuse_img.is_empty() {
@@ -263,6 +256,7 @@ pub fn texture_to_vert_colors(
     for (fi, f) in mesh.f.iter().enumerate().progress() {
         let curr_f = out.f.len();
         let curr_v = out.v.len();
+        /*
         let ok = match args.sample_kind {
             SampleKind::Approx => sample(
                 mesh,
@@ -275,21 +269,23 @@ pub fn texture_to_vert_colors(
                 &mut edge_map,
                 &mut labels,
             ),
-            SampleKind::Exact => sample_exact(
-                mesh,
-                f,
-                fi,
-                &diff_img,
-                &mut out,
-                &mut corner_map,
-                &mut edge_map,
-                &mut labels,
-                &mut face_labels,
-                &mut pix_map,
-                &mut all_corner_verts,
-                args,
-            ),
+            SampleKind::Exact => sample_exact(),
         };
+        */
+        let ok = sample_exact(
+            mesh,
+            f,
+            fi,
+            &diff_img,
+            &mut out,
+            &mut corner_map,
+            &mut edge_map,
+            &mut labels,
+            &mut face_labels,
+            &mut pix_map,
+            &mut all_corner_verts,
+            args,
+        );
         // Add a simplification step here, as some faces are relatively similar, and we want to
         // delete degenerate faces.
         if !ok {
@@ -304,7 +300,14 @@ pub fn texture_to_vert_colors(
         remap.extend_by(new_v - curr_v);
 
         if !args.no_incremental_delete {
-            del_degen_bridges(&mut remap, &mut out, args, &face_labels, curr_f..new_f);
+            del_degen_bridges(
+                &mut remap,
+                &mut out,
+                |vi| labels.contains_key(&vi),
+                args,
+                &face_labels,
+                curr_f..new_f,
+            );
 
             for f in &mut out.f[curr_f..new_f] {
                 f.remap(|vi| remap.get_compress(vi));
@@ -342,6 +345,22 @@ pub fn texture_to_vert_colors(
     if args.no_gap_fill {
         return out;
     }
+
+    macro_rules! check_manifold {
+        () => {{
+            if out.num_edge_kinds().2 != 0 {
+                for (e, fis) in out.non_manifold_faces() {
+                    println!("Non-manifold edge {e:?}");
+                    for &fi in &fis {
+                        println!("\t- {:?} {:?}", face_labels[fi], out.f[fi]);
+                    }
+                }
+                panic!();
+            }
+        }};
+    }
+
+    check_manifold!();
 
     // map from (new vertex -> adjacent vertices that share the same corner)
     let mut edge_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
@@ -385,145 +404,177 @@ pub fn texture_to_vert_colors(
 
             continue;
         }
-        if face_verts.len() != 2 {
-            continue;
-        }
-        assert_eq!(face_verts.len(), 2);
         assert_ne!(
             e0_key, e1_key,
             "temporary check for degenerate edges {e0:?} {e1:?}"
         );
 
-        // Non manifold case may just be ok to ignore (for now), not sure what to do there exactly.
+        let mut handle_pair = |(f0, verts0): &(usize, Vec<usize>),
+                               (f1, verts1): &(usize, Vec<usize>)| {
+            // Non manifold case may just be ok to ignore (for now), not sure what to do there exactly.
 
-        let ordering = |vi: &usize| {
-            let [(t0, ei0_key), (t1, ei1_key)] = labels[vi];
-            let t = if ei0_key == e0_key {
-                debug_assert_eq!(ei1_key, e1_key);
-                t0
-            } else {
-                debug_assert_eq!(ei0_key, e1_key);
-                debug_assert_eq!(ei1_key, e0_key);
-                t1
+            let ordering = |vi: &usize| {
+                let [(t0, ei0_key), (t1, ei1_key)] = labels[vi];
+                let t = if ei0_key == e0_key {
+                    debug_assert_eq!(ei1_key, e1_key);
+                    t0
+                } else {
+                    debug_assert_eq!(ei0_key, e1_key);
+                    debug_assert_eq!(ei1_key, e0_key);
+                    t1
+                };
+                (*vi, t as F)
             };
-            (*vi, t as F)
-        };
 
-        let (f0, verts0) = &face_verts[0];
-        let f0 = *f0;
-        let mut v0s = verts0.iter().map(ordering).collect::<Vec<_>>();
+            let f0 = *f0;
+            let mut v0s = verts0.iter().map(ordering).collect::<Vec<_>>();
 
-        let v0_max = v0s.iter().map(|v0| v0.1).max_by(F::total_cmp).unwrap_or(1.);
-        for (_, v0t) in v0s.iter_mut() {
-            *v0t /= v0_max + 1.;
-        }
+            let v0_max = v0s.iter().map(|v0| v0.1).max_by(F::total_cmp).unwrap_or(1.);
+            for (_, v0t) in v0s.iter_mut() {
+                *v0t /= v0_max + 1.;
+            }
 
-        let v00 = add_key!(v0s, &e0_key, f0, 0.);
-        let v01 = add_key!(v0s, &e1_key, f0, 1.);
+            let v00 = add_key!(v0s, &e0_key, f0, 0.);
+            let v01 = add_key!(v0s, &e1_key, f0, 1.);
 
-        v0s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        v0s.dedup_by_key(|v| v.0);
+            v0s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            v0s.dedup_by_key(|v| v.0);
 
-        let (f1, verts1) = &face_verts[1];
-        let f1 = *f1;
-        let mut v1s = verts1.iter().map(ordering).collect::<Vec<_>>();
-        let v1_max = v1s.iter().map(|v1| v1.1).max_by(F::total_cmp).unwrap_or(1.);
-        for (_, v1t) in v1s.iter_mut() {
-            *v1t /= v1_max + 1.;
-        }
+            let f1 = *f1;
+            let mut v1s = verts1.iter().map(ordering).collect::<Vec<_>>();
+            let v1_max = v1s.iter().map(|v1| v1.1).max_by(F::total_cmp).unwrap_or(1.);
+            for (_, v1t) in v1s.iter_mut() {
+                *v1t /= v1_max + 1.;
+            }
 
-        let v10 = add_key!(v1s, &e0_key, f1, 0.);
-        let v11 = add_key!(v1s, &e1_key, f1, 1.);
+            let v10 = add_key!(v1s, &e0_key, f1, 0.);
+            let v11 = add_key!(v1s, &e1_key, f1, 1.);
 
-        v1s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        v1s.dedup_by_key(|v| v.0);
+            v1s.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            v1s.dedup_by_key(|v| v.0);
 
-        let mut ins = |src, dst, idx| {
-            assert_ne!(src, dst);
-            assert_ne!(src, usize::MAX);
-            assert_ne!(dst, usize::MAX);
+            let mut ins = |src, dst, idx| {
+                assert_ne!(src, dst);
+                assert_ne!(src, usize::MAX);
+                assert_ne!(dst, usize::MAX);
 
-            let v = edge_adj.entry(src).or_insert([usize::MAX; 2]);
-            assert!(v[idx] == dst || v[idx] == usize::MAX);
-            v[idx] = dst;
-        };
-        ins(v00, v10, 0);
-        ins(v10, v00, 1);
-
-        ins(v01, v11, 1);
-        ins(v11, v01, 0);
-
-        // iterate over both and add faces with the front
-        let mut v0s = v0s.iter().copied().peekable();
-        let mut v1s = v1s.iter().copied().peekable();
-
-        let mut v0_front: (usize, F) = v0s.next().unwrap();
-        let mut v1_front: (usize, F) = v1s.next().unwrap();
-
-        while let [Some(&(p0n, t0n)), Some(&(p1n, t1n))] = [v0s.peek(), v1s.peek()] {
-            debug_assert!(t0n >= v0_front.1);
-            debug_assert!(t1n >= v1_front.1);
-            let t0_delta = (v0_front.1 - t1n).abs();
-            let t1_delta = (v1_front.1 - t0n).abs();
-
-            let (new_face, label) = if (t0_delta - t1_delta).abs() < 2e-2 {
-                let new_face = FaceKind::Quad([v0_front.0, p0n, p1n, v1_front.0]);
-                let label = FaceLabel::GapFill([v0_front.0, p0n], [v1_front.0, p1n]);
-                v0_front = (p0n, t0n);
-                v1_front = (p1n, t1n);
-                assert!(v0s.next().is_some());
-                assert!(v1s.next().is_some());
-                (new_face, label)
-            } else if t0_delta >= t1_delta {
-                let new_face = FaceKind::Tri([v0_front.0, p0n, v1_front.0]);
-                let label = FaceLabel::GapFill([v0_front.0, p0n], [v1_front.0, usize::MAX]);
-                v0_front = (p0n, t0n);
-                assert!(v0s.next().is_some());
-                (new_face, label)
-            } else {
-                let new_face = FaceKind::Tri([v0_front.0, p1n, v1_front.0]);
-                let label = FaceLabel::GapFill([v0_front.0, usize::MAX], [v1_front.0, p1n]);
-                v1_front = (p1n, t1n);
-                assert!(v1s.next().is_some());
-                (new_face, label)
+                let v = edge_adj.entry(src).or_insert([usize::MAX; 2]);
+                assert!(v[idx] == dst || v[idx] == usize::MAX, "{v:?} {dst}");
+                v[idx] = dst;
             };
-            face_labels.push(label);
-            out.f.push(new_face);
+            ins(v00, v10, 0);
+            ins(v10, v00, 1);
+
+            ins(v01, v11, 1);
+            ins(v11, v01, 0);
+
+            // iterate over both and add faces with the front
+            let mut v0s = v0s.iter().copied().peekable();
+            let mut v1s = v1s.iter().copied().peekable();
+
+            let mut v0_front: (usize, F) = v0s.next().unwrap();
+            let mut v1_front: (usize, F) = v1s.next().unwrap();
+
+            while let [Some(&(p0n, t0n)), Some(&(p1n, t1n))] = [v0s.peek(), v1s.peek()] {
+                assert_ne!(v0_front.0, p0n);
+                assert_ne!(v1_front.0, p1n);
+                assert_ne!(p0n, p1n);
+                assert_ne!(v0_front.0, v1_front.0);
+
+                debug_assert!(t0n >= v0_front.1);
+                debug_assert!(t1n >= v1_front.1);
+                let t0_delta = (v0_front.1 - t1n).abs();
+                let t1_delta = (v1_front.1 - t0n).abs();
+
+                let (new_face, label) = if (t0_delta - t1_delta).abs() < 2e-2 {
+                    let new_face = FaceKind::Quad([v0_front.0, p0n, p1n, v1_front.0]);
+                    let label = FaceLabel::GapFill([v0_front.0, p0n], [v1_front.0, p1n]);
+                    v0_front = (p0n, t0n);
+                    v1_front = (p1n, t1n);
+                    assert!(v0s.next().is_some());
+                    assert!(v1s.next().is_some());
+                    (new_face, label)
+                } else if t0_delta >= t1_delta {
+                    let new_face = FaceKind::Tri([v0_front.0, p0n, v1_front.0]);
+                    let label = FaceLabel::GapFill([v0_front.0, p0n], [v1_front.0, usize::MAX]);
+                    v0_front = (p0n, t0n);
+                    assert!(v0s.next().is_some());
+                    (new_face, label)
+                } else {
+                    let new_face = FaceKind::Tri([v0_front.0, p1n, v1_front.0]);
+                    let label = FaceLabel::GapFill([v0_front.0, usize::MAX], [v1_front.0, p1n]);
+                    v1_front = (p1n, t1n);
+                    assert!(v1s.next().is_some());
+                    (new_face, label)
+                };
+                face_labels.push(label);
+                out.f.push(new_face);
+            }
+
+            for (p0n, t) in v0s {
+                face_labels.push(FaceLabel::GapFill(
+                    [v0_front.0, p0n],
+                    [v1_front.0, usize::MAX],
+                ));
+                out.f.push(FaceKind::Tri([v0_front.0, p0n, v1_front.0]));
+                v0_front = (p0n, t);
+            }
+            for (p1n, t) in v1s {
+                face_labels.push(FaceLabel::GapFill(
+                    [v0_front.0, usize::MAX],
+                    [v1_front.0, p1n],
+                ));
+                out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
+                v1_front = (p1n, t);
+            }
+        };
+        if face_verts.len() == 2 {
+            handle_pair(&face_verts[0], &face_verts[1]);
+            continue;
         }
 
-        for (p0n, t) in v0s {
-            face_labels.push(FaceLabel::GapFill(
-                [v0_front.0, p0n],
-                [v1_front.0, usize::MAX],
-            ));
-            out.f.push(FaceKind::Tri([v0_front.0, p0n, v1_front.0]));
-            v0_front = (p0n, t);
-        }
-        for (p1n, t) in v1s {
-            face_labels.push(FaceLabel::GapFill(
-                [v0_front.0, usize::MAX],
-                [v1_front.0, p1n],
-            ));
-            out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
-            v1_front = (p1n, t);
+        eprintln!("[WARN]: Handling non-manifold input");
+
+        // break input face verts into pairs
+        let e = normalize(sub(e1, e0));
+        let tan = normalize(orthogonal(e));
+        let bit = normalize(cross(e, tan));
+        // for each face store, tangent direction orthogonal to e, and use winding around the
+        // angle to order
+        let mut angular_ord = face_verts
+            .iter()
+            .enumerate()
+            .map(|(i, fv)| {
+                let (_, opt_dir) = mesh.f[fv.0]
+                    .edges()
+                    .map(|e| {
+                        let [e0, e1] = e.map(|vi| mesh.v[vi]);
+                        normalize(sub(e1, e0))
+                    })
+                    .map(|dir| (dot(dir, e), e))
+                    .min_by(|(a, _), (b, _)| a.abs().partial_cmp(&b.abs()).unwrap())
+                    .unwrap();
+                let [x, y] = normalize([dot(opt_dir, tan), dot(opt_dir, bit)]);
+                (y.atan2(x), i)
+            })
+            .collect::<Vec<_>>();
+        angular_ord.sort_unstable_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap());
+        for i in 0..angular_ord.len() {
+            handle_pair(
+                &face_verts[angular_ord[i].1],
+                &face_verts[angular_ord[(i + 1) % angular_ord.len()].1],
+            );
         }
     }
 
-    /*
-    let edges = out
-        .f
-        .iter()
-        .flat_map(|f| f.edges_ord())
-        .collect::<BTreeSet<_>>();
-    */
+    check_manifold!();
 
-    assert_eq!(out.num_edge_kinds().2, 0);
-    // Zip corner faces together
+    // ------------- Zip corner faces together
     for (_, fvs) in corner_map.into_iter() {
         assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
 
-        if fvs.iter().any(|fv| !edge_adj.contains_key(&fv.1)) {
-            assert!(false);
+        if let Some(fv) = fvs.iter().find(|fv| !edge_adj.contains_key(&fv.1)) {
+            assert!(false, "{fv:?}");
             /*
             println!("aborting1");
             face_labels.push(FaceLabel::GapCorner);
@@ -634,7 +685,9 @@ pub fn texture_to_vert_colors(
         face_labels.push(FaceLabel::GapCorner);
         out.f.push(face);
     }
-    assert_eq!(out.num_edge_kinds().2, 0);
+    check_manifold!();
+
+    // -------- Simplification of mesh
 
     assert_eq!(face_labels.len(), out.f.len());
 
@@ -679,16 +732,20 @@ pub fn texture_to_vert_colors(
         "[INFO]: Initial generated mesh has {init_f} faces (Tris = {num_tris}) & {init_v} vertices"
     );
 
-    let qem_args = QEMArgs {
-        target_tri_ratio,
-        target_tri_num: args.target_tri_num,
-        display_progress: true,
-        ..QEMArgs::default()
-    };
-
     if !args.no_delete_degen {
+        check_manifold!();
         println!("[INFO]: Starting degenerate face deletion");
-        del_degen_bridges(&mut remap, &mut out, args, &face_labels, 0..init_f);
+        // both of these cause some problems with manifoldness, need to be careful,
+        /*
+        del_degen_bridges(
+            &mut remap,
+            &mut out,
+            |_| false,
+            args,
+            &face_labels,
+            0..init_f,
+        );
+        */
         //del_degen_gap_fill(&mut remap, &mut out, args, &face_labels);
 
         for f in out.f.iter_mut() {
@@ -697,25 +754,44 @@ pub fn texture_to_vert_colors(
                 *f = FaceKind::empty();
             }
         }
-        assert_eq!(out.num_edge_kinds().2, 0, "{:?}", out.num_edge_kinds());
+        check_manifold!();
 
         mesh_stats!("After deleting bridges and gap fill");
+    }
+    if !args.no_final_qem {
+        check_manifold!();
+        let qem_args = QEMArgs {
+            target_tri_ratio,
+            target_tri_num: args.target_tri_num,
+            display_progress: true,
+            ..QEMArgs::default()
+        };
 
-        if !args.no_final_qem {
-            let num_f = out.f.len();
-            let num_v = out.v.len();
-            simplify_range_colored(
-                &mut out,
-                &qem_args,
-                //|vi| bd_verts.contains(&vi),
-                |_| false,
-                0..num_f,
-                0..num_v,
-                &mut remap,
-                &mut qem_buf,
-            );
-            mesh_stats!("After QEM");
-        }
+        let num_f = out.f.len();
+        let num_v = out.v.len();
+        let corner_verts = all_corner_verts
+            .values()
+            .copied()
+            .map(|vi| remap.get_compress(vi))
+            .collect::<BTreeSet<_>>();
+        simplify_range_colored(
+            &mut out,
+            &qem_args,
+            //|vi| bd_verts.contains(&vi),
+            |vi| {
+                if args.correspondence_json.is_empty() {
+                    false
+                } else {
+                    corner_verts.contains(&vi)
+                }
+            },
+            0..num_f,
+            0..num_v,
+            &mut remap,
+            &mut qem_buf,
+        );
+        check_manifold!();
+        mesh_stats!("After QEM");
     }
 
     out.f.retain_mut(|f| {
@@ -727,7 +803,14 @@ pub fn texture_to_vert_colors(
         !f.canonicalize()
     });
 
-    out.delete_unused_vertices();
+    let (_, unused_remap) = out.delete_unused_vertices();
+    for new_vi in all_corner_verts.values_mut() {
+        let vi = remap.get_compress(*new_vi);
+        assert_ne!(unused_remap[vi], usize::MAX);
+        *new_vi = unused_remap[vi];
+    }
+
+    out.remove_doublets();
     if init_f != out.f.len() {
         println!(
             "[INFO]: Cleaned mesh has {} faces (-{}, Tris = {}) & {} vertices (-{})",
@@ -959,6 +1042,7 @@ pub fn sample_exact(
             for f in &mut error_faces {
                 f.offset(-(start as i32))
             }
+            out.n.clear();
             out.v = error_verts;
             out.vert_colors = error_colors;
             out.f = error_faces;
@@ -1028,8 +1112,14 @@ pub fn sample_exact(
             (None, Some(b), Some(c)) => FaceKind::Tri([l, c[1], b[3]]),
             (Some(a), None, Some(c)) => FaceKind::Tri([l, c[1], a[2]]),
             (Some(a), Some(b), None) => FaceKind::Tri([l, a[2], b[3]]),
-            (Some([_, _, _shared, _]), None, None) => {
-                save_bad_mesh!("Pixels added which shouldn't be");
+            (Some(a), None, None) => {
+                FaceKind::Quad([l, a[2], a[1], r])
+                //face_labels.push(FaceLabel::BridgeCorner);
+                //out.f.push();
+                //face_labels.push(FaceLabel::BridgeCorner);
+                //out.f.push(FaceKind::Quad([l, ul, a[3], a[2]]));
+                //save_bad_mesh!("Corner weirdness");
+                //continue;
             }
 
             /* Definitely no faces to add */
@@ -1241,6 +1331,7 @@ pub fn sample_exact(
     true
 }
 
+/*
 pub fn sample(
     mesh: &Mesh,
     f: &FaceKind,
@@ -1446,6 +1537,7 @@ pub fn sample(
 
     true
 }
+*/
 
 /// Computes the value `t` such that `s + (s-e)t = nearest point to p on line`
 pub fn nearest_on_line(p: [F; 3], [s, e]: [[F; 3]; 2]) -> F {
@@ -1536,6 +1628,7 @@ pub fn nearest_point_on_tri_in_dir(
 pub fn del_degen_bridges(
     remap: &mut UnionFind<u32>,
     mesh: &mut pars3d::Mesh,
+    locked: impl Fn(usize) -> bool,
     args: &Args,
     labels: &[FaceLabel],
     face_range: Range<usize>,
@@ -1549,12 +1642,16 @@ pub fn del_degen_bridges(
         let FaceLabel::Bridge(fi0, fi1) = labels[fi] else {
             continue;
         };
-        debug_assert_matches!(labels[fi0], FaceLabel::Pixel);
-        debug_assert_matches!(labels[fi1], FaceLabel::Pixel);
+        assert_eq!(labels[fi0], FaceLabel::Pixel);
+        assert_eq!(labels[fi1], FaceLabel::Pixel);
 
         let [f, f0, f1] = mesh.f.get_disjoint_mut([fi, fi0, fi1]).unwrap();
         let [e00, e01] = f.shared_edge(f0).unwrap().map(|v| remap.get_compress(v));
         let [e10, e11] = f.shared_edge(f1).unwrap().map(|v| remap.get_compress(v));
+
+        if locked(e00) || locked(e01) || locked(e10) || locked(e11) {
+            continue;
+        }
 
         // e00 - e11 is a paired edge
         // e01 - e10 is a paired edge
@@ -1579,6 +1676,7 @@ pub fn del_degen_bridges(
             }
             remap.set(b, a);
         };
+
         combine(e00, e11);
         combine(e10, e01);
 

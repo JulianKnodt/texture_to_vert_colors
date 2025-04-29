@@ -50,6 +50,11 @@ pub fn dist<const N: usize>(a: [F; N], b: [F; N]) -> F {
     length(sub(a, b))
 }
 
+/// Squared Euclidean distance between vectors
+pub fn dist_sq<const N: usize>(a: [F; N], b: [F; N]) -> F {
+    len_sq(sub(a, b))
+}
+
 pub fn norm_inf<const N: usize>(v: [F; N]) -> F {
     v.into_iter().map(F::abs).max_by(F::total_cmp).unwrap()
 }

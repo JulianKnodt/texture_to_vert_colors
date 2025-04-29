@@ -16,3 +16,5 @@ least_sq = { git="https://github.com/JulianKnodt/qr_lst_sq.git", features = ["f6
 #union-find = { git = "https://github.com/JulianKnodt/union-find.git", version = "0.1.0" }
 union-find = { path = "../union-find" }
 rayon = "1.10.0"
+serde = "1.0.219"
+sparse_lu = { path = "../sparse_lu", features = ["f64"] }

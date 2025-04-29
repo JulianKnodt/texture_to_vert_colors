@@ -74,7 +74,7 @@ experiments = {
     run("plane.obj", "plane_with_qem.ply", "-d data/small.png"),
   ],
   "sphere": [
-    run("sphere.obj", "sphere.ply", "-d data/uv_grid.png --no-final-qem", False),
+    run("sphere.obj", "sphere.ply", "-d data/uv_grid.png --target-tri-ratio 0.01", False),
   ],
   "rot-uv": [
     run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png --target-tri-ratio 0.1", False),
@@ -83,7 +83,11 @@ experiments = {
     run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", False),
   ],
   "spot": [
-    run("spot_triangulated.obj", "spot_triangulated.ply", "-d data/spot_texture.png", False),
+    run(
+      "spot_triangulated.obj", "spot_triangulated.ply",
+      "-d data/spot_texture.png --target-tri-ratio 1.",
+      False
+    ),
   ],
   "hokusai": [ run("plane.obj", "hokusai_plane.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3") ],
   "watercolor_cake": [
@@ -98,24 +102,52 @@ experiments = {
   "flowers-in-vase": [
     run(
       "flowers_in_vase.obj", "flowers_in_vase.ply",
-      "-d data/flowers_in_vase.jpg --no-final-qem --no-incremental-delete", False,
+      "-d data/flowers_in_vase.jpg --no-final-qem --no-incremental-delete --target-tri-ratio 0.5", False,
     ),
   ],
 
   "tutte-param-example": [
-    #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.9"),
-    run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.3"),
+    #run("open_top_box.obj", "open_top_box.ply", "-d data/spot_texture.png --target-tri-ratio 0.5"),
+    #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3"),
+    run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.6"),
+    run(
+      "../ablations/open_top_box.ply",
+      "open_top_box_uniform.obj",
+      "--weighting uniform --bake-texture uniform.png --uv-svg ablations/uniform.svg --iters 100000",
+      bin=tutte_bin, eval=False,
+    ),
     run(
       "../ablations/open_top_box.ply",
       "open_top_box_mv.obj",
-      "--weighting mean-value --bake-texture mv.png --uv-svg ablations/mv.svg",
+      "--weighting mean-value --bake-texture mv.png --uv-svg ablations/mv.svg --iters 100000",
       bin=tutte_bin, eval=False,
     ),
     run(
       "../ablations/open_top_box.ply",
       "open_top_box_cmv.obj",
       "--weighting colored-mean-value --pos-color-norm mul --bake-texture cmv.png \
-       --uv-svg ablations/cmv.svg",
+       --uv-svg ablations/cmv.svg --iters 100000",
+      bin=tutte_bin, eval=False,
+    ),
+    run(
+      "../ablations/open_top_box.ply",
+      "open_top_box_len.obj",
+      "--weighting length --bake-texture len.png \
+       --uv-svg ablations/len.svg --iters 100000",
+      bin=tutte_bin, eval=False,
+    ),
+    run(
+      "../ablations/open_top_box.ply",
+      "open_top_box_clen.obj",
+      "--weighting color-length --bake-texture clen.png \
+       --uv-svg ablations/clen.svg --iters 100000",
+      bin=tutte_bin, eval=False,
+    ),
+    run(
+      "../ablations/open_top_box.ply",
+      "open_top_box_lpl.obj",
+      "--weighting laplacian --bake-texture lpl.png \
+       --uv-svg ablations/lpl.svg --iters 100000",
       bin=tutte_bin, eval=False,
     ),
   ],

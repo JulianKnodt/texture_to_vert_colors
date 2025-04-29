@@ -57,16 +57,34 @@ def runnable_cmds(cmds, stage_kind="run"):
   return cb
 
 dataset = [
-  ("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 0.1),
-  ("cabbage.obj", "cabbage_diffuse.jpg", 0.1),
+  #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 0.2),
+  #("cabbage.obj", "cabbage_diffuse.jpg", 0.2),
+  #("shiba.obj", "shiba_texture.png", 0.1),
   ("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 0.05),
-  ("shiba.fbx", "shiba_texture.png", 0.02),
-  ("scan_vase.obj", "scan_vase_texture.jpg", 0.2),
+  #("scan_vase.obj", "scan_vase_texture.jpg", 0.3),
+  #("silent_ash.obj", "silent_ash_texture.png", 0.1),
+  ("strawberry.obj", "strawberry_textures/diffuse.png", 0.1),
 ]
 
 experiments = {
   "basic-cube": [
     run("cube.obj", "cube.ply", "-d data/uv_grid.png --target-tri-ratio 0.5", False),
+  ],
+  # robustness tests
+  "thin-tri": [
+    run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", is_abl=True),
+  ],
+  "non-manifold": [
+    #run(
+    #  "non_manifold.obj", "non_manifold.ply",
+    #  "-d data/uv_grid.png --target-tri-ratio 1. --sample-kind direct",
+    #  is_abl=True
+    #),
+    run(
+      "non_manifold.obj", "non_manifold.ply",
+      "-d data/uv_grid.png --target-tri-ratio 1. --sample-kind exact",
+      is_abl=True
+    ),
   ],
   # Simple test case for checking that the QEM is correct
   "plane-simple": [
@@ -78,9 +96,6 @@ experiments = {
   ],
   "rot-uv": [
     run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png --target-tri-ratio 0.1", False),
-  ],
-  "thin-tri": [
-    run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", False),
   ],
   "spot": [
     run(
@@ -108,47 +123,31 @@ experiments = {
 
   "tutte-param-example": [
     #run("open_top_box.obj", "open_top_box.ply", "-d data/spot_texture.png --target-tri-ratio 0.5"),
-    #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3"),
-    run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.6"),
+    #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.6"),
+    run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.5"),
+    *[
+      run(
+        "../ablations/open_top_box.ply",
+        f"open_top_box_{label}.obj",
+        f"--weighting {weighting} --bake-texture {label}.png \
+          --uv-svg ablations/{label}.svg --iters 100000",
+        bin=tutte_bin, eval=False,
+      )
+      for (weighting, label) in [
+        ("uniform", "uniform"),
+        ("mean-value", "mv"),
+        ("colored-mean-value", "cmv"),
+        ("length", "len"),
+        ("color-length", "clen"),
+        ("laplacian", "lpl"),
+      ]
+    ],
+  ],
+
+  "smoothing": [
     run(
-      "../ablations/open_top_box.ply",
-      "open_top_box_uniform.obj",
-      "--weighting uniform --bake-texture uniform.png --uv-svg ablations/uniform.svg --iters 100000",
-      bin=tutte_bin, eval=False,
-    ),
-    run(
-      "../ablations/open_top_box.ply",
-      "open_top_box_mv.obj",
-      "--weighting mean-value --bake-texture mv.png --uv-svg ablations/mv.svg --iters 100000",
-      bin=tutte_bin, eval=False,
-    ),
-    run(
-      "../ablations/open_top_box.ply",
-      "open_top_box_cmv.obj",
-      "--weighting colored-mean-value --pos-color-norm mul --bake-texture cmv.png \
-       --uv-svg ablations/cmv.svg --iters 100000",
-      bin=tutte_bin, eval=False,
-    ),
-    run(
-      "../ablations/open_top_box.ply",
-      "open_top_box_len.obj",
-      "--weighting length --bake-texture len.png \
-       --uv-svg ablations/len.svg --iters 100000",
-      bin=tutte_bin, eval=False,
-    ),
-    run(
-      "../ablations/open_top_box.ply",
-      "open_top_box_clen.obj",
-      "--weighting color-length --bake-texture clen.png \
-       --uv-svg ablations/clen.svg --iters 100000",
-      bin=tutte_bin, eval=False,
-    ),
-    run(
-      "../ablations/open_top_box.ply",
-      "open_top_box_lpl.obj",
-      "--weighting laplacian --bake-texture lpl.png \
-       --uv-svg ablations/lpl.svg --iters 100000",
-      bin=tutte_bin, eval=False,
+      "tiger_lily.obj", "tiger_lily.ply",
+      "-d data/tiger_lily.jpeg --target-tri-ratio 0.1 --sample-kind direct"
     ),
   ],
 
@@ -157,7 +156,7 @@ experiments = {
       run(
         model, model[:-4] + ".ply",
         f"-d data/{texture} --target-tri-ratio {tri_ratio}",
-        is_abl=False
+        is_abl=False,
       )
       for (model, texture, tri_ratio) in dataset
     ],

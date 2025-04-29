@@ -2,11 +2,13 @@
 #![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
 
-use clap::{Parser, ValueEnum};
-use pars3d::{self, Mesh};
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
-use texture_to_vert_colors::{F, add, cross, dist, dist_sq, dot, kmul, length, normalize, sub};
+use clap::Parser;
+use pars3d::{self, Mesh};
+
+use texture_to_vert_colors::weighting::{PosColorNorm, WeightingKind};
+use texture_to_vert_colors::{F, add, dist, kmul};
 
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
@@ -59,10 +61,13 @@ fn main() {
         } else {
             None
         };
-        m.triangulate();
+        let mut new_edges = BTreeSet::new();
+        m.triangulate_with_new_edges(|[e0, e1]| {
+            new_edges.insert(std::cmp::minmax(e0, e1));
+        });
         let (s, t) = m.normalize();
         let (sc, tc) = m.normalize_colors();
-        tutte_param(m, &args);
+        tutte_param(m, new_edges, &args);
         m.denormalize(s, t);
         m.denormalize_colors(sc, tc);
         if let Some(og_faces) = og_faces {
@@ -70,9 +75,10 @@ fn main() {
         }
     }
     println!(
-        "[INFO]: Took {:?} for tutte parameterization with {}",
+        "[INFO]: Took {:?} for tutte parameterization with {} for {}",
         start.elapsed(),
         args.weighting,
+        args.input,
     );
 
     if !args.uv_svg.is_empty() {
@@ -117,8 +123,21 @@ fn main() {
     pars3d::save(&args.output, &scene).expect("Failed to save output");
 }
 
-pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
-    let vert_adj = mesh.vertex_adj();
+pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) {
+    let mut vert_adj = args
+        .weighting
+        .vertex_weights(&mesh, args.pos_color_norm)
+        .expect("Failed to construct vertex adjacency");
+    for vi in 0..mesh.v.len() {
+        let (adj_vs, adj_ds) = vert_adj.adj_data_mut(vi);
+        for i in 0..adj_vs.len() {
+            let e = std::cmp::minmax(vi, adj_vs[i] as usize);
+            if new_edges.contains(&e) {
+                adj_ds[i] = 0.;
+            }
+        }
+    }
+    let vert_adj = vert_adj;
     let (num_loops, bd_loops) = vert_adj.boundary_loops(&mesh);
     assert_eq!(num_loops, 1);
 
@@ -164,154 +183,6 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
     for (vi, l) in bd {
         uvs[vi] = [(l.cos() + 1.) / 2., (l.sin() + 1.) / 2.];
     }
-    let mut edge_face_adj = BTreeMap::new();
-    for (fi, f) in mesh.f.iter().enumerate() {
-        for e in f.edges_ord() {
-            let slots = edge_face_adj.entry(e).or_insert([usize::MAX; 2]);
-            let slot = slots.iter_mut().find(|v| **v == usize::MAX || **v == fi);
-            let Some(slot) = slot else {
-                for &fi in slots.iter() {
-                    println!("Previous {:?}", mesh.f[fi]);
-                }
-                println!("To be inserted {:?}", mesh.f[fi]);
-                panic!("Failed to find slot for {fi} in {slots:?} with edge {e:?}");
-            };
-            *slot = fi;
-        }
-    }
-
-    let per_face_info = match args.weighting {
-        WeightingKind::Uniform | WeightingKind::Length | WeightingKind::ColorLength => vec![],
-        WeightingKind::ColoredMeanValue | WeightingKind::MeanValue => mesh
-            .f
-            .iter()
-            .map(|f| {
-                let vis = f.as_tri().unwrap();
-                let [v0, v1, v2] = vis.map(|vi| mesh.v[vi]);
-                let tan_ang = |r, a, b| {
-                    let ar = normalize(sub(a, r));
-                    let br = normalize(sub(b, r));
-                    let cos_ang = dot(ar, br);
-                    let v = (1. - cos_ang) / (1. + cos_ang + 1e-4);
-                    assert!(v.is_finite(), "{v} {cos_ang} {vis:?}");
-                    assert!(v >= 0.);
-                    v.sqrt()
-                };
-                [
-                    tan_ang(v0, v1, v2),
-                    tan_ang(v1, v2, v0),
-                    tan_ang(v2, v0, v1),
-                ]
-            })
-            .collect::<Vec<_>>(),
-        WeightingKind::Laplacian => mesh
-            .f
-            .iter()
-            .map(|f| {
-                let [v0, v1, v2] = f.as_tri().unwrap().map(|vi| mesh.v[vi]);
-                let cot_ang = |r, a, b| {
-                    let ar = normalize(sub(a, r));
-                    let br = normalize(sub(b, r));
-                    let cos = dot(ar, br);
-                    let sin = length(cross(ar, br));
-                    // numerical stability
-                    let sin = (sin.abs() + 1e-4).copysign(sin);
-                    let cot = cos / sin;
-                    assert!(cot.is_finite(), "{cot:?}");
-                    cot
-                };
-                [
-                    cot_ang(v0, v1, v2),
-                    cot_ang(v1, v2, v0),
-                    cot_ang(v2, v0, v1),
-                ]
-            })
-            .collect::<Vec<_>>(),
-    };
-
-    let per_vert_weights = if matches!(args.weighting, WeightingKind::Laplacian) {
-        let mut vw = vec![0.; mesh.v.len()];
-        for (fi, f) in mesh.f.iter().enumerate() {
-            let vis = f.as_tri().unwrap();
-            let vs = vis.map(|vi| mesh.v[vi]);
-            let cots = per_face_info[fi];
-            for i in 0..3 {
-                let n = (i + 1) % 3;
-                let nn = (n + 1) % 3;
-                let a = dist_sq(vs[n], vs[i]) * cots[nn] + dist_sq(vs[nn], vs[i]) * cots[n];
-                vw[vis[i]] += a / 8.;
-            }
-        }
-        vw
-    } else {
-        vec![]
-    };
-
-    macro_rules! mean_value {
-        ($v0: expr, $v1: expr) => {{
-            let v0 = $v0;
-            let v1 = $v1;
-            let [f0, f1] = edge_face_adj[&std::cmp::minmax(v0, v1)];
-            if f0 == usize::MAX || f1 == usize::MAX {
-                // This means it's a boundary edge.
-                return 0.;
-            }
-
-            let get_val = |fi: usize| {
-                let idx = mesh.f[fi]
-                    .as_slice()
-                    .iter()
-                    .position(|&vi| vi == v0)
-                    .unwrap();
-                per_face_info[fi][idx]
-            };
-            (get_val(f0) + get_val(f1))
-        }};
-    }
-
-    // Compute per vertex weights
-    let vert_adj = vert_adj.map(|_, v0, v1, ()| match args.weighting {
-        WeightingKind::Uniform => 1.,
-        WeightingKind::Length => dist(mesh.v[v0], mesh.v[v1]).recip(),
-        WeightingKind::ColorLength => args
-            .pos_color_norm
-            .apply(
-                dist(mesh.v[v0], mesh.v[v1]),
-                dist(mesh.vert_colors[v0], mesh.vert_colors[v1]) + 3e-3,
-            )
-            .recip(),
-        WeightingKind::MeanValue => {
-            let d = dist(mesh.v[v0], mesh.v[v1]) + 1e-6;
-            let mv = mean_value!(v0, v1);
-            d.recip() * mv
-        }
-        WeightingKind::ColoredMeanValue => {
-            let d = dist(mesh.v[v0], mesh.v[v1]);
-            let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]) + 3e-3;
-            let w = args.pos_color_norm.apply(d, cd);
-            assert!(w.is_finite());
-            w.recip() * mean_value!(v0, v1)
-        }
-        WeightingKind::Laplacian => {
-            let [f0, f1] = edge_face_adj[&std::cmp::minmax(v0, v1)];
-            if f0 == usize::MAX || f1 == usize::MAX {
-                return 0.;
-            }
-            let get_val = |fi: usize| {
-                let idx = mesh.f[fi]
-                    .as_slice()
-                    .iter()
-                    .position(|&vi| vi != v0 && vi != v1)
-                    .unwrap();
-                per_face_info[fi][idx]
-            };
-            let w = get_val(f0) + get_val(f1);
-            let voronoi_area = per_vert_weights[v0];
-            assert_ne!(voronoi_area, 0.);
-            let w = w * (2. * voronoi_area).recip();
-            w.max(1e-4)
-        }
-    });
     let mut buf = uvs.clone();
     /*
     let mut triplets = vec![];
@@ -377,76 +248,5 @@ pub fn tutte_param(mesh: &mut Mesh, args: &Args) {
         //}
 
         std::mem::swap(&mut buf, &mut uvs);
-    }
-}
-
-macro_rules! impl_display {
-  ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {
-    impl std::fmt::Display for $name {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            use $name::*;
-            let s = match self {
-                $($kind => $disp,)+
-            };
-            write!(f, "{s}")
-        }
-    }
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
-pub enum WeightingKind {
-    Uniform,
-    Laplacian,
-
-    Length,
-    ColorLength,
-
-    //ColoredLaplacian,
-    MeanValue,
-    ColoredMeanValue,
-}
-
-impl_display!(
-    WeightingKind,
-    Uniform => "uniform",
-
-    Length => "length",
-    ColorLength => "color-length",
-
-    Laplacian => "laplacian",
-    MeanValue => "mean-value",
-
-    ColoredMeanValue => "colored-mean-value",
-);
-
-#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
-pub enum PosColorNorm {
-    Add,
-    Mul,
-    Min,
-    Max,
-    GeometricMean,
-}
-
-impl_display!(
-  PosColorNorm,
-  Add => "add",
-  Mul => "mul",
-  Min => "min",
-  Max => "max",
-  GeometricMean => "geometric-mean"
-);
-
-impl PosColorNorm {
-    pub fn apply(self, pos: F, color: F) -> F {
-        use PosColorNorm::*;
-        match self {
-            Add => pos + color,
-            Mul => pos * color,
-            Min => pos.min(color),
-            Max => pos.max(color),
-            GeometricMean => (pos * color).sqrt(),
-        }
     }
 }

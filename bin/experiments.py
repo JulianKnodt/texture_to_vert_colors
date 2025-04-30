@@ -7,6 +7,7 @@ from itertools import chain
 
 bin_file = "target/release/texture_to_vert_colors"
 tutte_bin = "target/release/colored_tutte_param"
+smooth_bin = "target/release/smoothing"
 
 args = None
 
@@ -86,17 +87,37 @@ experiments = {
       is_abl=True
     ),
   ],
-  # Simple test case for checking that the QEM is correct
-  "plane-simple": [
-    run("plane.obj", "plane.ply", "-d data/small.png --no-final-qem"),
-    run("plane.obj", "plane_with_qem.ply", "-d data/small.png"),
-  ],
   "sphere": [
     run("sphere.obj", "sphere.ply", "-d data/uv_grid.png --target-tri-ratio 0.01", False),
   ],
   "rot-uv": [
     run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png --target-tri-ratio 0.1", False),
   ],
+
+  # Test case for smoothing
+  "plane-smoothing": [
+    run(
+      "plane.obj", "hokusai.ply",
+      "-d data/hokusai.jpg --target-tri-ratio 1. --sample-kind direct"
+    ),
+    *[
+      run(
+        "../ablations/hokusai.ply",
+        f"hokusai_{label}.ply",
+        f"--weighting {weighting} --iters 10000",
+        bin=smooth_bin, eval=False,
+      )
+      for (weighting, label) in [
+        #("uniform", "uniform"),
+        ("mean-value", "mv"),
+        #("colored-mean-value", "cmv"),
+        #("length", "len"),
+        #("color-length", "clen"),
+        #("laplacian", "lpl"),
+      ]
+    ],
+  ],
+
   "spot": [
     run(
       "spot_triangulated.obj", "spot_triangulated.ply",
@@ -144,11 +165,48 @@ experiments = {
     ],
   ],
 
+  "tutte-param-ogre": [
+    run("ogre.obj", "ogre.ply", "-d data/ogre.png --target-tri-ratio 0.1"),
+    #*[
+    #  run(
+    #    "../ablations/open_top_box.ply",
+    #    f"open_top_box_{label}.obj",
+    #    f"--weighting {weighting} --bake-texture {label}.png \
+    #      --uv-svg ablations/{label}.svg --iters 100000",
+    #    bin=tutte_bin, eval=False,
+    #  )
+    #  for (weighting, label) in [
+    #    ("uniform", "uniform"),
+    #    ("mean-value", "mv"),
+    #    ("colored-mean-value", "cmv"),
+    #    ("length", "len"),
+    #    ("color-length", "clen"),
+    #    ("laplacian", "lpl"),
+    #  ]
+    #],
+  ],
+
   "smoothing": [
-    run(
-      "tiger_lily.obj", "tiger_lily.ply",
-      "-d data/tiger_lily.jpeg --target-tri-ratio 0.1 --sample-kind direct"
-    ),
+    #run(
+    #  "tiger_lily.obj", "tiger_lily.ply",
+    #  "-d data/tiger_lily.jpeg --target-tri-ratio 0.1 --sample-kind direct"
+    #),
+    *[
+      run(
+        "../ablations/tiger_lily.ply",
+        f"tiger_lily_{label}.ply",
+        f"--weighting {weighting} --iters 100000 --taubin",
+        bin=smooth_bin, eval=False,
+      )
+      for (weighting, label) in [
+        ("uniform", "uniform"),
+        ("mean-value", "mv"),
+        ("colored-mean-value", "cmv"),
+        ("length", "len"),
+        ("color-length", "clen"),
+        ("laplacian", "lpl"),
+      ]
+    ],
   ],
 
   "dataset": [

@@ -8,7 +8,7 @@ use clap::Parser;
 use pars3d::{self, Mesh};
 
 use texture_to_vert_colors::weighting::{PosColorNorm, WeightingKind};
-use texture_to_vert_colors::{F, add, kmul};
+use texture_to_vert_colors::{F, add, dist, kmul, sub};
 
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
@@ -34,6 +34,14 @@ pub struct Args {
     /// How many iterations to do for the lazy tutte.
     #[arg(long, default_value_t = 100)]
     iters: usize,
+
+    /// Alternate between expanding and shrinking
+    #[arg(long)]
+    taubin: bool,
+
+    /// Also smooth the colors of the input mesh
+    #[arg(long)]
+    smooth_colors: bool,
 }
 
 fn main() {
@@ -63,7 +71,7 @@ fn main() {
         }
     }
     println!(
-        "[INFO]: Took {:?} for tutte parameterization with {} for {}",
+        "[INFO]: Took {:?} for smoothing with {} for {}",
         start.elapsed(),
         args.weighting,
         args.input,
@@ -96,28 +104,42 @@ pub fn smoothing(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) 
     let mut buf = vs.clone();
 
     use indicatif::ProgressIterator;
-    for _ in (0..args.iters).progress() {
+    for it in (0..args.iters).progress() {
         buf.fill([0.; 3]);
-        for (&b, _) in &bd_loops {
-            buf[b] = vs[b];
-        }
 
         use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
-        buf.par_iter_mut().enumerate().for_each(|(vi, dst)| {
-            if bd_loops.contains_key(&vi) {
-                return;
-            }
-            let mut total_w = 0.;
-            for (adj, w) in vert_adj.adj_data(vi) {
-                total_w += w;
-                *dst = add(
-                    *dst,
-                    kmul(w as F, unsafe { *vs.get_unchecked(adj as usize) }),
-                );
-            }
-            *dst = kmul(total_w.recip(), *dst);
-        });
+        let max_delta = buf
+            .par_iter_mut()
+            .enumerate()
+            .map(|(vi, dst)| {
+                let mut total_w = 0.;
+                let own_pos = vs[vi];
+                let mut delta = [0.; 3];
+                for (adj, w) in vert_adj.adj_data(vi) {
+                    total_w += w;
+                    delta = add(delta, kmul(w as F, sub(vs[adj as usize], own_pos)));
+                }
+                if total_w == 0. {
+                    *dst = vs[vi];
+                    return 0.;
+                }
+                let mult = if args.taubin && it % 2 == 1 {
+                    -0.5
+                } else {
+                    0.5
+                };
+                *dst = add(own_pos, kmul(mult * total_w.recip(), delta));
+                dist(*dst, vs[vi])
+            })
+            .max_by(|a, b| F::partial_cmp(a, b).unwrap())
+            .unwrap();
+        for (&b, _) in &bd_loops {
+            buf[b] = vs[b];
+        }
+        if max_delta < 1e-12 {
+            break;
+        }
     }
     std::mem::swap(&mut buf, &mut vs);
 }

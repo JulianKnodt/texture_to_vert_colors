@@ -52,10 +52,10 @@ impl WeightingKind {
                     let tan_ang = |r, a, b| {
                         let ar = normalize(sub(a, r));
                         let br = normalize(sub(b, r));
-                        let cos_ang = dot(ar, br);
+                        let cos_ang = dot(ar, br).clamp(-1., 1.);
                         let v = (1. - cos_ang) / (1. + cos_ang + 1e-4);
                         assert!(v.is_finite(), "{v} {cos_ang} {vis:?}");
-                        assert!(v >= 0.);
+                        assert!(v >= 0., "{v:?} {cos_ang} {vis:?}");
                         v.sqrt()
                     };
                     [
@@ -133,24 +133,25 @@ impl WeightingKind {
         // Compute per vertex weights
         let va = vert_adj.map(|_, v0, v1, ()| match self {
             WeightingKind::Uniform => 1.,
-            WeightingKind::Length => dist(mesh.v[v0], mesh.v[v1]).recip(),
+            WeightingKind::Length => dist(mesh.v[v0], mesh.v[v1]).max(1e-3).recip(),
             WeightingKind::ColorLength => pos_color_norm
                 .apply(
                     dist(mesh.v[v0], mesh.v[v1]),
-                    dist(mesh.vert_colors[v0], mesh.vert_colors[v1]) + 3e-3,
+                    dist(mesh.vert_colors[v0], mesh.vert_colors[v1]),
                 )
+                .max(1e-3)
                 .recip(),
             WeightingKind::MeanValue => {
-                let d = dist(mesh.v[v0], mesh.v[v1]) + 1e-6;
+                let d = dist(mesh.v[v0], mesh.v[v1]);
                 let mv = mean_value!(v0, v1);
-                d.recip() * mv
+                d.max(1e-3).recip() * mv
             }
             WeightingKind::ColoredMeanValue => {
                 let d = dist(mesh.v[v0], mesh.v[v1]);
-                let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]) + 3e-3;
+                let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]);
                 let w = pos_color_norm.apply(d, cd);
                 assert!(w.is_finite());
-                w.recip() * mean_value!(v0, v1)
+                w.max(1e-3).recip() * mean_value!(v0, v1)
             }
             WeightingKind::Laplacian => {
                 let [f0, f1] = edge_face_adj[&std::cmp::minmax(v0, v1)];

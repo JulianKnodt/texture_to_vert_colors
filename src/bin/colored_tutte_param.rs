@@ -221,17 +221,9 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
     use indicatif::ProgressIterator;
     for _ in (0..args.iters).progress() {
         buf.fill([0.; 2]);
-        for (&b, _) in &bd_loops {
-            buf[b] = uvs[b];
-        }
         use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
         //for (vi, dst) in buf.iter_mut().enumerate() {
         buf.par_iter_mut().enumerate().for_each(|(vi, dst)| {
-            if bd_loops.contains_key(&vi) {
-                //continue;
-                return;
-            }
-
             let mut total_w = 0.;
             for (adj, w) in vert_adj.adj_data(vi) {
                 // negative values cause this to explode
@@ -246,6 +238,9 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
             debug_assert!(dst[1].is_finite(), "{total_w:?} {:?}", *dst);
         });
         //}
+        for (&b, _) in &bd_loops {
+            buf[b] = uvs[b];
+        }
 
         std::mem::swap(&mut buf, &mut uvs);
     }

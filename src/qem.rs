@@ -33,7 +33,6 @@ pub struct Args {
     pub no_check_face_inversion: bool,
 
     pub max_degree: usize,
-
     /// What percentage of faces should be retained at the end?
     pub target_tri_ratio: F,
     pub target_tri_num: usize,
@@ -45,13 +44,13 @@ pub struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            color_weight: 0.1,
+            color_weight: 0.5,
             color_preservation_weight: 1.,
             //color_preservation_weight: 0.,
 
             //color_weight: 1e-4,
-            min_face_area: 5e-2,
-            min_edge_weight: 1e-2,
+            min_face_area: 1e-2,
+            min_edge_weight: 5e-3,
 
             abs_eps: 1e-5,
 
@@ -340,7 +339,7 @@ pub fn simplify_range_colored(
             let p = q_acc
                 .point_with_volume_opt()
                 .unwrap_or_else(|| kmul(0.5, add(p0, p1)));
-            assert!(p.iter().copied().all(F::is_finite));
+            debug_assert!(p.iter().copied().all(F::is_finite));
             let mut total_cost = 0.;
 
             let q01f = m.get(e0).0 + m.get(e1).0;
@@ -502,9 +501,12 @@ pub fn simplify_range_colored(
             debug_assert!(!m.is_deleted(e1));
 
             let [ef0, ef1] = face_verts.get_disjoint_mut([e0, e1]).unwrap();
-            ef1.append(ef0);
-            ef1.sort_unstable();
-            ef1.dedup();
+            let ef1_len = ef1.len();
+            for f in std::mem::take(ef0) {
+                if !ef1[0..ef1_len].contains(&f) {
+                    ef1.push(f);
+                }
+            }
             let prev_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
             ef1.retain(|&fi| {
                 mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
@@ -569,7 +571,6 @@ pub fn simplify_range_colored(
                 bufs.snd_pq.push(e, (recency, nq_err));
             }
 
-            // can assume it's usually 2 since it's manifold
             if let Some(ref p) = p {
                 p.set_position(curr_tris as u64);
             }

@@ -7,7 +7,7 @@ use union_find::{UnionFind, UnionFindOp};
 pub struct CollapsibleManifold<T, UF: UnionFindOp> {
     pub(crate) vertices: UF,
 
-    pub edges: Vec<Vec<usize>>,
+    pub edges: Vec<Vec<u32>>,
 
     pub data: Vec<T>,
 }
@@ -74,8 +74,8 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         if v0 == v1 {
             return;
         }
-        self.edges[v0].push(v1);
-        self.edges[v1].push(v0);
+        self.edges[v0].push(v1 as u32);
+        self.edges[v1].push(v0 as u32);
 
         // note that this is not using the mapping since edges should only be added ahead of
         // time.
@@ -110,21 +110,23 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
 
     /// Returns adjacent vertices (should always be in sorted order)
     pub fn vertex_adj(&self, v: usize) -> impl Iterator<Item = usize> + '_ {
-        self.edges[v].iter().map(|&dst| self.vertices.find(dst))
+        self.edges[v]
+            .iter()
+            .map(|&dst| self.vertices.find(dst as usize))
     }
     /// Fix up a one ring to not contain duplicates
     pub fn dedup_one_ring(&mut self, v: usize) {
         self.dedup(v);
         let nbrs = std::mem::take(&mut self.edges[v]);
         for &adj in &nbrs {
-            assert_ne!(adj, v);
-            self.dedup(adj);
+            assert_ne!(adj as usize, v);
+            self.dedup(adj as usize);
         }
         self.edges[v] = nbrs;
     }
     pub fn dedup(&mut self, v: usize) {
-        self.edges[v].sort_unstable_by_key(|&v| self.vertices.find(v));
-        self.edges[v].dedup_by_key(|&mut v| self.vertices.find(v));
+        self.edges[v].sort_unstable_by_key(|&v| self.vertices.find(v as usize));
+        self.edges[v].dedup_by_key(|&mut v| self.vertices.find(v as usize));
     }
 
     /// Returns whether two vertices v0 and v1 are adjacent.
@@ -135,7 +137,7 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         let v1 = self.vertices.find(v1);
         self.edges[v0]
             .iter()
-            .any(|&dst| self.vertices.find(dst) == v1)
+            .any(|&dst| self.vertices.find(dst as usize) == v1)
     }
 
     /// An iterator over the shared one ring of v0 and v1.
@@ -197,39 +199,49 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         // data_src should no longer be accessed
 
         let [src_e, dst_e] = unsafe { self.edges.get_disjoint_unchecked_mut([src, dst]) };
+        let pos = dst_e.iter().position(|&v| v == src as u32).unwrap();
+        dst_e.swap_remove(pos);
+
+        for v in dst_e.iter_mut() {
+            *v = self.vertices.find(*v as usize) as u32;
+        }
         let mut src_e = std::mem::take(src_e);
-        /*
-        for e in dst_e.iter_mut() {
-            *e = self.vertices.find(*e);
-        }
+        let pos = src_e.iter().position(|&v| v == dst as u32).unwrap();
+        src_e.swap_remove(pos);
+
         let curr_dst_len = dst_e.len();
-        for e in src_e {
-            let e = self.vertices.find(*e);
-            if e == dst || dst_e[0..curr_dst_len].contains(e) {
-                continue;
+        for v in src_e {
+            let v = self.vertices.find(v as usize) as u32;
+            if !dst_e[0..curr_dst_len].contains(&v) {
+                dst_e.push(v);
             }
-            dst_e.push(e);
         }
-        */
-        dst_e.append(&mut src_e);
-        dst_e.retain_mut(|e1| {
-            let new_v = self.vertices.find(*e1);
-            *e1 = new_v;
-            new_v != dst
-        });
-        dst_e.sort_unstable();
-        dst_e.dedup();
+        //src_e.retain(|&v| !dst_e.contains(&v));
+
+        //dst_e.append(&mut src_e);
 
         let tmp = std::mem::take(&mut self.edges[dst]);
         for &adj in &tmp {
-            let adj = self.vertices.find(adj);
+            let adj = self.vertices.find(adj as usize);
             debug_assert_ne!(adj, dst);
             let adj_e = unsafe { self.edges.get_unchecked_mut(adj) };
+            if let Some(i) = adj_e.iter().position(|&v| v == src as u32) {
+                adj_e.swap_remove(i);
+            }
+            if !adj_e.contains(&(dst as u32)) {
+                adj_e.push(dst as u32);
+            }
+            // here is it possible to just remove the one old vertex?
+            // sanity check
+            //let init_len = adj_e.len();
+            /*
             for e in adj_e.iter_mut() {
                 *e = self.vertices.find(*e);
             }
             adj_e.sort_unstable();
             adj_e.dedup();
+            */
+            //assert_eq!(adj_e.len(), init_len);
         }
         self.edges[dst] = tmp;
     }
@@ -246,7 +258,7 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         self.edges
             .iter()
             .enumerate()
-            .flat_map(|(src, dsts)| dsts.iter().map(move |&dst| [src, dst]))
+            .flat_map(|(src, dsts)| dsts.iter().map(move |&dst| [src, dst as usize]))
     }
 
     #[inline]
@@ -254,7 +266,7 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         self.edges.iter().enumerate().flat_map(move |(src, dsts)| {
             let src = self.vertices.find(src);
             dsts.iter()
-                .map(move |&dst| [src, self.vertices.find(dst)])
+                .map(move |&dst| [src, self.vertices.find(dst as usize)])
                 .filter(|[a, b]| a < b)
         })
     }
@@ -263,8 +275,8 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
     pub fn ord_edges(&self) -> impl Iterator<Item = [usize; 2]> + '_ {
         self.edges.iter().enumerate().flat_map(|(src, dsts)| {
             dsts.iter()
-                .filter(move |&&dst| src < dst)
-                .map(move |&dst| [src, dst])
+                .filter(move |&&dst| src < dst as usize)
+                .map(move |&dst| [src, dst as usize])
         })
     }
 }

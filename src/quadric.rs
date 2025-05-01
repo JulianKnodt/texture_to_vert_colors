@@ -100,7 +100,7 @@ impl QuadricAccumulator {
             return None;
         }
         let inv_a = self.area.recip();
-        assert!(inv_a.is_finite(), "{}", self.area);
+        debug_assert!(inv_a.is_finite(), "{}", self.area);
         let a = self.a - self.ggt * inv_a;
 
         let b = sub(self.b, kmul(inv_a, self.gd));
@@ -465,14 +465,9 @@ impl<const N: usize> Quadric<N> {
             let s = dot(self.g[i], p) + self.d[i];
             debug_assert!(s.is_finite(), "{p:?} {:?} {:?}", self.g[i], self.d[i]);
             let denom = w * self.area;
-            if denom.abs() < 1e-8 {
+            if denom.abs() < 1e-5 {
                 return None;
             }
-            assert!(
-                denom > 1e-14,
-                "Expected non-degenerate denom, denom = {denom} w = {w} area = {}",
-                self.area
-            );
             let out = s / denom;
             assert!(out.is_finite(), "{s}/{denom}");
             Some(out)

@@ -128,9 +128,10 @@ pub fn main() {
         input_nonmanifold_edges += nm;
     }
     println!(
-        "[INFO]: Input ({}) #F = {}, #V = {}, #BdE = {}, #NmE = {}",
+        "[INFO]: Input ({}) #F = {}, #Δ = {}, #V = {}, #BdE = {}, #NmE = {}",
         args.input,
         scene.num_faces(),
+        scene.num_tris(),
         scene.num_vertices(),
         input_bd_edges,
         input_nonmanifold_edges,
@@ -164,8 +165,9 @@ pub fn main() {
     }
     println!("[INFO]: Resampling took {elapsed:?}");
     println!(
-        "[INFO]: Output #F = {}, #V = {}, #BdE = {}, #NmE = {}",
+        "[INFO]: Output #F = {}, #Δ = {}, #V = {}, #BdE = {}, #NmE = {}",
         out_scene.num_faces(),
+        out_scene.num_tris(),
         out_scene.num_vertices(),
         output_bd_edges,
         output_nonmanifold_edges,
@@ -307,7 +309,9 @@ pub fn texture_to_vert_colors(
             del_degen_bridges(
                 &mut remap,
                 &mut out,
-                |vi| labels.contains_key(&vi),
+                // TODO verify when it's ok to delete these
+                |_| false,
+                //|vi| labels.contains_key(&vi),
                 args,
                 &face_labels,
                 curr_f..new_f,
@@ -369,6 +373,9 @@ pub fn texture_to_vert_colors(
     // map from (new vertex -> adjacent vertices that share the same corner on these two faces)
     // TODO make this a small vec of size 2
     let mut edge_adj: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+
+    // between two faces, which way is the edge going
+    let mut corner_edge_dir: BTreeMap<[usize; 2], [[usize; 2]; 2]> = BTreeMap::new();
 
     // Zip edges together
     for ([e0_key, e1_key], face_verts) in edge_map {
@@ -434,6 +441,7 @@ pub fn texture_to_vert_colors(
 
             let v00 = add_key!(v0s, &e0_key, f0, 0.);
             let v01 = add_key!(v0s, &e1_key, f0, 1.);
+            // insert these items so that later the order is known when adding corner faces
 
             v0s.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
             v0s.dedup_by_key(|v| v.0);
@@ -461,6 +469,8 @@ pub fn texture_to_vert_colors(
                     v.push(dst);
                 }
             };
+            corner_edge_dir.insert(std::cmp::minmax(f0, f1), [[v01, v11], [v10, v00]]);
+
             ins(v00, v10);
             ins(v10, v00);
 
@@ -523,7 +533,7 @@ pub fn texture_to_vert_colors(
                     [v0_front.0, usize::MAX],
                     [v1_front.0, p1n],
                 ));
-                out.f.push(FaceKind::Tri([v0_front.0, v1_front.0, p1n]));
+                out.f.push(FaceKind::Tri([v0_front.0, p1n, v1_front.0]));
                 v1_front = (p1n, t);
             }
         };
@@ -594,30 +604,43 @@ pub fn texture_to_vert_colors(
 
     'outer: for (_, mut fvs) in corner_map.into_iter() {
         assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
-
         if let Some(fv) = fvs.iter().find(|fv| !edge_adj.contains_key(&fv.1)) {
             assert!(false, "{fv:?}");
-            /*
-            println!("aborting1");
-            face_labels.push(FaceLabel::GapCorner);
-            out.f.push(FaceKind::from_iter(fvs.iter().map(|fv| fv.1)));
-            continue;
-            */
         };
-        let first = fvs
-            .iter()
-            .find(|fv| !edge_adj[&fv.1].is_empty())
-            .copied()
-            .unwrap_or_else(|| fvs[0])
-            .1;
-        assert_ne!(first, usize::MAX);
+        if fvs.len() < 3 {
+            continue;
+        }
+
+        let [e0, e1] = (0..fvs.len())
+            .find_map(|i| {
+                ((i + 1)..fvs.len()).find_map(|j| {
+                    corner_edge_dir
+                        .get(&std::cmp::minmax(fvs[i].0, fvs[j].0))
+                        .copied()
+                })
+            })
+            .unwrap();
 
         let face = match fvs.len() {
             0..3 => continue,
             // Order doesn't matter here (except if it should flip)
-            3 => FaceKind::Tri(std::array::from_fn(|i| fvs[i].1)),
+            3 => {
+                let t = FaceKind::Tri(std::array::from_fn(|i| fvs[i].1));
+                if t.edges().any(|e| e == e0 || e == e1) {
+                    FaceKind::Tri(std::array::from_fn(|i| t.as_slice()[2 - i]))
+                } else {
+                    t
+                }
+            }
 
             4 => {
+                let first = fvs
+                    .iter()
+                    .find(|fv| !edge_adj[&fv.1].is_empty())
+                    .copied()
+                    .unwrap_or_else(|| fvs[0])
+                    .1;
+                assert_ne!(first, usize::MAX);
                 let mut quad = [first, usize::MAX, usize::MAX, usize::MAX];
                 for i in 1..4 {
                     let n = &edge_adj[&quad[i - 1]];
@@ -631,7 +654,12 @@ pub fn texture_to_vert_colors(
                     };
                     quad[i] = next;
                 }
-                FaceKind::Quad(quad)
+                let f = FaceKind::Quad(quad);
+                if f.edges().any(|e| e == e0 || e == e1) {
+                    FaceKind::Quad(std::array::from_fn(|i| quad[3 - i]))
+                } else {
+                    f
+                }
             }
             _ => {
                 // sometimes these can be split into multiple polygons? (for example if an input
@@ -663,6 +691,11 @@ pub fn texture_to_vert_colors(
 
                     face_labels.push(FaceLabel::GapCorner);
                     let mut new_face = FaceKind::Poly(curr_poly);
+                    if new_face.edges().any(|e| e == e0 || e == e1)
+                        && let FaceKind::Poly(c) = &mut new_face
+                    {
+                        c.reverse();
+                    }
                     assert!(!new_face.canonicalize());
                     out.f.push(new_face);
                 }
@@ -722,15 +755,8 @@ pub fn texture_to_vert_colors(
     );
 
     if !args.no_delete_degen {
-        /*
         let num_non_manifold = out.num_edge_kinds().2;
-        del_degen_gap_fill(
-            &mut remap,
-            &mut out,
-            |_| false,
-            args,
-            &face_labels,
-        );
+        del_degen_gap_fill(&mut remap, &mut out, |_| false, args, &face_labels);
 
         for f in out.f.iter_mut() {
             f.remap(|vi| remap.get_compress(vi));
@@ -743,24 +769,10 @@ pub fn texture_to_vert_colors(
             new_num_non_manifold <= num_non_manifold,
             "!({new_num_non_manifold} <= {num_non_manifold})"
         );
-        */
-        /*
-        println!("[INFO]: Starting degenerate face deletion");
-        // both of these cause some problems with manifoldness, need to be careful,
-        del_degen_bridges(
-            &mut remap,
-            &mut out,
-            |_| false,
-            args,
-            &face_labels,
-            0..init_f,
-        );
-        //check_manifold!();
-        */
 
         mesh_stats!("After deleting gap fill");
     }
-    if !args.no_final_qem {
+    if !args.no_final_qem && (args.target_tri_ratio < 1. || args.target_tri_num < out.num_tris()) {
         let qem_args = QEMArgs {
             target_tri_ratio,
             target_tri_num: args.target_tri_num,
@@ -886,7 +898,20 @@ pub fn sample_exact(
     };
     // face normal for projecting bary
     let f_n = normalize(v_f.normal());
-    assert!(length(f_n) > 1e-3, "{:?} {:?}", length(f_n), v_f.area());
+    if length(f_n) < 1e-3 {
+        assert!(v_f.area() < 1e-12);
+        // degenerate face (0 area), just use direct sampling
+        return sample_direct(
+            mesh,
+            f,
+            fi,
+            diff_img,
+            out,
+            face_labels,
+            corner_map,
+            edge_map,
+        );
+    }
 
     // for each pixel, what vertices are associated with it?
     let mut pixel_map: BTreeMap<_, [usize; 4]> = BTreeMap::new();
@@ -1344,7 +1369,7 @@ pub fn sample_approx(
     // map from edge -> (original face idx, vertices), which stores vertices along every half edge
     corner_map: &mut Map<[U; 3], Vec<(usize, usize)>>,
     // map from edge -> (original face idx, vertices on face)
-    _edge_map: &mut Map<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
+    edge_map: &mut Map<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
     // map from new vertex index to original vertex position and distance
     _labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
 ) -> bool {
@@ -1357,6 +1382,18 @@ pub fn sample_approx(
     let (w, h) = diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
     let iaabb = aabb.round_to_i32();
+    if iaabb.area() == 0 {
+        return sample_direct(
+            mesh,
+            f,
+            fi,
+            diff_img,
+            out,
+            face_labels,
+            corner_map,
+            edge_map,
+        );
+    }
 
     let uv_f = f.map_kind(|v| mesh.uv[CHAN][v]);
     let v_f = f.map_kind(|v| mesh.v[v]);
@@ -1394,7 +1431,7 @@ pub fn sample_approx(
     }
 
     if start == out.v.len() {
-        assert_eq!(iaabb.area(), 1);
+        //assert_eq!(iaabb.area(), 1);
         //let c = iaabb.iter_coords().next().unwrap();
         todo!();
     }
@@ -1709,7 +1746,7 @@ pub fn del_degen_gap_fill(
 ) -> usize {
     let mut del = 0;
 
-    for fi in 0..mesh.f.len() {
+    'outer: for fi in 0..mesh.f.len() {
         let FaceLabel::GapFill([e00, e01], [e10, e11]) = labels[fi] else {
             continue;
         };
@@ -1728,12 +1765,15 @@ pub fn del_degen_gap_fill(
         macro_rules! is_valid {
             ($a:expr, $b:expr, $c:expr, $d:expr) => {{
                 let f = &mesh.f[fi];
-                for exp in [minmax($a, $c), minmax($b, $d)] {
-                    assert!(
-                        f.edges()
-                            .map(|e| e.map(|vi| remap.get_compress(vi)))
-                            .any(|e| e == exp)
-                    );
+                for exp in [minmax($a, $b), minmax($c, $d)] {
+                    let check = f
+                        .edges()
+                        .map(|e| e.map(|vi| remap.get_compress(vi)))
+                        .map(|[e0, e1]| minmax(e0, e1))
+                        .any(|e| e == exp);
+                    if check {
+                        continue 'outer;
+                    }
                 }
                 let [a, b, c, d] = [$a, $b, $c, $d].map(|vi| mesh.vert_colors[vi]);
                 if dist(a, c) > args.color_diff_threshold {

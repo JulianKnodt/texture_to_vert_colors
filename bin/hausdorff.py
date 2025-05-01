@@ -9,6 +9,8 @@ def arguments():
   a.add_argument("-n", "--new-mesh", required=True, help="New mesh")
   a.add_argument("--stats", default=None, help="File to write statistics to")
   a.add_argument("--num-random-samples", default=100000, type=int, help="Number of random samples to use")
+  a.add_argument("--original-image", default=None, help="Texture image of original model")
+  a.add_argument("--new-image", default=None, help="Texture image of new model")
   return a.parse_args()
 
 def main():
@@ -17,8 +19,8 @@ def main():
 
   import trimesh
 
-  og_mesh = trimesh.load(args.original_mesh, force="mesh", skip_materials=True)
-  new_mesh = trimesh.load(args.new_mesh, force="mesh", skip_materials=True)
+  og_mesh = trimesh.load(args.original_mesh, force="mesh")
+  new_mesh = trimesh.load(args.new_mesh, force="mesh")
 
   if type(new_mesh) == trimesh.PointCloud or type(new_mesh) == list:
     print(f"No faces left in {args.new_mesh}")
@@ -36,8 +38,9 @@ def main():
 
   N = args.num_random_samples
   nv = new_mesh.vertices
+  # TODO here also concatenate colors
   if N > 0:
-    _,_,new_positions = igl.random_points_on_mesh(N, new_mesh.vertices, new_mesh.faces)
+    b,fis,new_positions = igl.random_points_on_mesh(N, new_mesh.vertices, new_mesh.faces)
     nv = np.concatenate([nv, new_positions])
 
   new_to_og,_,_ = igl.point_mesh_squared_distance(
@@ -49,7 +52,7 @@ def main():
 
   ov = og_mesh.vertices
   if N > 0:
-    _,_,new_positions = igl.random_points_on_mesh(N, og_mesh.vertices, og_mesh.faces)
+    bary,fis,new_positions = igl.random_points_on_mesh(N, og_mesh.vertices, og_mesh.faces)
     ov = np.concatenate([ov, new_positions])
 
   og_to_new,_,_ = igl.point_mesh_squared_distance(

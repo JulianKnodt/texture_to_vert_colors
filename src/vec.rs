@@ -64,14 +64,12 @@ pub fn to_3<const N: usize>(v: [F; N]) -> [F; 3] {
     [v[0], v[1], v[2]]
 }
 
-/*
 pub fn concat<const N: usize, const M: usize>(a: [F; N], b: [F; M]) -> [F; N + M]
 where
     [(); N + M]:,
 {
     std::array::from_fn(|i| if i < N { a[i] } else { b[i - N] })
 }
-*/
 
 #[inline]
 pub fn normalize<const N: usize>(v: [F; N]) -> [F; N] {

@@ -97,23 +97,28 @@ experiments = {
   # Test case for smoothing
   "plane-smoothing": [
     run(
-      "plane.obj", "hokusai.ply",
+      "high_density_plane.obj", "hokusai.ply",
       "-d data/hokusai.jpg --target-tri-ratio 1. --sample-kind direct"
     ),
     *[
       run(
         "../ablations/hokusai.ply",
         f"hokusai_{label}.ply",
-        f"--weighting {weighting} --iters 10000",
+        f"--weighting {weighting} --iters 100000 \
+        --pos-color-norm {norm}",
         bin=smooth_bin, eval=False,
       )
-      for (weighting, label) in [
-        #("uniform", "uniform"),
-        ("mean-value", "mv"),
-        #("colored-mean-value", "cmv"),
-        #("length", "len"),
-        #("color-length", "clen"),
-        #("laplacian", "lpl"),
+      for (weighting, norm, label) in [
+        ("uniform", "pos-only", "uniform"),
+
+        ("length", "pos-only", "len"),
+        ("length", "geometric-mean", "clen"),
+
+        ("mean-value", "pos-only", "mv"),
+        ("mean-value", "geometric-mean", "cmv"),
+
+        ("laplacian", "pos-only", "lpl"),
+        ("laplacian", "geometric-mean", "clpl")
       ]
     ],
   ],
@@ -144,46 +149,57 @@ experiments = {
 
   "tutte-param-example": [
     #run("open_top_box.obj", "open_top_box.ply", "-d data/spot_texture.png --target-tri-ratio 0.5"),
-    #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.6"),
+    #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3"),
     run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.5"),
     *[
       run(
         "../ablations/open_top_box.ply",
         f"open_top_box_{label}.obj",
-        f"--weighting {weighting} --bake-texture {label}.png \
-          --uv-svg ablations/{label}.svg --iters 100000",
+        f"--weighting {weighting} --bake-texture open_top_box_{label}.png \
+          --uv-svg ablations/open_top_box_{label}.svg --iters 100000 \
+          --pos-color-norm {norm}",
         bin=tutte_bin, eval=False,
       )
-      for (weighting, label) in [
-        ("uniform", "uniform"),
-        ("mean-value", "mv"),
-        ("colored-mean-value", "cmv"),
-        ("length", "len"),
-        ("color-length", "clen"),
-        ("laplacian", "lpl"),
+      for (weighting, norm, label) in [
+        #("uniform", "pos-only", "uniform"),
+
+        #("length", "pos-only", "len"),
+        #("length", "geometric-mean", "clen"),
+
+        #("mean-value", "pos-only", "mv"),
+        #("mean-value", "geometric-mean", "cmv"),
+
+        ("laplacian", "pos-only", "lpl"),
+        ("laplacian", "geometric-mean", "clpl")
       ]
     ],
   ],
 
+  # testing different ways to weigh distance versus color
   "tutte-param-ogre": [
-    run("ogre.obj", "ogre.ply", "-d data/ogre.png --target-tri-ratio 0.1"),
-    #*[
-    #  run(
-    #    "../ablations/open_top_box.ply",
-    #    f"open_top_box_{label}.obj",
-    #    f"--weighting {weighting} --bake-texture {label}.png \
-    #      --uv-svg ablations/{label}.svg --iters 100000",
-    #    bin=tutte_bin, eval=False,
-    #  )
-    #  for (weighting, label) in [
-    #    ("uniform", "uniform"),
-    #    ("mean-value", "mv"),
-    #    ("colored-mean-value", "cmv"),
-    #    ("length", "len"),
-    #    ("color-length", "clen"),
-    #    ("laplacian", "lpl"),
-    #  ]
-    #],
+    #run(
+    #  "ogre.obj", "ogre.ply",
+    #  "-d data/ogre.png --target-tri-ratio 1. --no-incremental-delete --no-delete-degen \
+    #  --sample-kind direct"
+    #),
+    *[
+      run(
+        "../ablations/ogre.ply",
+        f"ogre_{label}.obj",
+        f"--weighting color-length --pos-color-norm {norm} --bake-texture ogre_{label}.png \
+          --uv-svg ablations/ogre_{label}.svg --iters 100000",
+        bin=tutte_bin, eval=False,
+      )
+      for (norm, label) in [
+        ("tester", "tester"),
+        #("add", "add"),
+        #("mul", "mul"),
+        #("min", "min"),
+        #("max", "max"),
+        #("geometric-mean", "geom_mean"),
+        #("color-only", "color_only"),
+      ]
+    ],
   ],
 
   "smoothing": [
@@ -194,17 +210,19 @@ experiments = {
     *[
       run(
         "../ablations/tiger_lily.ply",
-        f"tiger_lily_{label}.ply",
-        f"--weighting {weighting} --iters 100000 --taubin",
+        f"tiger_lily_{label}_{target}.ply",
+        f"--weighting {weighting} --pos-color-norm {norm} --iters 100000 \
+        --target-properties {target}",
         bin=smooth_bin, eval=False,
       )
-      for (weighting, label) in [
-        ("uniform", "uniform"),
-        ("mean-value", "mv"),
-        ("colored-mean-value", "cmv"),
-        ("length", "len"),
-        ("color-length", "clen"),
-        ("laplacian", "lpl"),
+      for (weighting, norm, label, target) in [
+        ("uniform", "pos-only", "uniform", "both"),
+        ("mean-value", "pos-only", "mv", "both"),
+        ("mean-value", "geometric-mean", "cmv", "both"),
+        ("length", "pos-only", "len", "both"),
+        ("length", "geometric-mean", "clen", "both"),
+        ("laplacian", "pos-only", "lpl", "both"),
+        ("laplacian", "geometric-mean", "clpl", "both"),
       ]
     ],
   ],

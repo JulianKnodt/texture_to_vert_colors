@@ -32,7 +32,7 @@ pub struct Args {
     stats: String,
 
     /// How many iterations to do for the lazy tutte.
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 10000)]
     iters: usize,
 
     /// Alternate between expanding and shrinking
@@ -42,6 +42,10 @@ pub struct Args {
     /// Also smooth the colors of the input mesh
     #[arg(long)]
     smooth_colors: bool,
+
+    /// What values to update for each vertex
+    #[arg(long, default_value_t = TargetKind::Pos)]
+    target_properties: TargetKind,
 }
 
 fn main() {
@@ -71,9 +75,10 @@ fn main() {
         }
     }
     println!(
-        "[INFO]: Took {:?} for smoothing with {} for {}",
+        "[INFO]: Took {:?} for smoothing with {} ({}) for {}",
         start.elapsed(),
         args.weighting,
+        args.pos_color_norm,
         args.input,
     );
 
@@ -102,44 +107,129 @@ pub fn smoothing(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) 
 
     let mut vs = &mut mesh.v;
     let mut buf = vs.clone();
+    let mut vcs = &mut mesh.vert_colors;
+    let mut bufvc = vcs.clone();
 
     use indicatif::ProgressIterator;
     for it in (0..args.iters).progress() {
-        buf.fill([0.; 3]);
+        match args.target_properties {
+            TargetKind::Pos => {
+                buf.fill([0.; 3]);
+            }
+            TargetKind::Color => {
+                bufvc.fill([0.; 3]);
+            }
+            TargetKind::Both => {
+                buf.fill([0.; 3]);
+                bufvc.fill([0.; 3]);
+            }
+        }
 
         use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
-        let max_delta = buf
-            .par_iter_mut()
-            .enumerate()
-            .map(|(vi, dst)| {
-                let mut total_w = 0.;
-                let own_pos = vs[vi];
-                let mut delta = [0.; 3];
-                for (adj, w) in vert_adj.adj_data(vi) {
-                    total_w += w;
-                    delta = add(delta, kmul(w as F, sub(vs[adj as usize], own_pos)));
-                }
-                if total_w == 0. {
-                    *dst = vs[vi];
-                    return 0.;
-                }
-                let mult = if args.taubin && it % 2 == 1 {
-                    -0.5
-                } else {
-                    0.5
-                };
-                *dst = add(own_pos, kmul(mult * total_w.recip(), delta));
-                dist(*dst, vs[vi])
-            })
-            .max_by(|a, b| F::partial_cmp(a, b).unwrap())
-            .unwrap();
+        let max_delta = if matches!(args.target_properties, TargetKind::Pos | TargetKind::Both) {
+            buf.par_iter_mut()
+                .enumerate()
+                .map(|(vi, dst)| {
+                    let mut total_w = 0.;
+                    let own_pos = vs[vi];
+                    let mut delta = [0.; 3];
+                    for (adj, w) in vert_adj.adj_data(vi) {
+                        total_w += w;
+                        delta = add(delta, kmul(w as F, sub(vs[adj as usize], own_pos)));
+                    }
+                    if total_w == 0. {
+                        *dst = vs[vi];
+                        return 0.;
+                    }
+                    *dst = if args.taubin {
+                        let mult = if it % 2 == 1 { -0.10001 } else { 0.1 };
+                        add(own_pos, kmul(mult * total_w.recip(), delta))
+                    } else {
+                        add(own_pos, kmul(total_w.recip(), delta))
+                    };
+                    dist(*dst, vs[vi])
+                })
+                .max_by(|a, b| F::partial_cmp(a, b).unwrap())
+                .unwrap()
+        } else {
+            0.
+        };
+
+        let max_delta_c = if matches!(args.target_properties, TargetKind::Color | TargetKind::Both)
+        {
+            bufvc
+                .par_iter_mut()
+                .enumerate()
+                .map(|(vi, dst)| {
+                    let mut total_w = 0.;
+                    let own_col = vcs[vi];
+                    let mut delta = [0.; 3];
+                    for (adj, w) in vert_adj.adj_data(vi) {
+                        total_w += w;
+                        delta = add(delta, kmul(w as F, sub(vcs[adj as usize], own_col)));
+                    }
+                    if total_w == 0. {
+                        *dst = vcs[vi];
+                        return 0.;
+                    }
+                    *dst = if args.taubin {
+                        let mult = if it % 2 == 1 { -0.1 } else { 0.09 };
+                        add(own_col, kmul(mult * total_w.recip(), delta))
+                    } else {
+                        add(own_col, kmul(total_w.recip(), delta))
+                    };
+                    dist(*dst, vcs[vi])
+                })
+                .max_by(|a, b| F::partial_cmp(a, b).unwrap())
+                .unwrap()
+        } else {
+            0.
+        };
+        let max_delta = max_delta.max(max_delta_c);
+
         for (&b, _) in &bd_loops {
             buf[b] = vs[b];
+            bufvc[b] = vcs[b];
         }
         if max_delta < 1e-12 {
             break;
         }
+        match args.target_properties {
+            TargetKind::Pos => {
+                std::mem::swap(&mut buf, &mut vs);
+            }
+            TargetKind::Color => {
+                std::mem::swap(&mut bufvc, &mut vcs);
+            }
+            TargetKind::Both => {
+                std::mem::swap(&mut buf, &mut vs);
+                std::mem::swap(&mut bufvc, &mut vcs);
+            }
+        }
     }
-    std::mem::swap(&mut buf, &mut vs);
 }
+
+/// What values to update
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TargetKind {
+    Pos,
+    Color,
+    Both,
+}
+
+macro_rules! impl_display {
+  ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {
+    impl std::fmt::Display for $name {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use $name::*;
+            let s = match self {
+                $($kind => $disp,)+
+            };
+            write!(f, "{s}")
+        }
+    }
+  }
+}
+
+impl_display!(TargetKind, Pos => "pos", Color => "color", Both => "Both");

@@ -88,7 +88,7 @@ experiments = {
     ),
   ],
   "sphere": [
-    run("sphere.obj", "sphere.ply", "-d data/uv_grid.png --target-tri-ratio 0.01", False),
+    run("sphere.obj", "sphere.ply", "-d data/uv_grid.png --target-tri-ratio 0.05", False),
   ],
   "rot-uv": [
     run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png --target-tri-ratio 0.1", False),
@@ -232,7 +232,7 @@ experiments = {
   "vase": [
     run(
       "baluster_vase.obj", "baluster_vase.ply",
-      "-d data/baluster_vase_textures/diffuse.jpg --target-tri-num 400000 --incremental-qem",
+      "-d data/baluster_vase_textures/diffuse.jpg --target-tri-num 400000",
     ),
   ],
 
@@ -240,7 +240,7 @@ experiments = {
     *[
       run(
         model, model[:-4] + ".ply",
-        f"-d data/{texture} -t {tri_num} --incremental-qem",
+        f"-d data/{texture} -t {tri_num}",
         is_abl=False,
       )
       for (model, texture, tri_num) in dataset

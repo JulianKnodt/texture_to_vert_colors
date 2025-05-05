@@ -47,7 +47,7 @@ pub struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            color_weight: 0.5,
+            color_weight: 1.,
             color_preservation_weight: 5.,
 
             // XXX IMPORTANT this must be zero. Because there are many degenerate faces

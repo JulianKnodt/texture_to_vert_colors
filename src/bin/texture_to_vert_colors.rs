@@ -85,16 +85,16 @@ pub struct Args {
 
     /// Do not delete degenerate faces in the mesh (ABLATION)
     #[arg(long)]
-    no_delete_degen: bool,
+    delete_degen: bool,
 
     /// Do not delete faces in the mesh incrementally, only perform a single deletion at the
     /// end (ABLATION).
     #[arg(long)]
-    no_incremental_delete: bool,
+    incremental_delete: bool,
 
     /// Perform QEM incrementally, on top of a single QEM at the end (ABLATION)
     #[arg(long)]
-    incremental_qem: bool,
+    no_incremental_qem: bool,
 
     /// Do not perform QEM at the end (ABLATION)
     #[arg(long)]
@@ -246,7 +246,21 @@ pub fn texture_to_vert_colors(
 
     use indicatif::ProgressIterator;
 
-    let target_tri_ratio = if args.no_final_qem ^ !args.incremental_qem {
+    macro_rules! canonicalize {
+      ($range: expr) => {{
+            for f in &mut out.f[$range] {
+                f.remap(|vi| remap.get_compress(vi));
+                if f.canonicalize() {
+                    *f = FaceKind::empty();
+                }
+            }
+      }};
+      () => {
+        canonicalize!(..)
+      }
+    }
+
+    let target_tri_ratio = if args.no_final_qem ^ args.no_incremental_qem {
         args.target_tri_ratio
     } else {
         args.target_tri_ratio.sqrt()
@@ -307,7 +321,7 @@ pub fn texture_to_vert_colors(
         let new_v = out.v.len();
         remap.extend_by(new_v - curr_v);
 
-        if !args.no_incremental_delete {
+        if args.incremental_delete {
             del_degen_bridges(
                 &mut remap,
                 &mut out,
@@ -318,17 +332,11 @@ pub fn texture_to_vert_colors(
                 &face_labels,
                 curr_f..new_f,
             );
-
-            for f in &mut out.f[curr_f..new_f] {
-                f.remap(|vi| remap.get_compress(vi));
-                if f.canonicalize() {
-                    *f = FaceKind::empty();
-                }
-            }
+            canonicalize!(curr_f..new_f);
         }
         // Then perform edge reduction here of just edges which are internal to the this
         // triangle.
-        if args.incremental_qem {
+        if !args.no_incremental_qem {
             let qem_args = if args.target_tri_num != 0 {
                 let tri_area = mesh.f[fi].area(&mesh.v);
                 let target_tri_num =
@@ -355,12 +363,7 @@ pub fn texture_to_vert_colors(
                 &mut qem_buf,
             );
 
-            for f in out.f[curr_f..new_f].iter_mut() {
-                f.remap(|vi| remap.get_compress(vi));
-                if f.canonicalize() {
-                    *f = FaceKind::empty();
-                }
-            }
+            canonicalize!(curr_f..new_f);
         }
     }
 
@@ -795,24 +798,11 @@ pub fn texture_to_vert_colors(
     clean_faces!();
     */
 
-    mesh_stats!("before tmp0");
-    for f in out.f.iter_mut() {
-        f.remap(|vi| remap.get_compress(vi));
-        if f.canonicalize() {
-            *f = FaceKind::empty();
-        }
-    }
-    mesh_stats!("tmp0");
+    //canonicalize!();
 
-    if !args.no_delete_degen {
+    if args.delete_degen {
         del_degen_gap_fill(&mut remap, &mut out, args, &face_labels);
-
-        for f in out.f.iter_mut() {
-            f.remap(|vi| remap.get_compress(vi));
-            if f.canonicalize() {
-                *f = FaceKind::empty();
-            }
-        }
+        canonicalize!();
 
         mesh_stats!("After deleting gap fill");
     }
@@ -851,7 +841,6 @@ pub fn texture_to_vert_colors(
         mesh_stats!("After QEM");
     }
 
-    mesh_stats!("tmp1");
     out.f.retain_mut(|f| {
         if f.is_empty() {
             return false;
@@ -861,7 +850,6 @@ pub fn texture_to_vert_colors(
         !f.canonicalize()
     });
 
-    println!("TMP1 non-manifold edges {}", out.num_edge_kinds().2);
     let (_, unused_remap) = out.delete_unused_vertices();
     for new_vi in all_corner_verts.values_mut() {
         let vi = remap.get_compress(*new_vi);
@@ -870,7 +858,6 @@ pub fn texture_to_vert_colors(
             *new_vi = unused_remap[vi];
         }
     }
-    println!("TMP2 non-manifold edges {}", out.num_edge_kinds().2);
 
     //out.remove_doublets();
     if init_f != out.f.len() {
@@ -1506,7 +1493,7 @@ pub fn sample_approx(
         ]
     };
     for (uv,_) in pixel_map.iter() {
-      let any_nbr = cardinal_dirs(uv).into_iter().any(|cd| pixel_map.contains_key(&cd));
+      let any_nbr = cardinal_dirs(*uv).into_iter().any(|cd| pixel_map.contains_key(&cd));
       assert!(any_nbr, "TODO handle this case");
     }
 

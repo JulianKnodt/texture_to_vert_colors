@@ -75,9 +75,10 @@ fn main() {
         }
     }
     println!(
-        "[INFO]: Took {:?} for tutte parameterization with {} for {}",
+        "[INFO]: Took {:?} for tutte param with {} ({}) for {}",
         start.elapsed(),
         args.weighting,
+        args.pos_color_norm,
         args.input,
     );
 
@@ -128,6 +129,7 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
         .weighting
         .vertex_weights(&mesh, args.pos_color_norm)
         .expect("Failed to construct vertex adjacency");
+    // remove influence of introduced edges
     for vi in 0..mesh.v.len() {
         let (adj_vs, adj_ds) = vert_adj.adj_data_mut(vi);
         for i in 0..adj_vs.len() {
@@ -228,6 +230,7 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
             for (adj, w) in vert_adj.adj_data(vi) {
                 // negative values cause this to explode
                 total_w += w;
+                assert!(w.is_finite());
                 *dst = add(
                     *dst,
                     kmul(w as F, unsafe { *uvs.get_unchecked(adj as usize) }),

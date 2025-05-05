@@ -39,20 +39,24 @@ pub struct Args {
 
     /// If progress should be displayed
     pub display_progress: bool,
+
+    /// Stop all simplification if this difference in color is exceeded
+    pub color_diff_threshold: F,
 }
 
 impl Default for Args {
     fn default() -> Self {
         Self {
             color_weight: 0.5,
-            color_preservation_weight: 1.,
-            //color_preservation_weight: 0.,
+            color_preservation_weight: 5.,
 
-            //color_weight: 1e-4,
-            min_face_area: 1e-2,
-            min_edge_weight: 5e-3,
+            // XXX IMPORTANT this must be zero. Because there are many degenerate faces
+            // if they are not zero, they will have an outsized impact on the final result.
+            min_face_area: 0.,
+            min_edge_weight: 1e-2,
 
-            abs_eps: 1e-5,
+            //abs_eps: 1e-4,
+            abs_eps: 1e-4,
 
             no_check_face_inversion: true,
 
@@ -62,6 +66,8 @@ impl Default for Args {
 
             target_tri_ratio: 0.,
             target_tri_num: 100,
+
+            color_diff_threshold: F::INFINITY,
         }
     }
 }
@@ -87,7 +93,8 @@ impl QEMBuffers {
     }
 }
 
-/// In-place simplification of planar faces of a mesh
+/// In-place simplification of planar faces of a mesh.
+/// Returns how many faces were removed
 pub fn simplify_range_colored(
     mesh: &mut pars3d::Mesh,
     args: &Args,
@@ -99,7 +106,7 @@ pub fn simplify_range_colored(
     remap: &mut UnionFind<u32>,
 
     bufs: &mut QEMBuffers,
-) {
+) -> usize {
     bufs.clear();
 
     let offset = vert_range.start;
@@ -121,7 +128,7 @@ pub fn simplify_range_colored(
     let target_num_tris = (num_tris as F * args.target_tri_ratio).floor() as usize;
     let target_num_tris = target_num_tris.max(args.target_tri_num);
     if num_tris <= target_num_tris {
-        return;
+        return 0;
     }
 
     // normalize all vertices to [-1., 1]
@@ -367,6 +374,7 @@ pub fn simplify_range_colored(
         .iter()
         .map(|f| f.num_tris())
         .sum::<usize>();
+    let init_tris = curr_tris;
     let p = args
         .display_progress
         .then(|| indicatif::ProgressBar::new(curr_tris as u64));
@@ -448,6 +456,9 @@ pub fn simplify_range_colored(
                     (a0[i] + a1[i]) / 2.
                 }
             });
+            if dist(attr, a0).max(dist(attr, a1)) > args.color_diff_threshold {
+                break;
+            }
 
             macro_rules! check_normal_orientation {
               ($e: expr) => {{
@@ -593,7 +604,18 @@ pub fn simplify_range_colored(
         mesh.vert_colors[vi] =
             add(kmul(inv_col_scale, mesh.vert_colors[vi]), mid_col).map(|c| c.clamp(0., 1.));
     }
+
+    init_tris - curr_tris
 }
+
+/*
+fn sigmoid(x: F) -> F {
+    1. / (1. + (-x).exp())
+}
+fn inv_sigmoid(y: F) -> F {
+    y.ln() - (1. - y).ln()
+}
+*/
 
 fn approx_eq(a: F, b: F, abs_eps: F) -> bool {
     if a == b {

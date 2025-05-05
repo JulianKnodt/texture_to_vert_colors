@@ -78,6 +78,7 @@ impl WeightingKind {
                         let br = normalize(sub(b, r));
                         let cos = dot(ar, br).clamp(-1., 1.);
                         let sin = length(cross(ar, br)).clamp(-1., 1.);
+                        //assert!((sin - (1. - cos * cos).max(0.).sqrt()).abs() < 1e-6);
                         // numerical stability
                         let sin = (sin.abs() + 1e-4).copysign(sin);
                         let cot = cos / sin;
@@ -162,8 +163,8 @@ impl WeightingKind {
                     per_face_info[fi][idx]
                 };
                 let w = get_val(f0) + get_val(f1);
-                let voronoi_area = per_vert_weights[v0];
-                assert_ne!(voronoi_area, 0.);
+                let voronoi_area = per_vert_weights[v0] + 1e-4;
+                //assert_ne!(voronoi_area, 0.);
                 softplus(w / (2. * voronoi_area))
             }
         });
@@ -214,6 +215,9 @@ pub enum PosColorNorm {
     /// ||Pos||
     PosOnly,
 
+    /// Gaussian(pos) * Gaussian(color)
+    Bilateral,
+
     /// Something for me to test anything with
     Tester,
 }
@@ -228,6 +232,7 @@ impl_display!(
   GeometricMean => "geometric-mean",
   ColorOnly => "color-only",
   PosOnly => "pos-only",
+  Bilateral => "bilateral",
 
   Tester => "tester",
 );
@@ -244,7 +249,14 @@ impl PosColorNorm {
             GeometricMean => (pos * color).sqrt(),
             ColorOnly => color,
             PosOnly => pos,
+            Bilateral => gaussian(pos) * gaussian(color),
+
             Tester => pos * (1. + color),
         }
     }
+}
+
+pub fn gaussian(x: F) -> F {
+    let k: F = 1. / std::f64::consts::TAU.sqrt() as F;
+    k * (-0.5 * x * x).exp()
 }

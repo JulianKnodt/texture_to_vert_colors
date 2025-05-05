@@ -58,13 +58,13 @@ def runnable_cmds(cmds, stage_kind="run"):
   return cb
 
 dataset = [
-  #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 0.2),
-  #("cabbage.obj", "cabbage_diffuse.jpg", 0.2),
-  #("shiba.obj", "shiba_texture.png", 0.1),
-  ("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 0.05),
+  #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 200000),
+  #("cabbage.obj", "cabbage_diffuse.jpg", 100000),
+  #("shiba.obj", "shiba_texture.png", 50000),
+  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 0.05),
   #("scan_vase.obj", "scan_vase_texture.jpg", 0.3),
-  #("silent_ash.obj", "silent_ash_texture.png", 0.1),
-  ("strawberry.obj", "strawberry_textures/diffuse.png", 0.1),
+  #("silent_ash.obj", "silent_ash_texture.png", 200000),
+  ("strawberry.obj", "strawberry_textures/diffuse.png", 500000),
 ]
 
 experiments = {
@@ -96,15 +96,15 @@ experiments = {
 
   # Test case for smoothing
   "plane-smoothing": [
-    run(
-      "high_density_plane.obj", "hokusai.ply",
-      "-d data/hokusai.jpg --target-tri-ratio 1. --sample-kind direct"
-    ),
+    #run(
+    #  "plane.obj", "hokusai.ply",
+    #  "-d data/a_hollyhock_herman_saftleven.jpg --target-tri-ratio 0.03"
+    #),
     *[
       run(
         "../ablations/hokusai.ply",
         f"hokusai_{label}.ply",
-        f"--weighting {weighting} --iters 100000 \
+        f"--weighting {weighting} --iters 50 \
         --pos-color-norm {norm}",
         bin=smooth_bin, eval=False,
       )
@@ -118,7 +118,9 @@ experiments = {
         ("mean-value", "geometric-mean", "cmv"),
 
         ("laplacian", "pos-only", "lpl"),
-        ("laplacian", "geometric-mean", "clpl")
+        ("laplacian", "geometric-mean", "clpl"),
+
+        ("laplacian", "bilateral", "bilpl"),
       ]
     ],
   ],
@@ -205,36 +207,43 @@ experiments = {
   "smoothing": [
     #run(
     #  "tiger_lily.obj", "tiger_lily.ply",
-    #  "-d data/tiger_lily.jpeg --target-tri-ratio 0.1 --sample-kind direct"
+    #  "-d data/tiger_lily.jpeg --target-tri-ratio 0.2 --sample-kind direct"
     #),
     *[
       run(
         "../ablations/tiger_lily.ply",
         f"tiger_lily_{label}_{target}.ply",
-        f"--weighting {weighting} --pos-color-norm {norm} --iters 100000 \
+        f"--weighting {weighting} --pos-color-norm {norm} --iters 2000 \
         --target-properties {target}",
         bin=smooth_bin, eval=False,
       )
       for (weighting, norm, label, target) in [
-        ("uniform", "pos-only", "uniform", "both"),
-        ("mean-value", "pos-only", "mv", "both"),
-        ("mean-value", "geometric-mean", "cmv", "both"),
-        ("length", "pos-only", "len", "both"),
-        ("length", "geometric-mean", "clen", "both"),
-        ("laplacian", "pos-only", "lpl", "both"),
-        ("laplacian", "geometric-mean", "clpl", "both"),
+        #("uniform", "pos-only", "uniform", "pos"),
+        #("mean-value", "pos-only", "mv", "pos"),
+        #("mean-value", "geometric-mean", "cmv", "pos"),
+        #("length", "pos-only", "len", "pos"),
+        #("length", "geometric-mean", "clen", "pos"),
+        ("laplacian", "pos-only", "lpl", "color"),
+        ("laplacian", "geometric-mean", "clpl", "color"),
       ]
     ],
+  ],
+
+  "vase": [
+    run(
+      "baluster_vase.obj", "baluster_vase.ply",
+      "-d data/baluster_vase_textures/diffuse.jpg --target-tri-num 400000 --incremental-qem",
+    ),
   ],
 
   "dataset": [
     *[
       run(
         model, model[:-4] + ".ply",
-        f"-d data/{texture} --target-tri-ratio {tri_ratio}",
+        f"-d data/{texture} -t {tri_num} --incremental-qem",
         is_abl=False,
       )
-      for (model, texture, tri_ratio) in dataset
+      for (model, texture, tri_num) in dataset
     ],
   ],
 }

@@ -468,9 +468,7 @@ impl<const N: usize> Quadric<N> {
             if denom.abs() < 1e-5 {
                 return None;
             }
-            let out = s / denom;
-            assert!(out.is_finite(), "{s}/{denom}");
-            Some(out)
+            Some(s / denom)
         })
     }
     pub fn attributes(&self, p: [F; 3], ws: AttrWeights<N>) -> [F; N] {

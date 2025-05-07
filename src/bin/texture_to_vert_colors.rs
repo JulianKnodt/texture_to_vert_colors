@@ -247,17 +247,17 @@ pub fn texture_to_vert_colors(
     use indicatif::ProgressIterator;
 
     macro_rules! canonicalize {
-      ($range: expr) => {{
+        ($range: expr) => {{
             for f in &mut out.f[$range] {
                 f.remap(|vi| remap.get_compress(vi));
                 if f.canonicalize() {
                     *f = FaceKind::empty();
                 }
             }
-      }};
-      () => {
-        canonicalize!(..)
-      }
+        }};
+        () => {
+            canonicalize!(..)
+        };
     }
 
     let target_tri_ratio = if args.no_final_qem ^ args.no_incremental_qem {
@@ -338,9 +338,9 @@ pub fn texture_to_vert_colors(
         // triangle.
         if !args.no_incremental_qem {
             let qem_args = if args.target_tri_num != 0 {
-                let tri_area = mesh.f[fi].area(&mesh.v);
+                let frac_area = mesh.f[fi].area(&mesh.v) / surface_area;
                 let target_tri_num =
-                    (args.target_tri_num as F * tri_area / surface_area).ceil() as usize;
+                    (args.target_tri_num as F * frac_area * frac_area).round() as usize;
                 QEMArgs {
                     target_tri_num,
                     //color_diff_threshold: args.color_diff_threshold,
@@ -1484,17 +1484,12 @@ pub fn sample_approx(
         todo!();
     }
 
-    let cardinal_dirs = |[u, v]: [i32; 2]| {
-        [
-            [u + 1, v],
-            [u, v + 1],
-            [u - 1, v],
-            [u, v - 1],
-        ]
-    };
-    for (uv,_) in pixel_map.iter() {
-      let any_nbr = cardinal_dirs(*uv).into_iter().any(|cd| pixel_map.contains_key(&cd));
-      assert!(any_nbr, "TODO handle this case");
+    let cardinal_dirs = |[u, v]: [i32; 2]| [[u + 1, v], [u, v + 1], [u - 1, v], [u, v - 1]];
+    for (uv, _) in pixel_map.iter() {
+        let any_nbr = cardinal_dirs(*uv)
+            .into_iter()
+            .any(|cd| pixel_map.contains_key(&cd));
+        assert!(any_nbr, "TODO handle this case");
     }
 
     // compute faces for each new vertex (these are all pixels)

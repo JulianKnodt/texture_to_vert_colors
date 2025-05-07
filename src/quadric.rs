@@ -12,6 +12,12 @@ pub struct AttrWeights<const N: usize> {
     pub ws: [F; N],
 }
 
+impl<const N: usize> AttrWeights<N> {
+    pub fn is_zero(&self) -> bool {
+        self.ws.iter().all(|&v| v == 0.)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct QuadricAccumulator {
     a: SymMatrix3,

@@ -4,7 +4,7 @@ use union_find::{UnionFind, UnionFindOp};
 /// It can associate data with each vertex, and each edge.
 /// Associated edge data is oriented.
 #[derive(Debug, Clone)]
-pub struct CollapsibleManifold<T, UF: UnionFindOp> {
+pub struct CollapsibleManifold<T, UF: UnionFindOp = UnionFind<u32>> {
     pub(crate) vertices: UF,
 
     pub edges: Vec<Vec<u32>>,
@@ -173,9 +173,10 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
             .filter(move |&v| *v.inner() != v0 && *v.inner() != v1)
     }
     /*
-    pub fn par_vertex_adj(&self, v: usize) -> impl ParallelIterator<Item = usize> + '_ {
+    pub fn par_vertex_adj(&self, v: usize) -> impl rayon::iter::ParallelIterator<Item = usize> + '_ {
+        use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
         let vs = &self.vertices;
-        self.edges[v].par_iter().map(|&dst| vs.find(dst))
+        self.edges[v].par_iter().map(|&dst| vs.find(dst as usize))
     }
     */
 

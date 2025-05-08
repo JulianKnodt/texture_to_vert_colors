@@ -69,7 +69,7 @@ dataset = [
 
 experiments = {
   "basic-cube": [
-    run("cube.obj", "cube.ply", "-d data/uv_grid.png --target-tri-ratio 0.5", False),
+    run("cube.obj", "cube.ply", "-d data/uv_grid.png -t 100000", False),
   ],
   # robustness tests
   "thin-tri": [

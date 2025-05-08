@@ -42,7 +42,6 @@ pub struct Args {
 
     /// Stop all simplification if this difference in color is exceeded
     pub color_diff_threshold: F,
-
 }
 
 impl Default for Args {
@@ -393,6 +392,8 @@ pub fn simplify_range_colored(
         .display_progress
         .then(|| indicatif::ProgressBar::new(curr_tris as u64));
 
+    let mut v0_adj = vec![];
+    let mut v1_adj = vec![];
     'outer: while let Some((e, q)) = bufs.pq.pop() {
         assert!(bufs.snd_pq.is_empty());
         bufs.snd_pq.push(e, (0, q));
@@ -426,15 +427,30 @@ pub fn simplify_range_colored(
             }
 
             // Link condition
-            let v0_adj = m.vertex_adj(e0).collect::<Vec<_>>();
-            let cnt = m
-                .vertex_adj(e1)
-                .filter(|v1_adj| v0_adj.contains(&v1_adj))
-                .count();
+            macro_rules! all_adj_verts {
+                ($dst: expr, $v: expr) => {{
+                    $dst.clear();
+                    for &adj_fi in &face_verts[$v] {
+                        let iter = mesh.f[adj_fi]
+                            .as_triangle_fan()
+                            .map(|t| t.map(|vi| vi - offset))
+                            .filter(|t| t.contains(&$v) && t.iter().all(|&vi| !m.is_deleted(vi)))
+                            .flat_map(|t| t.into_iter())
+                            .filter(|&v| v != $v);
+                        $dst.extend(iter);
+                    }
+                    $dst.sort_unstable();
+                    $dst.dedup();
+                }};
+            }
+            all_adj_verts!(v0_adj, e0);
+            all_adj_verts!(v1_adj, e1);
+
+            let cnt = v1_adj.iter().filter(|v1a| v0_adj.contains(&v1a)).count();
 
             if is_bd && cnt != 1 {
                 continue;
-            } else if !is_bd && cnt > 2 {
+            } else if !is_bd && cnt != 2 {
                 continue;
             }
 

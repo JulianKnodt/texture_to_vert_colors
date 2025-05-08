@@ -42,6 +42,7 @@ pub struct Args {
 
     /// Stop all simplification if this difference in color is exceeded
     pub color_diff_threshold: F,
+
 }
 
 impl Default for Args {
@@ -55,8 +56,7 @@ impl Default for Args {
             min_face_area: 0.,
             min_edge_weight: 1e-2,
 
-            //abs_eps: 1e-4,
-            abs_eps: 1e-4,
+            abs_eps: 1e-5,
 
             no_check_face_inversion: true,
 
@@ -112,6 +112,20 @@ pub fn simplify_range_colored(
     let offset = vert_range.start;
     let num_v = vert_range.end - offset;
 
+    let mut bd_edges: BTreeMap<usize, Vec<[usize; 2]>> = BTreeMap::new();
+    for [e0, e1] in mesh.boundary_edges() {
+        if !vert_range.contains(&e0) || !vert_range.contains(&e1) {
+            continue;
+        }
+        let e = std::cmp::minmax(e0 - offset, e1 - offset);
+        for v in e {
+            let be = bd_edges.entry(v).or_default();
+            if !be.contains(&e) {
+                be.push(e);
+            }
+        }
+    }
+
     assert!(!mesh.vert_colors.is_empty());
 
     let cw = args.color_weight;
@@ -123,7 +137,7 @@ pub fn simplify_range_colored(
     }
     let num_tris = mesh.f[face_range.clone()]
         .iter()
-        .map(|f| f.num_tris())
+        .map(FaceKind::num_tris)
         .sum::<usize>();
     let target_num_tris = (num_tris as F * args.target_tri_ratio).floor() as usize;
     let target_num_tris = target_num_tris.max(args.target_tri_num);
@@ -379,15 +393,14 @@ pub fn simplify_range_colored(
         .display_progress
         .then(|| indicatif::ProgressBar::new(curr_tris as u64));
 
-    let mut edge_counts = BTreeMap::new();
-    let mut seen_faces = vec![];
-    let mut adj_verts = vec![];
     'outer: while let Some((e, q)) = bufs.pq.pop() {
-        debug_assert!(bufs.snd_pq.is_empty());
+        assert!(bufs.snd_pq.is_empty());
         bufs.snd_pq.push(e, (0, q));
         bufs.recencies.clear();
         'inner: while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
-            debug_assert!(e0 < e1);
+            assert!(e0 < e1);
+            assert!(vert_range.contains(&(e0 + offset)));
+            assert!(vert_range.contains(&(e1 + offset)));
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
@@ -398,44 +411,30 @@ pub fn simplify_range_colored(
                 break 'outer;
             }
 
-            // check if an output edge would be non-manifold
-            edge_counts.clear();
-            seen_faces.clear();
-            adj_verts.clear();
-            for e in [e0, e1] {
-                for &adj_fi in &face_verts[e] {
-                    if seen_faces.contains(&adj_fi) {
-                        continue;
-                    }
-                    seen_faces.push(adj_fi);
-                    let mut adj_f = mesh.f[adj_fi].clone();
-                    adj_f.remap(|vi| {
-                        if vi == e0 + offset || vi == e1 + offset {
-                            e1 + offset
-                        } else {
-                            m.vertices.get_compress(vi - offset) + offset
-                        }
-                    });
-                    if adj_f.canonicalize() {
-                        continue;
-                    }
-                    for e in adj_f.all_pairs_ord() {
-                        if e[0] == e[1] {
-                            continue;
-                        }
-                        *edge_counts.entry(e).or_insert(0) += 1;
-                    }
-                    for e in adj_f.edges() {
-                        if e[0] == e1 + offset {
-                            adj_verts.push(e[1]);
-                        } else if e[1] == e1 + offset {
-                            adj_verts.push(e[0]);
-                        }
-                    }
-                }
+            let is_bd = bd_edges
+                .get(&e0)
+                .map(|bd_es| {
+                    bd_es.iter().any(|bd_e| {
+                        let [v0, v1] = bd_e.map(|v| m.get_new_vertex(v));
+                        std::cmp::minmax(v0, v1) == [e0, e1]
+                    })
+                })
+                .unwrap_or(false);
+
+            if is_bd {
+                assert!(bd_edges.contains_key(&e1));
             }
-            // there is a non-manifold edge introduced
-            if edge_counts.values().any(|&v| v > 2) {
+
+            // Link condition
+            let v0_adj = m.vertex_adj(e0).collect::<Vec<_>>();
+            let cnt = m
+                .vertex_adj(e1)
+                .filter(|v1_adj| v0_adj.contains(&v1_adj))
+                .count();
+
+            if is_bd && cnt != 1 {
+                continue;
+            } else if !is_bd && cnt > 2 {
                 continue;
             }
 
@@ -508,8 +507,46 @@ pub fn simplify_range_colored(
                 curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
                 (q01, pos, attr)
             });
-            debug_assert!(m.is_deleted(e0));
-            debug_assert!(!m.is_deleted(e1));
+            assert!(m.is_deleted(e0));
+            assert!(!m.is_deleted(e1));
+
+            macro_rules! remap_bd {
+                ($adj_bds: expr) => {{
+                    for adj_bd in $adj_bds.iter_mut() {
+                        let [e0, e1] = adj_bd.map(|v| m.get_new_vertex(v));
+                        *adj_bd = std::cmp::minmax(e0, e1);
+                    }
+                }};
+            }
+            match (bd_edges.remove(&e0), bd_edges.remove(&e1)) {
+                (None, None) => {}
+                (Some(mut adj_bds), None) => {
+                    remap_bd!(adj_bds);
+                    bd_edges.insert(e1, adj_bds);
+                }
+                (None, Some(mut adj_bds)) => {
+                    remap_bd!(adj_bds);
+                    bd_edges.insert(e1, adj_bds);
+                }
+                (Some(mut bd0s), Some(mut bd1s)) => {
+                    remap_bd!(bd0s);
+                    remap_bd!(bd1s);
+                    let mut new = vec![];
+                    for &bd0 in &bd0s {
+                        if !bd1s.contains(&bd0) {
+                            new.push(bd0);
+                        }
+                    }
+                    for &bd1 in &bd1s {
+                        if !bd0s.contains(&bd1) {
+                            new.push(bd1);
+                        }
+                    }
+                    new.sort_unstable();
+                    new.dedup();
+                    bd_edges.insert(e1, new);
+                }
+            }
 
             let [ef0, ef1] = face_verts.get_disjoint_mut([e0, e1]).unwrap();
             let ef1_len = ef1.len();

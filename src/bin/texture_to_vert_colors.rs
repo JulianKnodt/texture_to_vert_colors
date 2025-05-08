@@ -119,6 +119,13 @@ pub struct Args {
 
 pub fn main() {
     let args = Args::parse();
+    if !(0.0..=1.0).contains(&args.target_tri_ratio) {
+        eprintln!(
+            "Target tri ratio is outside of valid range, expected in [0,1], got {}",
+            args.target_tri_ratio
+        );
+        return;
+    }
     let mut scene = pars3d::load(&args.input).expect("Failed to parse input");
     let mut input_bd_edges = 0;
     let mut input_nonmanifold_edges = 0;
@@ -339,8 +346,7 @@ pub fn texture_to_vert_colors(
         if !args.no_incremental_qem {
             let qem_args = if args.target_tri_num != 0 {
                 let frac_area = mesh.f[fi].area(&mesh.v) / surface_area;
-                let target_tri_num =
-                    (args.target_tri_num as F * frac_area * frac_area).round() as usize;
+                let target_tri_num = (args.target_tri_num as F * frac_area).round() as usize;
                 QEMArgs {
                     target_tri_num,
                     //color_diff_threshold: args.color_diff_threshold,
@@ -357,6 +363,7 @@ pub fn texture_to_vert_colors(
                 &mut out,
                 &qem_args,
                 |vi| labels.contains_key(&vi),
+                //|_| false,
                 curr_f..new_f,
                 curr_v..new_v,
                 &mut remap,
@@ -421,7 +428,14 @@ pub fn texture_to_vert_colors(
         let swapped = mesh.f[f0]
             .edges()
             .any(|e| e.map(|vi| mesh.v[vi]) == [e1, e0]);
+        let correct = mesh.f[f0]
+            .edges()
+            .any(|e| e.map(|vi| mesh.v[vi]) == [e0, e1]);
 
+        assert!(
+            swapped ^ correct,
+            "TODO colinear polygonal (more than 4 verts) faces"
+        );
         let [e0_key, e1_key] = if !swapped {
             [e1_key, e0_key]
         } else {
@@ -622,8 +636,7 @@ pub fn texture_to_vert_colors(
     }
 
     // ------------- Zip corner faces together
-
-    'outer: for (_, mut fvs) in corner_map.into_iter() {
+    'outer: for (_key, mut fvs) in corner_map.into_iter() {
         assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
         if let Some(fv) = fvs.iter().find(|fv| !edge_adj.contains_key(&fv.1)) {
             assert!(false, "{fv:?}");
@@ -1828,7 +1841,11 @@ pub fn del_degen_bridges(
         let [e00, e01] = f.shared_edge(f0).unwrap().map(|v| remap.get_compress(v));
         let [e10, e11] = f.shared_edge(f1).unwrap().map(|v| remap.get_compress(v));
 
-        if locked(e00) || locked(e01) || locked(e10) || locked(e11) {
+        let all = [e00, e01, e10, e11];
+        if all.iter().any(|&v| locked(v)) {
+            continue;
+        }
+        if all.iter().any(|&v| !remap.is_root(v)) {
             continue;
         }
 

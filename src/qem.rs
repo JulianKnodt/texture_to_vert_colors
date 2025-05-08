@@ -408,7 +408,7 @@ pub fn simplify_range_colored(
             if locked(e0 + offset) || locked(e1 + offset) {
                 continue;
             }
-            if curr_tris < target_num_tris {
+            if curr_tris <= target_num_tris {
                 break 'outer;
             }
 

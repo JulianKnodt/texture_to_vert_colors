@@ -346,7 +346,7 @@ pub fn texture_to_vert_colors(
         if !args.no_incremental_qem {
             let qem_args = if args.target_tri_num != 0 {
                 let frac_area = mesh.f[fi].area(&mesh.v) / surface_area;
-                let target_tri_num = (args.target_tri_num as F * frac_area).round() as usize;
+                let target_tri_num = (args.target_tri_num as F * frac_area).ceil() as usize;
                 QEMArgs {
                     target_tri_num,
                     //color_diff_threshold: args.color_diff_threshold,

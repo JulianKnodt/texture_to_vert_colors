@@ -58,40 +58,67 @@ def runnable_cmds(cmds, stage_kind="run"):
   return cb
 
 dataset = [
-  #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 200000),
-  #("cabbage.obj", "cabbage_diffuse.jpg", 100000),
-  #("shiba.obj", "shiba_texture.png", 50000),
+  ("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 1000000),
+  #("cabbage.obj", "cabbage_diffuse.jpg", 300000),
+  ("shiba.obj", "shiba_texture.png", 1000000),
   #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 0.05),
   #("scan_vase.obj", "scan_vase_texture.jpg", 0.3),
   #("silent_ash.obj", "silent_ash_texture.png", 200000),
-  ("strawberry.obj", "strawberry_textures/diffuse.png", 500000),
+  #("strawberry.obj", "strawberry_textures/diffuse.png", 500000),
 ]
 
 experiments = {
+  # basic test of a cube
   "basic-cube": [
-    run("cube.obj", "cube.ply", "-d data/uv_grid.png -t 100000", False),
+    *[
+      run("cube.obj", f"cube_{k}.ply", f"-d data/uv_grid.png -t 100000 --sample-kind {k}")
+      for k in ["exact", "approx", "direct"]
+    ]
   ],
-  # robustness tests
-  "thin-tri": [
-    run("thin_tri.obj", "thin_tri.ply", "-d data/uv_grid.png", is_abl=True),
+  "sphere": [
+    *[
+      run("sphere.obj", f"sphere_{k}.ply", f"-d data/uv_grid.png -t 100000 --sample-kind {k}")
+      for k in ["exact", "approx", "direct"]
+    ]
   ],
+  # test when the input has non-manifold edges
   "non-manifold": [
-    #run(
-    #  "non_manifold.obj", "non_manifold.ply",
-    #  "-d data/uv_grid.png --target-tri-ratio 1. --sample-kind direct",
-    #  is_abl=True
-    #),
     run(
       "non_manifold.obj", "non_manifold.ply",
-      "-d data/uv_grid.png --target-tri-ratio 1. --sample-kind exact",
+      "-d data/uv_grid.png --target-tri-ratio 0.5 --sample-kind exact --no-incremental-qem",
       is_abl=True
     ),
   ],
-  "sphere": [
-    run("sphere.obj", "sphere.ply", "-d data/uv_grid.png --target-tri-ratio 0.05", False),
+
+  # robustness tests
+  "thin-tri": [
+    *[
+      run(
+        "thin_tri.obj", f"thin_tri_{k}.ply",
+        f"-d data/uv_grid.png --target-tri-ratio 1. --sample-kind {k}",
+        is_abl=True
+      ) for k in ["approx", "exact"]
+    ]
   ],
+
+  # testing non-axis aligned vertices
   "rot-uv": [
-    run("cube_rotated_uv.obj", "cube_rot_uv.ply", "-d data/uv_grid.png --target-tri-ratio 0.1", False),
+    *[
+      run(
+        "cube_rotated_uv.obj", f"cube_rot_uv_{k}.ply",
+        f"-d data/uv_grid.png --target-tri-ratio 0.5 --sample-kind {k}",
+      ) for k in ["exact", "approx"]
+    ]
+  ],
+
+  "spot": [
+    *[
+      run(
+        "spot_triangulated.obj", f"spot_{k}.ply",
+        f"-d data/spot_texture.png --target-tri-ratio 1. \
+        --sample-kind {k} --no-incremental-qem",
+      ) for k in ["direct", "exact"]
+    ]
   ],
 
   # Test case for smoothing
@@ -123,14 +150,6 @@ experiments = {
         ("laplacian", "bilateral", "bilpl"),
       ]
     ],
-  ],
-
-  "spot": [
-    run(
-      "spot_triangulated.obj", "spot_triangulated.ply",
-      "-d data/spot_texture.png --target-tri-ratio 1.",
-      False
-    ),
   ],
   "hokusai": [ run("plane.obj", "hokusai_plane.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3") ],
   "watercolor_cake": [
@@ -204,6 +223,14 @@ experiments = {
     ],
   ],
 
+  "japanese_toro": [
+    run(
+      "japanese_toro.obj", "japanese_toro.ply",
+      "-d data/japanese_toro_textures/japanese_toro_small.png --no-incremental-qem \
+      --target-tri-num 1000000",
+    ),
+  ],
+
   "smoothing": [
     #run(
     #  "tiger_lily.obj", "tiger_lily.ply",
@@ -240,7 +267,7 @@ experiments = {
     *[
       run(
         model, model[:-4] + ".ply",
-        f"-d data/{texture} -t {tri_num}",
+        f"-d data/{texture} -t {tri_num} --no-incremental-qem",
         is_abl=False,
       )
       for (model, texture, tri_num) in dataset

@@ -29,9 +29,6 @@ pub struct Args {
     /// Epsilon value to use when comparing quadric errors.
     pub abs_eps: F,
 
-    /// Check if any faces would invert when an edge is collapsed
-    pub no_check_face_inversion: bool,
-
     pub max_degree: usize,
     /// What percentage of faces should be retained at the end?
     pub target_tri_ratio: F,
@@ -42,6 +39,8 @@ pub struct Args {
 
     /// Stop all simplification if this difference in color is exceeded
     pub color_diff_threshold: F,
+
+    pub check_bd: bool,
 }
 
 impl Default for Args {
@@ -57,8 +56,6 @@ impl Default for Args {
 
             abs_eps: 1e-5,
 
-            no_check_face_inversion: true,
-
             max_degree: 100,
 
             display_progress: false,
@@ -67,6 +64,8 @@ impl Default for Args {
             target_tri_num: 100,
 
             color_diff_threshold: F::INFINITY,
+
+            check_bd: true,
         }
     }
 }
@@ -79,6 +78,10 @@ pub struct QEMBuffers {
     recencies: BTreeMap<[usize; 2], u32>,
     did_update: Vec<[usize; 2]>,
     face_normals: Vec<[F; 3]>,
+    face_verts: Vec<Vec<usize>>,
+    curr_costs: Vec<F>,
+    v0_adj: Vec<usize>,
+    v1_adj: Vec<usize>,
 }
 
 impl QEMBuffers {
@@ -89,6 +92,10 @@ impl QEMBuffers {
         self.recencies.clear();
         self.did_update.clear();
         self.face_normals.clear();
+        // face verts handled separately
+        self.curr_costs.clear();
+        self.v0_adj.clear();
+        self.v1_adj.clear();
     }
 }
 
@@ -112,15 +119,17 @@ pub fn simplify_range_colored(
     let num_v = vert_range.end - offset;
 
     let mut bd_edges: BTreeMap<usize, Vec<[usize; 2]>> = BTreeMap::new();
-    for [e0, e1] in mesh.boundary_edges() {
-        if !vert_range.contains(&e0) || !vert_range.contains(&e1) {
-            continue;
-        }
-        let e = std::cmp::minmax(e0 - offset, e1 - offset);
-        for v in e {
-            let be = bd_edges.entry(v).or_default();
-            if !be.contains(&e) {
-                be.push(e);
+    if args.check_bd {
+        for [e0, e1] in mesh.boundary_edges() {
+            if !vert_range.contains(&e0) || !vert_range.contains(&e1) {
+                continue;
+            }
+            let e = std::cmp::minmax(e0 - offset, e1 - offset);
+            for v in e {
+                let be = bd_edges.entry(v).or_default();
+                if !be.contains(&e) {
+                    be.push(e);
+                }
             }
         }
     }
@@ -204,7 +213,9 @@ pub fn simplify_range_colored(
     let mut avg_edge_len = 0.;
 
     // faces for each vertex
-    let mut face_verts = vec![vec![]; num_v];
+    bufs.face_verts.resize_with(num_v, Vec::new);
+    bufs.face_verts.iter_mut().for_each(Vec::clear);
+    let face_verts = &mut bufs.face_verts;
     bufs.face_normals.resize(mesh.f.len(), [0.; 3]);
     for fi in face_range.clone() {
         let f = &mesh.f[fi];
@@ -226,7 +237,7 @@ pub fn simplify_range_colored(
             face_verts[m.vertices.get_compress(vi - offset)].push(fi);
         }
     }
-    for fv in &mut face_verts {
+    for fv in face_verts.iter_mut() {
         fv.sort_unstable();
         fv.dedup();
     }
@@ -346,7 +357,8 @@ pub fn simplify_range_colored(
         }
     }
 
-    let mut curr_costs = vec![0.; num_v];
+    bufs.curr_costs.resize(num_v, 0.);
+    let curr_costs = &mut bufs.curr_costs;
 
     macro_rules! update_cost_of_edge {
         ($e0:expr, $e1: expr) => {{
@@ -360,9 +372,8 @@ pub fn simplify_range_colored(
                 .point_with_volume_opt()
                 .unwrap_or_else(|| kmul(0.5, add(p0, p1)));
             debug_assert!(p.iter().copied().all(F::is_finite));
-            let mut total_cost = 0.;
 
-            let q01f = m.get(e0).0 + m.get(e1).0;
+            let q01f = q0 + q1;
             // colors are also automatically clamped to [0., 1.].
             let attrs = q01f.attributes_opt(p, attr_ws);
             let attrs = std::array::from_fn(|i| {
@@ -372,8 +383,8 @@ pub fn simplify_range_colored(
                     (a0[i] + a1[i]) / 2.
                 }
             });
-            total_cost -=
-                q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1];
+            let total_cost =
+                -(q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1]);
 
             NotNan::new(total_cost).unwrap()
         }};
@@ -392,13 +403,13 @@ pub fn simplify_range_colored(
         .display_progress
         .then(|| indicatif::ProgressBar::new(curr_tris as u64));
 
-    let mut v0_adj = vec![];
-    let mut v1_adj = vec![];
+    let v0_adj = &mut bufs.v0_adj;
+    let v1_adj = &mut bufs.v1_adj;
     'outer: while let Some((e, q)) = bufs.pq.pop() {
         assert!(bufs.snd_pq.is_empty());
         bufs.snd_pq.push(e, (0, q));
         bufs.recencies.clear();
-        'inner: while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
+        while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
             assert!(e0 < e1);
             assert!(vert_range.contains(&(e0 + offset)));
             assert!(vert_range.contains(&(e1 + offset)));
@@ -426,7 +437,8 @@ pub fn simplify_range_colored(
                 assert!(bd_edges.contains_key(&e1));
             }
 
-            // Link condition
+            // link condition
+            // https://github.com/cnr-isti-vclab/vcglib/blob/88c881d8393929c8e09b9df765ce8582bf386499/vcg/simplex/face/topology.h#L460
             macro_rules! all_adj_verts {
                 ($dst: expr, $v: expr) => {{
                     $dst.clear();
@@ -434,7 +446,10 @@ pub fn simplify_range_colored(
                         let iter = mesh.f[adj_fi]
                             .as_triangle_fan()
                             .map(|t| t.map(|vi| vi - offset))
-                            .filter(|t| t.contains(&$v) && t.iter().all(|&vi| !m.is_deleted(vi)))
+                            .map(|t| t.map(|vi| m.get_new_vertex(vi)))
+                            .filter(|t| t.contains(&$v))
+                            // remove degenerate tris
+                            .filter(|[t0, t1, t2]| t0 != t1 && t0 != t2 && t1 != t2)
                             .flat_map(|t| t.into_iter())
                             .filter(|&v| v != $v);
                         $dst.extend(iter);
@@ -475,34 +490,6 @@ pub fn simplify_range_colored(
                 break;
             }
 
-            macro_rules! check_normal_orientation {
-              ($e: expr) => {{
-                for &adj_fi in &face_verts[$e] {
-                    let mut adj_f = mesh.f[adj_fi].clone();
-                    adj_f.remap(|vi| {
-                        if vi == e0 + offset || vi == e1 + offset {
-                            e1 + offset
-                        } else {
-                            m.vertices.get_compress(vi - offset) + offset
-                        }
-                    });
-                    if adj_f.canonicalize() {
-                        continue;
-                    }
-                    let new_n = adj_f.normal_with(|vi| if vi == e1 { pos } else { m.get(vi - offset).1 });
-                    let prev_n = bufs.face_normals[adj_fi];
-                    if dot(prev_n, new_n) < 0. {
-                        continue 'inner;
-                    }
-                }
-              }}
-            }
-
-            if !args.no_check_face_inversion {
-                check_normal_orientation!(e0);
-                check_normal_orientation!(e1);
-            }
-
             // -- Commit
 
             if let Some(adj_faces) = bufs.edge_face_adj.get(&[e0, e1]) {
@@ -515,7 +502,7 @@ pub fn simplify_range_colored(
                         .recencies
                         .entry(std::cmp::minmax(q0, q1))
                         .or_insert(rec);
-                    *r += 100;
+                    *r += 1;
                 }
             };
 
@@ -523,8 +510,8 @@ pub fn simplify_range_colored(
                 curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
                 (q01, pos, attr)
             });
-            assert!(m.is_deleted(e0));
-            assert!(!m.is_deleted(e1));
+            debug_assert!(m.is_deleted(e0));
+            debug_assert!(!m.is_deleted(e1));
 
             macro_rules! remap_bd {
                 ($adj_bds: expr) => {{
@@ -547,6 +534,7 @@ pub fn simplify_range_colored(
                 (Some(mut bd0s), Some(mut bd1s)) => {
                     remap_bd!(bd0s);
                     remap_bd!(bd1s);
+                    // TODO delete shared between bd0s, bd1s to not allocate a new vector
                     let mut new = vec![];
                     for &bd0 in &bd0s {
                         if !bd1s.contains(&bd0) {
@@ -574,7 +562,9 @@ pub fn simplify_range_colored(
             let prev_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
             ef1.retain(|&fi| {
                 mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
-                let retain = !mesh.f[fi].canonicalize();
+                // important to not rotate here otherwise the ordering may change
+                // leading to non-manifold edge introduction
+                let retain = !mesh.f[fi].canonicalize_no_rotate();
                 if !retain {
                     // necessary for triangle counting
                     mesh.f[fi] = FaceKind::empty();

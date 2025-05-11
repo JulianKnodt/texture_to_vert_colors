@@ -9,3 +9,4 @@ experiment_log.json
 *.png
 *.svg
 *.mtl
+profile.json.gz

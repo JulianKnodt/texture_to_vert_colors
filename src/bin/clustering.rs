@@ -45,9 +45,6 @@ pub struct Args {
     #[arg(long, default_value_t = 1e-2)]
     pub vis_width: F,
 
-    #[arg(long, default_value_t = 1e-4)]
-    abs_eps: F,
-
     #[arg(long, default_value_t = Eigenvalue::One)]
     eigenvalue: Eigenvalue,
 
@@ -58,6 +55,10 @@ pub struct Args {
     /// Do not use area weighting.
     #[arg(long)]
     no_area_weight: bool,
+
+    /// Weight for each edge
+    #[arg(long, default_value_t = 1e-2)]
+    edge_weight: F,
 
     /// How much to weigh colors
     #[arg(long, default_value_t = 0.1)]
@@ -71,7 +72,9 @@ pub fn main() -> std::io::Result<()> {
     }
 
     let scene = pars3d::load(&args.input)?;
-    let mesh = scene.into_flattened_mesh();
+    let mut mesh = scene.into_flattened_mesh();
+    let (s, t) = mesh.normalize();
+    mesh.normalize_colors();
     //mesh.geometry_only();
 
     let (face_charts, m) = face_clustering(
@@ -102,7 +105,8 @@ pub fn main() -> std::io::Result<()> {
         &pars3d::coloring::HIGH_CONTRAST,
     );
 
-    let colored_mesh = mesh.with_face_coloring(&face_coloring);
+    let mut colored_mesh = mesh.with_face_coloring(&face_coloring);
+    colored_mesh.denormalize(s, t);
 
     let out_scene = colored_mesh.into_scene();
     pars3d::save(&args.output, &out_scene)
@@ -241,7 +245,7 @@ pub fn face_clustering<'a>(
             &[a, b, c, d] => q_n_attrib!([a, b, c, d]).a,
             p => Quadric::dyn_attribs(n, p.len(), |vi| vs[vi], |vi| vcs[vi], attr_ws).a,
         };
-        /*
+        let mut q = (q + q_attr) * face_area[fi];
         for [e0, e1] in edges(fs(fi)) {
             let e = std::cmp::minmax(e0, e1);
             let Some(adj_q) = face_adj_quadrics.get(&e) else {
@@ -249,8 +253,7 @@ pub fn face_clustering<'a>(
             };
             q += *adj_q;
         }
-        */
-        (q + q_attr) * face_area[fi]
+        q
     });
 
     for e in edge_face_map.values() {
@@ -288,14 +291,13 @@ pub fn face_clustering<'a>(
             let [ev10, ev11, ev12] = q1.eigen_sorted().0;
 
             // TODO may need to subtract previous values here?
-            let (evn, ev0, ev1) = match args.eigenvalue {
-                Eigenvalue::Zero => (evn0, ev00, ev10),
-                Eigenvalue::One => (evn1, ev01, ev11),
-                Eigenvalue::Two => (evn2, ev02, ev12),
+            let [evn, ev0, ev1] = match args.eigenvalue {
+                Eigenvalue::Zero => [evn0, ev00, ev10],
+                Eigenvalue::One => [evn1, ev01, ev11],
+                Eigenvalue::Two => [evn2, ev02, ev12],
             };
-            let c = NotNan::new(-(evn - (ev0 + ev1))).unwrap();
-
-            c
+            let [evn, ev0, ev1] = [evn, ev0, ev1].map(F::abs).map(F::sqrt);
+            NotNan::new(-(evn - (ev0 + ev1))).unwrap()
         }};
     }
 

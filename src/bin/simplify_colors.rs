@@ -436,6 +436,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         joint_weights: vec![],
         joint_idxs: vec![],
         vert_colors: new_colors,
+        vertex_attrs: Default::default(),
         name: String::new(),
     }
 }

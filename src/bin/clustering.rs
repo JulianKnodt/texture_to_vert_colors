@@ -19,7 +19,7 @@ use priority_queue::PriorityQueue;
 use texture_to_vert_colors::manifold::{CollapsibleManifold, EdgeKind};
 use texture_to_vert_colors::quadric::{AttrWeights, Quadric};
 use texture_to_vert_colors::sym::SymMatrix3;
-use texture_to_vert_colors::{F, add, cross, dist, dot, length, normalize, poly_area, sub};
+use texture_to_vert_colors::{F, add, cross, dist, normalize, poly_area, sub};
 
 use indicatif::ProgressBar;
 
@@ -42,9 +42,6 @@ pub struct Args {
     #[arg(short, long, group = "target")]
     pub target_num_charts: Option<usize>,
 
-    #[arg(long, default_value_t = 1e-2)]
-    pub vis_width: F,
-
     #[arg(long, default_value_t = Eigenvalue::One)]
     eigenvalue: Eigenvalue,
 
@@ -63,19 +60,22 @@ pub struct Args {
     /// How much to weigh colors
     #[arg(long, default_value_t = 0.1)]
     color_weight: F,
+
+    /// Where to output stats (unused currently)
+    #[arg(long)]
+    stats: String,
 }
 
 pub fn main() -> std::io::Result<()> {
     let args = Args::parse();
     if !args.output.ends_with(".ply") {
-        eprintln!("[WARN]: Output will not be colored if not output as PLY");
+        eprintln!("[WARN]: Output will not be colored if output format is not PLY");
     }
 
     let scene = pars3d::load(&args.input)?;
     let mut mesh = scene.into_flattened_mesh();
     let (s, t) = mesh.normalize();
     mesh.normalize_colors();
-    //mesh.geometry_only();
 
     let (face_charts, m) = face_clustering(
         mesh.v.as_slice(),
@@ -177,10 +177,6 @@ pub fn face_clustering<'a>(
     let avg_edge_len = total_edge_len / edge_num as F;
     assert_ne!(avg_edge_len, 0.);
 
-    let mut edge_dihedral_angle = HashMap::new();
-
-    let mut face_adj_quadrics = HashMap::new();
-
     let mut vertex_adj = vec![vec![]; vs.len()];
     for &[e0, e1] in edge_face_map.keys() {
         if e0 == e1 {
@@ -190,40 +186,6 @@ pub fn face_clustering<'a>(
         vertex_adj[e0].push(e1);
         assert!(!vertex_adj[e1].contains(&e0));
         vertex_adj[e1].push(e0);
-
-        let e = minmax(e0, e1);
-
-        let (dihedral_angle, fs) = match edge_face_map[&e] {
-            // no need to associate any cost with boundary edges.
-            EdgeKind::Boundary(_) => continue,
-            EdgeKind::Manifold([f0, f1]) => {
-                let cos_sim = dot(f_n[f0], f_n[f1]).clamp(-1., 1.);
-                (cos_sim.acos(), [f0, f1])
-            }
-            // TODO add multiple output pairs for each face with large values
-            // Pairs of two faces across a non-manifold edge can be merged together.
-            EdgeKind::NonManifold(_) => continue,
-        };
-        let prev = edge_dihedral_angle.insert(e, dihedral_angle);
-        assert_eq!(prev, None);
-
-        let e_w = dihedral_angle;
-
-        let edge_dir = sub(vs[e0], vs[e1]);
-        let edge_len = length(edge_dir) / avg_edge_len;
-        if edge_len == 0. {
-            continue;
-        }
-        assert_ne!(edge_len, 0.);
-
-        let edge_dir = normalize(edge_dir);
-
-        // TODO max weight here with symmetry weight
-
-        let edge_quadric = SymMatrix3::outer(edge_dir) * edge_len * e_w;
-
-        let prev = face_adj_quadrics.insert(fs, edge_quadric);
-        assert_eq!(prev, None);
     }
 
     // for each real mesh edge, track which charts it is a part of.
@@ -245,15 +207,7 @@ pub fn face_clustering<'a>(
             &[a, b, c, d] => q_n_attrib!([a, b, c, d]).a,
             p => Quadric::dyn_attribs(n, p.len(), |vi| vs[vi], |vi| vcs[vi], attr_ws).a,
         };
-        let mut q = (q + q_attr) * face_area[fi];
-        for [e0, e1] in edges(fs(fi)) {
-            let e = std::cmp::minmax(e0, e1);
-            let Some(adj_q) = face_adj_quadrics.get(&e) else {
-                continue;
-            };
-            q += *adj_q;
-        }
-        q
+        (q + q_attr) * face_area[fi]
     });
 
     for e in edge_face_map.values() {
@@ -296,8 +250,9 @@ pub fn face_clustering<'a>(
                 Eigenvalue::One => [evn1, ev01, ev11],
                 Eigenvalue::Two => [evn2, ev02, ev12],
             };
-            let [evn, ev0, ev1] = [evn, ev0, ev1].map(F::abs).map(F::sqrt);
-            NotNan::new(-(evn - (ev0 + ev1))).unwrap()
+            let [evn, ev0, ev1] = [evn, ev0, ev1];
+            let cost = evn - (ev0 + ev1);
+            NotNan::new(-cost).unwrap()
         }};
     }
 

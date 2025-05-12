@@ -278,7 +278,10 @@ pub fn texture_to_vert_colors(
         diff_tex.image.as_ref().expect("No diffuse image?").flipv()
     } else {
         pars3d::image::open(&args.diffuse_img)
-            .expect("Failed to open diffuse image")
+            .expect(&format!(
+                "Failed to open diffuse image from {}",
+                &args.diffuse_img
+            ))
             .flipv()
     };
 
@@ -412,14 +415,14 @@ pub fn texture_to_vert_colors(
                 QEMArgs {
                     target_tri_num,
                     check_bd: false,
-                    //color_diff_threshold: args.color_diff_threshold,
+                    color_diff_threshold: args.color_diff_threshold,
                     ..QEMArgs::default()
                 }
             } else {
                 QEMArgs {
                     target_tri_ratio,
                     check_bd: false,
-                    //color_diff_threshold: args.color_diff_threshold,
+                    color_diff_threshold: args.color_diff_threshold,
                     ..QEMArgs::default()
                 }
             };
@@ -1025,10 +1028,12 @@ pub fn sample_exact(
     let mut pix_fi: BTreeMap<_, usize> = BTreeMap::new();
 
     let iarea = iaabb.area();
-    assert_ne!(iarea, 0);
+    if iarea == 0 {
+        // there is no area to this triangle, difficult to sample pixels so just skip it.
+        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+    }
 
     // simple check for uniformity, if all are equal drop to sample_direct
-    /*
     let mut color_iter = iaabb.iter_coords().map(|c| {
         let [u, v] = c.map(|v| v as F + 0.5);
         let [u, v] = [u / w as F, v / h as F];
@@ -1038,7 +1043,6 @@ pub fn sample_exact(
     if color_iter.all(|v| v == first_col) {
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
-    */
 
     let start = out.v.len();
     let start_f = out.f.len();
@@ -1400,23 +1404,23 @@ pub fn sample_exact(
         };
 
         let mut fix_up_side = |v| {
-          let end_pt = iter(v, new_vi);
-          if end_pt == new_vi {
-              triagram!();
-              todo!();
-          }
-          assert_ne!(end_pt, new_vi, "{start_f} {}", out.f.len());
-          let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
-          let [e0, e1] = [og_vi, next_og_vi].map(|vi| mesh.v[vi]);
-          let [e0_key, e1_key] = [e0, e1].map(|v| v.map(F::to_bits));
+            let end_pt = iter(v, new_vi);
+            if end_pt == new_vi {
+                triagram!();
+                todo!();
+            }
+            assert_ne!(end_pt, new_vi, "{start_f} {}", out.f.len());
+            let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
+            let [e0, e1] = [og_vi, next_og_vi].map(|vi| mesh.v[vi]);
+            let [e0_key, e1_key] = [e0, e1].map(|v| v.map(F::to_bits));
 
-          // add to the edge map here, to ensure that even if the edge doesn't have any
-          // intermediate vertices it will be labeled.
-          assert_ne!(e0_key, e1_key);
-          let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
-          if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
-              fvs.push((fi, vec![]));
-          }
+            // add to the edge map here, to ensure that even if the edge doesn't have any
+            // intermediate vertices it will be labeled.
+            assert_ne!(e0_key, e1_key);
+            let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
+            if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
+                fvs.push((fi, vec![]));
+            }
         };
 
         // important to go both ways since sometimes vert_adj is not oriented correctly.
@@ -2026,7 +2030,8 @@ pub fn del_degen_bridges(
     face_range: Range<usize>,
 ) -> usize {
     let mut del = 0;
-    for fi in face_range {
+    let cd_thresh = args.color_diff_threshold;
+    for fi in face_range.clone() {
         let f = &mesh.f[fi];
         if f.len() != 4 {
             continue;
@@ -2052,19 +2057,21 @@ pub fn del_degen_bridges(
         }
         */
         // TODO how to check for degenerate faces here?
+        /*
         let [e00, e01, e10, e11] = all.map(|v| remap.get_compress(v));
         // Is this good enough to spot degenerate faces
         if e00 == e11 || e01 == e10 {
             continue;
         }
+        */
 
         // e00 - e11 is a paired edge
         // e01 - e10 is a paired edge
 
-        if dist(mesh.vert_colors[e00], mesh.vert_colors[e11]) > args.color_diff_threshold {
+        if dist(mesh.vert_colors[e00], mesh.vert_colors[e11]) > cd_thresh {
             continue;
         }
-        if dist(mesh.vert_colors[e01], mesh.vert_colors[e10]) > args.color_diff_threshold {
+        if dist(mesh.vert_colors[e01], mesh.vert_colors[e10]) > cd_thresh {
             continue;
         }
 
@@ -2088,6 +2095,46 @@ pub fn del_degen_bridges(
         mesh.f[fi] = FaceKind::empty();
         del += 1;
     }
+
+    // BridgeCorner faces
+    for fi in face_range {
+        let f = &mesh.f[fi];
+        if labels[fi] != FaceLabel::BridgeCorner {
+            continue;
+        }
+        if f.is_empty() {
+            continue;
+        }
+        let mean_color = kmul(
+            (f.len() as F).recip(),
+            f.as_slice()
+                .iter()
+                .map(|&vi| mesh.vert_colors[vi])
+                .fold([0.; 3], add),
+        );
+        let all_near = f
+            .as_slice()
+            .iter()
+            .all(|&vi| dist(mesh.vert_colors[vi], mean_color) < cd_thresh);
+        if !all_near {
+            continue;
+        }
+
+        let mean_pos = kmul(
+            (f.len() as F).recip(),
+            f.as_slice().iter().map(|&vi| mesh.v[vi]).fold([0.; 3], add),
+        );
+
+        let root = f.as_slice()[0];
+        mesh.v[root] = mean_pos;
+        mesh.vert_colors[root] = mean_color;
+        for &vi in &f.as_slice()[1..] {
+            remap.set(vi, root);
+        }
+        mesh.f[fi] = FaceKind::empty();
+        del += 1;
+    }
+
     del
 }
 

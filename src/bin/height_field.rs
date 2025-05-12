@@ -10,6 +10,9 @@ pub struct Args {
     /// Output mesh with each vertex offset in the direction of the normal by the height.
     #[arg(long, short)]
     output: String,
+
+    #[arg(long)]
+    use_y_axis: bool,
 }
 
 fn main() {
@@ -24,7 +27,12 @@ fn main() {
         }
         for vi in 0..m.v.len() {
             let offset = m.vert_colors[vi][0];
-            m.v[vi] = add(m.v[vi], kmul(offset, m.n[vi]));
+            let axis = if args.use_y_axis {
+                m.n[vi]
+            } else {
+                [0., 1., 0.]
+            };
+            m.v[vi] = add(m.v[vi], kmul(offset.sqrt(), axis));
         }
     }
 

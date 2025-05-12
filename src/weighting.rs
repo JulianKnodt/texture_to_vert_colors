@@ -42,7 +42,7 @@ impl WeightingKind {
                 *slot = fi;
             }
         }
-        let vert_adj = mesh.vertex_adj();
+        let vert_adj = mesh.vertex_vertex_adj();
         let per_face_info = match self {
             WeightingKind::Uniform | WeightingKind::Length => vec![],
             WeightingKind::MeanValue => mesh
@@ -83,8 +83,12 @@ impl WeightingKind {
                         let sin = (sin.abs() + 1e-4).copysign(sin);
                         let cot = cos / sin;
                         assert!(cot.is_finite(), "{cot:?}");
-                        let dist = pos_color_norm
-                            .apply(dist(a, b), dist(mesh.vert_colors[ai], mesh.vert_colors[bi]));
+                        let dist = if mesh.vert_colors.is_empty() {
+                            dist(a, b)
+                        } else {
+                            pos_color_norm
+                                .apply(dist(a, b), dist(mesh.vert_colors[ai], mesh.vert_colors[bi]))
+                        };
                         cot * dist.max(1e-2)
                     };
                     [

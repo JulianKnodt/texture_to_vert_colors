@@ -6,7 +6,7 @@ import json
 from itertools import chain
 
 bin_file = "target/release/texture_to_vert_colors"
-tutte_bin = "target/release/colored_tutte_param"
+tutte_bin = "target/release/tutte_param"
 smooth_bin = "target/release/smoothing"
 
 args = None
@@ -58,13 +58,19 @@ def runnable_cmds(cmds, stage_kind="run"):
   return cb
 
 dataset = [
-  ("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 1000000),
+  #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 1000000),
   #("cabbage.obj", "cabbage_diffuse.jpg", 300000),
-  ("shiba.obj", "shiba_texture.png", 1000000),
-  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 0.05),
+  #("shiba.obj", "shiba_texture.png", 1000000),
+  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 1000000),
   #("scan_vase.obj", "scan_vase_texture.jpg", 0.3),
-  #("silent_ash.obj", "silent_ash_texture.png", 200000),
+  ("silent_ash.obj", "silent_ash_texture.png", 10000000),
   #("strawberry.obj", "strawberry_textures/diffuse.png", 500000),
+  #("ding_censer.obj", "ding_censer_textures/diffuse.png", 500000),
+  #("musashi_panels.obj", "musashi_panels_texture.png", 1000000),
+  #("tiger_lily.obj", "tiger_lily.jpeg", 1000000),
+  #("shiny_fish.fbx", "shiny_fish_textures/Fishka_2_G_Fish_BaseColor2.jpg", 1000000),
+  #("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 500000),
+  #("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 500000),
 ]
 
 experiments = {

@@ -384,9 +384,9 @@ pub fn simplify_range_colored(
                 }
             });
             let total_cost =
-                -(q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1]);
+                q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1];
 
-            NotNan::new(total_cost).unwrap()
+            NotNan::new(-total_cost).unwrap()
         }};
     }
 
@@ -487,7 +487,7 @@ pub fn simplify_range_colored(
                 }
             });
             if dist(attr, a0).max(dist(attr, a1)) > args.color_diff_threshold {
-                break;
+                continue;
             }
 
             // -- Commit

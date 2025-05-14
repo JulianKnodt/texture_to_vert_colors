@@ -50,6 +50,10 @@ pub fn dist<const N: usize>(a: [F; N], b: [F; N]) -> F {
     length(sub(a, b))
 }
 
+pub fn l1dist<const N: usize>(a: [F; N], b: [F; N]) -> F {
+    sub(a, b).map(|v| v.abs()).into_iter().sum::<F>()
+}
+
 /// Squared Euclidean distance between vectors
 pub fn dist_sq<const N: usize>(a: [F; N], b: [F; N]) -> F {
     len_sq(sub(a, b))
@@ -59,8 +63,8 @@ pub fn norm_inf<const N: usize>(v: [F; N]) -> F {
     v.into_iter().map(F::abs).max_by(F::total_cmp).unwrap()
 }
 
+#[inline]
 pub fn to_3<const N: usize>(v: [F; N]) -> [F; 3] {
-    assert!(N >= 3);
     [v[0], v[1], v[2]]
 }
 
@@ -187,7 +191,7 @@ pub fn quat_from_standard(fwd: [F; 3], up: [F; 3]) -> [F; 4] {
 }
 
 pub fn quat_from_basis(fwd: [F; 3], up: [F; 3], b0: [F; 3], b1: [F; 3]) -> [F; 4] {
-    assert!(dot(fwd, up).abs() < 1e-4);
+    debug_assert!(dot(fwd, up).abs() < 1e-4);
     let r0 = quat_from_to(b0, fwd);
     let r1 = quat_from_to(quat_rot(b1, r0), up);
     quat_mul(r1, r0)

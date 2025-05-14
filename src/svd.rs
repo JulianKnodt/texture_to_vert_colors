@@ -1,7 +1,6 @@
 use super::sym::SymMatrix3;
 use super::{F, kmul, quat_to_mat};
 
-#[inline]
 fn approx_givens_quat(a11: F, a12: F, a22: F) -> [F; 2] {
     const G: F = 3. + 2. * std::f64::consts::SQRT_2 as F;
     //let G = 3. + (8. as F).sqrt();
@@ -13,8 +12,10 @@ fn approx_givens_quat(a11: F, a12: F, a22: F) -> [F; 2] {
         return [1., 0.];
     }
 
-    if G * sh * sh < ch * ch {
-        let w = 1. / (sh * sh + ch * ch).sqrt();
+    let sh2 = sh * sh;
+    let ch2 = ch * ch;
+    if G * sh2 < ch2 {
+        let w = 1. / (sh2 + ch2).sqrt();
         [w * ch, w * sh]
     } else {
         const PI: F = std::f64::consts::PI as F;
@@ -22,21 +23,14 @@ fn approx_givens_quat(a11: F, a12: F, a22: F) -> [F; 2] {
     }
 }
 
-#[inline]
-fn jacobi_conjugation(
-    x: usize,
-    y: usize,
-    z: usize,
-    s @ [s11, s21, s22, _, _, _]: [F; 6],
-    q: [F; 4],
-) -> ([F; 6], [F; 4]) {
-    let [ch, sh] = approx_givens_quat(s11, s21, s22);
+fn jacobi_conjugation(x: usize, y: usize, z: usize, s: &mut [F; 6], q: [F; 4]) -> [F; 4] {
+    let [ch, sh] = approx_givens_quat(s[0], s[1], s[2]);
 
     let scale = ch * ch + sh * sh;
     let a = (ch * ch - sh * sh) / scale;
     let b = (2. * ch * sh) / scale;
 
-    let s = conj_sym(s, a, b);
+    let ns = conj_sym(s, a, b);
 
     let tmp = kmul(sh, super::to_3(q));
     let sh = sh * q[3];
@@ -47,15 +41,18 @@ fn jacobi_conjugation(
     q[x] += tmp[y];
     q[y] -= tmp[x];
 
-    let [s11, s21, s22, s31, s32, s33] = s;
-    ([s22, s32, s33, s21, s31, s11], q)
+    let [s11, s21, s22, s31, s32, s33] = ns;
+    *s = [s22, s32, s33, s21, s31, s11];
+    q
 }
 
-fn conj_sym([s11, s21, s22, s31, s32, s33]: [F; 6], a: F, b: F) -> [F; 6] {
+fn conj_sym(&[s11, s21, s22, s31, s32, s33]: &[F; 6], a: F, b: F) -> [F; 6] {
+    let cse1 = -b * s11 + a * s21;
+    let cse2 = -b * s21 + a * s22;
     [
         a * (a * s11 + b * s21) + b * (a * s21 + b * s22),
-        a * (-b * s11 + a * s21) + b * (-b * s21 + a * s22),
-        -b * (-b * s11 + a * s21) + a * (-b * s21 + a * s22),
+        a * cse1 + b * cse2,
+        -b * cse1 + a * cse2,
         a * s31 + b * s32,
         -b * s31 + a * s32,
         s33,
@@ -65,10 +62,9 @@ fn conj_sym([s11, s21, s22, s31, s32, s33]: [F; 6], a: F, b: F) -> [F; 6] {
 fn jacobi_eigen(mut s: [F; 6]) -> [F; 4] {
     let mut q = [0., 0., 0., 1.].map(F::from);
     for _ in 0..15 {
-        let (ns, nq) = jacobi_conjugation(0, 1, 2, s, q);
-        let (ns, nq) = jacobi_conjugation(1, 2, 0, ns, nq);
-        let (ns, nq) = jacobi_conjugation(2, 0, 1, ns, nq);
-        s = ns;
+        let nq = jacobi_conjugation(0, 1, 2, &mut s, q);
+        let nq = jacobi_conjugation(1, 2, 0, &mut s, nq);
+        let nq = jacobi_conjugation(2, 0, 1, &mut s, nq);
         q = nq;
     }
     q

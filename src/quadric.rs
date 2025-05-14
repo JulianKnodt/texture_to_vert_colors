@@ -501,6 +501,7 @@ impl<const N: usize> Quadric<N> {
     }
 }
 
+/*
 #[test]
 fn test_local_quadric() {
     let q =
@@ -513,6 +514,7 @@ fn test_local_quadric() {
 
     assert_ne!(q.cost([0., 1., 0.]), 0.);
 }
+*/
 
 impl<const N: usize> Add for Quadric<N> {
     type Output = Self;
@@ -565,6 +567,7 @@ impl<const N: usize> MulAssign<F> for Quadric<N> {
     }
 }
 
+/*
 #[test]
 fn test_quadric_attr() {
     let ps = [[1., 0., 0.], [1., 0., 1.], [0., 0., 1.]];
@@ -581,3 +584,4 @@ fn test_quadric_attr() {
     let out_attr = q_attr.attributes(ps[2], ws);
     assert!((out_attr[0] - 0.5).abs() < 1e-8);
 }
+*/

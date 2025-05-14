@@ -8,6 +8,7 @@ from itertools import chain
 bin_file = "target/release/texture_to_vert_colors"
 tutte_bin = "target/release/tutte_param"
 smooth_bin = "target/release/smoothing"
+clustering_bin = "target/release/clustering"
 
 args = None
 
@@ -62,15 +63,18 @@ dataset = [
   #("cabbage.obj", "cabbage_diffuse.jpg", 300000),
   #("shiba.obj", "shiba_texture.png", 1000000),
   #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 1000000),
-  #("scan_vase.obj", "scan_vase_texture.jpg", 0.3),
-  ("silent_ash.obj", "silent_ash_texture.png", 10000000),
-  #("strawberry.obj", "strawberry_textures/diffuse.png", 500000),
-  #("ding_censer.obj", "ding_censer_textures/diffuse.png", 500000),
-  #("musashi_panels.obj", "musashi_panels_texture.png", 1000000),
+  #("watercolor_cake.obj", "watercolor_cake.jpg", 1000000),
+  #("silent_ash.obj", "silent_ash_texture.png", 10000000),
+  #("scan_vase.obj", "scan_vase_texture.jpg", 100000),
+  #("strawberry.obj", "strawberry_textures/diffuse.png", 1000000),
+  #("ding_censer.obj", "ding_censer_textures/diffuse.jpg", 500000),
+  #("musashi_panels.obj", "musashi_panels_textures/diffuse.jpg", 1000000),
   #("tiger_lily.obj", "tiger_lily.jpeg", 1000000),
   #("shiny_fish.fbx", "shiny_fish_textures/Fishka_2_G_Fish_BaseColor2.jpg", 1000000),
-  #("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 500000),
-  #("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 500000),
+  #("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 300000),
+  #("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 300000),
+  #("jar_with_dragon_design.obj", "jar_with_dragon_design.png", 500000),
+  ("japanese_tea_cup.obj", "japanese_tea_cup_texture.png", 100000),
 ]
 
 experiments = {
@@ -125,6 +129,72 @@ experiments = {
         --sample-kind {k} --no-incremental-qem",
       ) for k in ["direct", "exact"]
     ]
+  ],
+
+  "spot_clustering": [
+    #run(
+    #  "spot_triangulated.obj",
+    #  "spot.ply",
+    #  f"-d data/spot_texture.png --target-tri-num 50000 --no-incremental-qem",
+    #),
+    run(
+      "../ablations/spot.ply",
+      "spot_constant_colors.ply",
+      f"-t 50 --eigenvalue zero --cluster-vis ablations/spot_clusters.ply --abs-eps 1e-2",
+      bin=clustering_bin, eval=False,
+    ),
+  ],
+  "dragon_jar_clustering": [
+    #run(
+    #  "jar_with_dragon_design.obj",
+    #  "jar_with_dragon_design.ply",
+    #  f"-d data/jar_with_dragon_design.png --target-tri-num 300000 --no-incremental-qem",
+    #),
+    run(
+      "../outputs/jar_with_dragon_design.ply",
+      "jar_with_dragon_design_colors.ply",
+      f"-t 500 --eigenvalue zero --cluster-vis ablations/jar_with_dragon_design_clusters.ply \
+      --abs-eps 1e-4",
+      bin=clustering_bin, eval=False,
+    ),
+  ],
+  "angelfish_clustering": [
+    #run(
+    #  "angelfish.obj",
+    #  "angelfish.ply",
+    #  f"-d data/angelfish_texture.jpg --target-tri-num 200000 --no-incremental-qem \
+    #  --sample-kind direct",
+    #),
+    run(
+      "../ablations/angelfish.ply",
+      "angelfish_colors.ply",
+      f"-t 250 --eigenvalue zero --cluster-vis ablations/angelfish_clusters.ply \
+      --abs-eps 1e-3",
+      bin=clustering_bin, eval=False,
+    ),
+  ],
+  "nanchan_clustering": [
+    #run(
+    #  "nanchan.obj",
+    #  "nanchan.ply",
+    #  f"-d data/nanchan_texture.png --target-tri-num 500000 --sample-kind exact \
+    #  --no-incremental-qem",
+    #),
+    run(
+      "../ablations/nanchan.ply",
+      "nanchan_colors.ply",
+      f"-t 200 --eigenvalue zero --cluster-vis ablations/nanchan_clusters.ply \
+      --abs-eps 1e-2 \
+      --eigenvalue-vis ablations/nanchan_eigens.ply",
+      bin=clustering_bin, eval=False,
+    ),
+    #run(
+    #  "../ablations/nanchan.ply",
+    #  "nanchan_colors.ply",
+    #  f"-t 200 --eigenvalue one --cluster-vis ablations/nanchan_clusters.ply \
+    #  --abs-eps 0. --eigenvalue-vis ablations/nanchan_eigens.ply",
+    #  bin=clustering_bin, eval=False,
+    #),
   ],
 
   # Test case for smoothing

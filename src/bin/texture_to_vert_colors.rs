@@ -2,7 +2,7 @@
 #![feature(let_chains)]
 
 use std::cmp::minmax;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::ops::Range;
 
@@ -39,10 +39,6 @@ pub struct Args {
     /// Path to alternative texture to use.
     #[arg(long, short, default_value = "")]
     diffuse_img: String,
-
-    /// Path to heightmap to use when rendering
-    #[arg(long, short, default_value = "")]
-    height_map: String,
 
     #[arg(long, short = 'k', default_value_t = SampleKind::Exact)]
     sample_kind: SampleKind,
@@ -150,6 +146,22 @@ pub fn main() {
         input_non_manifold_edges,
     );
 
+    // Copy vertex colors for each input UV
+    // TODO remove this assumption of a single material and copy per face with duplication
+    let diff_img = if !args.diffuse_img.is_empty() {
+        let img = pars3d::image::open(&args.diffuse_img)
+            .expect(&format!(
+                "Failed to open diffuse image from {}",
+                &args.diffuse_img
+            ))
+            .flipv();
+
+        println!("[INFO]: Diffuse W = {}, H = {}", img.width(), img.height());
+        Some(img)
+    } else {
+        None
+    };
+
     let mut out_scene = scene.clone();
     let start = std::time::Instant::now();
     for (mi, mesh) in scene.meshes.iter_mut().enumerate() {
@@ -164,7 +176,22 @@ pub fn main() {
         }
         assert!(!mesh.uv[0].is_empty());
         assert_eq!(mesh.uv[0].len(), mesh.v.len());
-        let mut new_mesh = texture_to_vert_colors(mesh, &scene.materials, &scene.textures, &args);
+        let mut new_mesh = texture_to_vert_colors(
+            mesh,
+            |fi| {
+                if let Some(diff_img) = diff_img.as_ref() {
+                    return diff_img;
+                }
+                let mi = mesh.mat_for_face(fi).unwrap();
+                let &ti = scene.materials[mi]
+                    .textures
+                    .iter()
+                    .find(|&&ti| scene.textures[ti].kind == pars3d::mesh::TextureKind::Diffuse)
+                    .expect("No diffuse textures for this material");
+                scene.textures[ti].image.as_ref().unwrap()
+            },
+            &args,
+        );
         new_mesh.denormalize(s, t);
         new_mesh.n.clear();
         out_scene.meshes[mi] = new_mesh;
@@ -215,24 +242,22 @@ pub fn main() {
 
 /// Textures to be used when upscaling the output
 #[derive(Clone, Debug)]
-pub struct SourceTextures {
-    diff_img: DynamicImage,
-    //normal_img: DynamicImage,
-    height_map: Option<DynamicImage>,
+pub struct SourceTextures<'a> {
+    diff_img: &'a DynamicImage,
 }
 
-impl SourceTextures {
+impl<'a> SourceTextures<'a> {
     pub fn push_to_mesh(&self, m: &mut Mesh, u: F, v: F) {
         let u = u % 1.;
         let u = if u < 0. { 1. + u } else { u };
         let v = v % 1.;
         let v = if v < 0. { 1. + v } else { v };
-        let Some(rgba) = image::imageops::sample_bilinear(&self.diff_img, u as f32, v as f32)
-        else {
+        let Some(rgba) = image::imageops::sample_bilinear(self.diff_img, u as f32, v as f32) else {
             panic!("{u} {v}");
         };
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
         m.vert_colors.push([r, g, b]);
+        /*
         if let Some(hm) = self.height_map.as_ref() {
             let Some(h) = image::imageops::sample_bilinear(hm, u as f32, v as f32) else {
                 panic!("{u} {v}");
@@ -240,14 +265,14 @@ impl SourceTextures {
             let h = h.0[0] as F / 255.;
             m.vertex_attrs.height.push(h);
         }
+        */
     }
     pub fn get_value(&self, u: F, v: F) -> [F; 3] {
         let u = u % 1.;
         let u = if u < 0. { 1. + u } else { u };
         let v = v % 1.;
         let v = if v < 0. { 1. + v } else { v };
-        let Some(rgba) = image::imageops::sample_bilinear(&self.diff_img, u as f32, v as f32)
-        else {
+        let Some(rgba) = image::imageops::sample_bilinear(self.diff_img, u as f32, v as f32) else {
             panic!("{u} {v}");
         };
         let [r, g, b, _a] = rgba.0.map(|c| c as F / 255.);
@@ -255,54 +280,13 @@ impl SourceTextures {
     }
 }
 
-pub fn texture_to_vert_colors(
+pub fn texture_to_vert_colors<'a>(
     mesh: &Mesh,
-    materials: &[pars3d::mesh::Material],
-    textures: &[pars3d::mesh::Texture],
+    f_mat: impl Fn(usize) -> &'a DynamicImage,
     args: &Args,
 ) -> Mesh {
     let mut out = Mesh::default();
     let surface_area = mesh.f.iter().map(|f| f.area(&mesh.v)).sum::<F>();
-
-    // Copy vertex colors for each input UV
-    // TODO remove this assumption of a single material and copy per face with duplication
-    let diff_img = if args.diffuse_img.is_empty() {
-        let mati = mesh
-            .single_mat()
-            .expect("No material or more than 1 material for this mesh");
-        let mat = &materials[mati];
-        let diff_tex = mat
-            .textures_by_kind(textures, pars3d::mesh::TextureKind::Diffuse)
-            .next()
-            .expect("No diffuse texture?");
-        diff_tex.image.as_ref().expect("No diffuse image?").flipv()
-    } else {
-        pars3d::image::open(&args.diffuse_img)
-            .expect(&format!(
-                "Failed to open diffuse image from {}",
-                &args.diffuse_img
-            ))
-            .flipv()
-    };
-
-    let height_map = if args.height_map.is_empty() {
-        None
-    } else {
-        let h = pars3d::image::open(&args.height_map)
-            .expect("Failed to open height map")
-            .flipv();
-        Some(h)
-    };
-    println!(
-        "[INFO]: Diffuse W = {}, H = {}",
-        diff_img.width(),
-        diff_img.height()
-    );
-
-    let src_txs = SourceTextures {
-        diff_img,
-        height_map,
-    };
 
     let mut edge_map = Map::new();
     let mut corner_map = Map::new();
@@ -311,11 +295,6 @@ pub fn texture_to_vert_colors(
     let mut face_labels = vec![];
     //let mut to_del = vec![];
     let mut remap = UnionFind::new_u32(0);
-
-    // For each UV coordinate, which faces are associated with it?
-    let mut pix_map = BTreeMap::new();
-
-    let mut all_corner_verts = BTreeMap::new();
 
     use indicatif::ProgressIterator;
 
@@ -341,6 +320,9 @@ pub fn texture_to_vert_colors(
     let mut qem_buf = QEMBuffers::default();
     let mut del_by_qem = 0;
     for (fi, f) in mesh.f.iter().enumerate().progress() {
+        let diff_img = f_mat(fi);
+        let src_txs = SourceTextures { diff_img };
+
         let curr_f = out.f.len();
         let curr_v = out.v.len();
         let ok = match args.sample_kind {
@@ -354,8 +336,6 @@ pub fn texture_to_vert_colors(
                 &mut edge_map,
                 &mut labels,
                 &mut face_labels,
-                &mut pix_map,
-                &mut all_corner_verts,
                 args,
             ),
             SampleKind::Approx => sample_approx(
@@ -914,21 +894,10 @@ pub fn texture_to_vert_colors(
 
         let num_f = out.f.len();
         let num_v = out.v.len();
-        let corner_verts = all_corner_verts
-            .values()
-            .copied()
-            .map(|vi| remap.get_compress(vi))
-            .collect::<BTreeSet<_>>();
         simplify_range_colored(
             &mut out,
             &qem_args,
-            |vi| {
-                if args.correspondence_json.is_empty() {
-                    false
-                } else {
-                    corner_verts.contains(&vi)
-                }
-            },
+            |_| false,
             0..num_f,
             0..num_v,
             &mut remap,
@@ -946,14 +915,7 @@ pub fn texture_to_vert_colors(
         !f.canonicalize()
     });
 
-    let (_, unused_remap) = out.delete_unused_vertices();
-    for new_vi in all_corner_verts.values_mut() {
-        let vi = remap.get_compress(*new_vi);
-        //assert_ne!(unused_remap[vi], usize::MAX);
-        if unused_remap[vi] != usize::MAX {
-            *new_vi = unused_remap[vi];
-        }
-    }
+    out.delete_unused_vertices();
 
     //out.remove_doublets();
     if init_f != out.f.len() {
@@ -989,12 +951,6 @@ pub fn sample_exact(
     // label for what kind of face is being inserted into the mesh, useful for cleaning up faces
     // later
     face_labels: &mut Vec<FaceLabel>,
-
-    // which faces are stored for each pixel
-    pix_map: &mut BTreeMap<[i32; 2], Vec<usize>>,
-
-    // Which original vertices on each face correspond with which new vertices
-    all_corner_verts: &mut BTreeMap<(usize, usize), usize>,
 
     args: &Args,
 ) -> bool {
@@ -1062,7 +1018,7 @@ pub fn sample_exact(
 
         let outside_all = uv_f.as_triangle_fan().all(|uv_t| {
             let t_bary = cfs.map(|cf| pars3d::barycentric_2d(cf, uv_t));
-            (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0.))
+            (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0. || b[i] > 1.))
         });
         if outside_all {
             continue;
@@ -1118,7 +1074,6 @@ pub fn sample_exact(
         assert_eq!(prev, None);
         let new_fi = out.f.len();
         pix_fi.insert(c, new_fi);
-        pix_map.entry(c).or_default().push(new_fi);
         face_labels.push(FaceLabel::Pixel);
         out.f.push(FaceKind::Quad(new_verts));
     }
@@ -1137,14 +1092,14 @@ pub fn sample_exact(
             );
             println!();
             for h in iaabb.height_range() {
-                print!("{h} ");
+                print!("{h}");
                 for w in iaabb.width_range() {
                     let c = if pixel_map.contains_key(&[w, h]) {
                         "x"
                     } else {
                         "-"
                     };
-                    print!("{c} ");
+                    print!("{c}");
                 }
                 println!();
             }
@@ -1365,7 +1320,6 @@ pub fn sample_exact(
 
         fv.push((fi, nearest));
         corner_verts_s[ci] = (og_vi, nearest);
-        assert_eq!(all_corner_verts.insert((fi, og_vi), nearest), None);
 
         // Pull to a corner to make it tight (larger T is tighter)
         let t = args.vertex_pull;
@@ -1406,8 +1360,7 @@ pub fn sample_exact(
         let mut fix_up_side = |v| {
             let end_pt = iter(v, new_vi);
             if end_pt == new_vi {
-                triagram!();
-                todo!();
+                save_bad_mesh!("Mesh had some weirdness (maybe an isolated island)");
             }
             assert_ne!(end_pt, new_vi, "{start_f} {}", out.f.len());
             let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
@@ -1421,11 +1374,16 @@ pub fn sample_exact(
             if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
                 fvs.push((fi, vec![]));
             }
+            true
         };
 
         // important to go both ways since sometimes vert_adj is not oriented correctly.
-        fix_up_side(l);
-        fix_up_side(r);
+        if !fix_up_side(l) {
+            return false;
+        }
+        if !fix_up_side(r) {
+            return false;
+        }
     }
     let check = labels
         .range(start..)

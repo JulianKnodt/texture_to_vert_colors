@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InverseMap {
-    next: Vec<usize>,
+pub struct InverseMap<I = usize> {
+    next: Vec<I>,
 }
 
 impl InverseMap {

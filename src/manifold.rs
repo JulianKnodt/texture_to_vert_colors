@@ -1,4 +1,5 @@
-use union_find::{UnionFind, UnionFindOp};
+use super::inv_map::InverseMap;
+use union_find::{AtomicUnionFind, UnionFind, UnionFindOp};
 
 /// A mesh representation which is suitable for collapsing vertices.
 /// It can associate data with each vertex, and each edge.
@@ -8,6 +9,8 @@ pub struct CollapsibleManifold<T, UF: UnionFindOp = UnionFind<u32>> {
     pub(crate) vertices: UF,
 
     pub edges: Vec<Vec<u32>>,
+
+    inv_map: InverseMap,
 
     pub data: Vec<T>,
 }
@@ -21,6 +24,7 @@ impl<T> CollapsibleManifold<T, UnionFind<u32>> {
         Self {
             vertices: UnionFind::new_u32(size),
             edges: vec![vec![]; size],
+            inv_map: InverseMap::new(size),
 
             data,
         }
@@ -35,6 +39,23 @@ impl<T> CollapsibleManifold<T, UnionFind<u32>> {
             vertices: UnionFind::new_u32(size),
             edges: vec![],
             data: vec![T::default(); size],
+            inv_map: InverseMap::new(size),
+        }
+    }
+}
+
+impl<T> CollapsibleManifold<T, AtomicUnionFind> {
+    pub fn atomic_new_with(size: usize, f: impl Fn(usize) -> T) -> Self {
+        let mut data = Vec::with_capacity(size);
+        for i in 0..size {
+            data.push(f(i));
+        }
+        Self {
+            vertices: AtomicUnionFind::new(size),
+            edges: vec![vec![]; size],
+            inv_map: InverseMap::new(size),
+
+            data,
         }
     }
 }
@@ -50,6 +71,7 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         Self {
             vertices: remap,
             edges: vec![vec![]; size],
+            inv_map: InverseMap::new(size),
 
             data,
         }
@@ -86,15 +108,6 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         self.edges[v1].dedup_by_key(|&mut dst| dst);
     }
 
-    /*
-    /// Adds a face to this `CollapsibleManifold`.
-    pub fn add_const_face<const N: usize>(&mut self, face: [usize; N]) {
-        for i in 0..N {
-            self.add_edge(face[i], face[(i + 1) % N]);
-        }
-    }
-    */
-
     pub fn add_face(&mut self, face: &[usize]) {
         let n = face.len();
         for i in 0..n {
@@ -114,19 +127,16 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
             .iter()
             .map(|&dst| self.vertices.find(dst as usize))
     }
-    /// Fix up a one ring to not contain duplicates
-    pub fn dedup_one_ring(&mut self, v: usize) {
-        self.dedup(v);
-        let nbrs = std::mem::take(&mut self.edges[v]);
-        for &adj in &nbrs {
-            assert_ne!(adj as usize, v);
-            self.dedup(adj as usize);
-        }
-        self.edges[v] = nbrs;
-    }
-    pub fn dedup(&mut self, v: usize) {
-        self.edges[v].sort_unstable_by_key(|&v| self.vertices.find(v as usize));
-        self.edges[v].dedup_by_key(|&mut v| self.vertices.find(v as usize));
+    /// Returns adjacent vertices (should always be in sorted order)
+    pub fn par_vertex_adj(&self, v: usize) -> impl rayon::iter::ParallelIterator<Item = usize> + '_
+    where
+        UF: Sync,
+        T: Sync,
+    {
+        use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+        self.edges[v]
+            .par_iter()
+            .map(|&dst| self.vertices.find(dst as usize))
     }
 
     /// Returns whether two vertices v0 and v1 are adjacent.
@@ -140,45 +150,9 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
             .any(|&dst| self.vertices.find(dst as usize) == v1)
     }
 
-    /// An iterator over the shared one ring of v0 and v1.
-    /// Does not contain v0 or v1.
-    pub fn shared_one_ring(&self, v0: usize, v1: usize) -> impl Iterator<Item = usize> + '_ {
-        assert!(!self.is_deleted(v0));
-        assert!(!self.is_deleted(v1));
-
-        let v0_adj = self.vertex_adj(v0).peekable();
-        let v1_adj = self.vertex_adj(v1).peekable();
-
-        super::merge::Merge::new(v0_adj, v1_adj)
-            .map(|v| v.into_inner())
-            .filter(move |&v| v != v0 && v != v1)
+    pub fn merged_vertices(&mut self, v: usize) -> impl Iterator<Item = usize> + Clone + '_ {
+        self.inv_map.merged(v).map(|v| v as usize)
     }
-    pub fn shared_one_ring_deg(&self, v0: usize, v1: usize) -> usize {
-        self.shared_one_ring(v0, v1).count()
-    }
-    /// An iterator over the shared one ring of v0 and v1.
-    /// Does not contain v0 or v1.
-    pub fn sided_shared_one_ring(
-        &self,
-        v0: usize,
-        v1: usize,
-    ) -> impl Iterator<Item = super::merge::Side<usize>> + '_ {
-        assert!(!self.is_deleted(v0));
-        assert!(!self.is_deleted(v1));
-
-        let v0_adj = self.vertex_adj(v0).peekable();
-        let v1_adj = self.vertex_adj(v1).peekable();
-
-        super::merge::Merge::new(v0_adj, v1_adj)
-            .filter(move |&v| *v.inner() != v0 && *v.inner() != v1)
-    }
-    /*
-    pub fn par_vertex_adj(&self, v: usize) -> impl rayon::iter::ParallelIterator<Item = usize> + '_ {
-        use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-        let vs = &self.vertices;
-        self.edges[v].par_iter().map(|&dst| vs.find(dst as usize))
-    }
-    */
 
     /// Merges v0 into v1.
     pub fn merge(&mut self, v0: usize, v1: usize, mut merge: impl FnMut(&T, &T) -> T)
@@ -192,6 +166,8 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         debug_assert!(self.is_adj(src, dst));
 
         self.vertices.union(src, dst);
+
+        self.inv_map.merge(src, dst);
 
         let [data_dst, data_src] = unsafe { self.data.get_disjoint_unchecked_mut([src, dst]) };
         let new_data = merge(&data_dst, &data_src);
@@ -232,26 +208,12 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
             if !adj_e.contains(&(dst as u32)) {
                 adj_e.push(dst as u32);
             }
-            // here is it possible to just remove the one old vertex?
-            // sanity check
-            //let init_len = adj_e.len();
-            /*
-            for e in adj_e.iter_mut() {
-                *e = self.vertices.find(*e);
-            }
-            adj_e.sort_unstable();
-            adj_e.dedup();
-            */
-            //assert_eq!(adj_e.len(), init_len);
         }
         self.edges[dst] = tmp;
     }
 
     pub fn get(&self, v: usize) -> &T {
         unsafe { self.data.get_unchecked(self.vertices.find(v)) }
-    }
-    pub fn set(&mut self, v: usize, t: T) {
-        self.data[self.vertices.find(v)] = t;
     }
 
     /// All the edges of this manifold mesh, with v0-v1 in original order

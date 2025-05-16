@@ -1403,10 +1403,7 @@ pub fn sample_exact(
         };
 
         // important to go both ways since sometimes vert_adj is not oriented correctly.
-        if !fix_up_side(l) {
-            return false;
-        }
-        if !fix_up_side(r) {
+        if !fix_up_side(l) || !fix_up_side(r) {
             return false;
         }
     }
@@ -1481,6 +1478,7 @@ pub fn sample_approx(
     } else {
         None
     };
+
     let mut pixel_map = BTreeMap::new();
 
     // if there is at most one line, just abort
@@ -1503,10 +1501,6 @@ pub fn sample_approx(
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
         // small epsilon to handle points which are very close to edges.
         let outside_all = uv_f.as_triangle_fan().all(|uv_t| {
-            /*
-            let t_bary = pars3d::barycentric_2d(cf, uv_t);
-            (0..3).any(|i| t_bary[i] < 0.)
-            */
             let t_bary = cfs.map(|cf| pars3d::barycentric_2d(cf, uv_t));
             (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0.))
         });
@@ -1713,21 +1707,21 @@ pub fn sample_approx(
             if let Some(&up) = pixel_map.get(&[u, v + 1]) {
                 if let Some(&dl) = pixel_map.get(&[u - 1, v - 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, dl, up]));
+                    out.f.push(FaceKind::Tri([vi, up, dl]));
                 }
                 if let Some(&dr) = pixel_map.get(&[u + 1, v - 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, up, dr]));
+                    out.f.push(FaceKind::Tri([vi, dr, up]));
                 }
             }
             if let Some(&down) = pixel_map.get(&[u, v - 1]) {
                 if let Some(&ul) = pixel_map.get(&[u - 1, v + 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, down, ul]));
+                    out.f.push(FaceKind::Tri([vi, ul, down]));
                 }
                 if let Some(&ur) = pixel_map.get(&[u + 1, v + 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, ur, down]));
+                    out.f.push(FaceKind::Tri([vi, down, ur]));
                 }
             }
         }
@@ -1736,21 +1730,21 @@ pub fn sample_approx(
             if let Some(&r) = pixel_map.get(&[u + 1, v]) {
                 if let Some(&ul) = pixel_map.get(&[u - 1, v + 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, ul, r]));
+                    out.f.push(FaceKind::Tri([vi, r, ul]));
                 }
                 if let Some(&dl) = pixel_map.get(&[u - 1, v - 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, r, dl]));
+                    out.f.push(FaceKind::Tri([vi, dl, r]));
                 }
             }
             if let Some(&l) = pixel_map.get(&[u - 1, v]) {
                 if let Some(&ur) = pixel_map.get(&[u + 1, v + 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, l, ur]));
+                    out.f.push(FaceKind::Tri([vi, ur, l]));
                 }
                 if let Some(&dr) = pixel_map.get(&[u + 1, v - 1]) {
                     face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, dr, l]));
+                    out.f.push(FaceKind::Tri([vi, l, dr]));
                 }
             }
         }

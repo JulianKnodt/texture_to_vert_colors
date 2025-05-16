@@ -140,7 +140,8 @@ experiments = {
     run(
       "../ablations/spot.ply",
       "spot_constant_colors.ply",
-      f"-t 50 --eigenvalue zero --cluster-vis ablations/spot_clusters.ply --abs-eps 1e-2",
+      f"-t 50 --eigenvalue zero --cluster-vis ablations/spot_clusters.ply --eigen-eps 1e-2 \
+      --color-eps 1e-4 --eigen-vis ablations/spot_eigen.ply",
       bin=clustering_bin, eval=False,
     ),
   ],
@@ -169,7 +170,7 @@ experiments = {
       "../ablations/angelfish.ply",
       "angelfish_colors.ply",
       f"-t 250 --eigenvalue zero --cluster-vis ablations/angelfish_clusters.ply \
-      --abs-eps 1e-3",
+      --eigen-eps 1e-4 --color-eps 1e-5 --eigen-vis ablations/angelfish_eigen.ply",
       bin=clustering_bin, eval=False,
     ),
   ],
@@ -184,17 +185,33 @@ experiments = {
       "../ablations/nanchan.ply",
       "nanchan_colors.ply",
       f"-t 200 --eigenvalue zero --cluster-vis ablations/nanchan_clusters.ply \
-      --abs-eps 1e-2 \
-      --eigenvalue-vis ablations/nanchan_eigens.ply",
+      --eigen-eps 1e-4 --color-eps 1e-6 --shape-metric angle-deviation \
+      --eigen-vis ablations/nanchan_eigens.ply",
       bin=clustering_bin, eval=False,
     ),
     #run(
     #  "../ablations/nanchan.ply",
     #  "nanchan_colors.ply",
     #  f"-t 200 --eigenvalue one --cluster-vis ablations/nanchan_clusters.ply \
-    #  --abs-eps 0. --eigenvalue-vis ablations/nanchan_eigens.ply",
+    #  --eigen-eps 0. --eigenvalue-vis ablations/nanchan_eigens.ply",
     #  bin=clustering_bin, eval=False,
     #),
+  ],
+  "dense-sphere": [
+    #run("dense_sphere.obj", "dense_sphere.ply", "-d data/hokusai.jpg --no-incremental-qem \
+    #--sample-kind approx -t 500000")
+    run(
+      "../ablations/dense_sphere.ply",
+      "dense_sphere_colors.ply",
+      f"-t 500 --eigenvalue zero --cluster-vis ablations/dense_sphere_clusters.ply \
+      --eigen-eps 1e-4 --color-eps 1e-4 --eigen-vis ablations/dense_sphere_eigen.ply",
+      bin=clustering_bin, eval=False
+    ),
+  ],
+
+  "dense-sphere-smooth-boundaries": [
+    #run("dense_sphere.obj", "dense_sphere.ply", "-d data/hokusai.jpg --no-incremental-qem \
+    #--sample-kind approx -t 500000")
   ],
 
   # Test case for smoothing

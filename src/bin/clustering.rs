@@ -152,28 +152,29 @@ pub fn main() -> std::io::Result<()> {
         pars3d::save(&args.cluster_vis, &out_scene)?;
     }
 
-    if !args.eigen_vis.is_empty() {
-        let eigenvalues = m
-            .vertices()
-            .map(|(vi, (q, _, _))| {
-                let eigens = q.eigen_sorted().0;
-                (vi, args.eigenvalue.apply(eigens))
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
+    let eigenvalues = m
+        .vertices()
+        .map(|(vi, (q, _, _))| {
+            let eigens = q.eigen_sorted().0;
+            (vi, args.eigenvalue.apply(eigens))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
 
+    let [min_e, max_e] = eigenvalues
+        .values()
+        .fold([F::INFINITY, F::NEG_INFINITY], |[l, h], &n| {
+            [l.min(n), h.max(n)]
+        });
+    assert!(max_e.is_finite());
+    assert!(min_e.is_finite());
+    assert!(max_e >= min_e);
+    println!("[INFO] eigenvalues in range [{min_e}, {max_e}]");
+
+    if !args.eigen_vis.is_empty() {
         let mut face_eigens = (0..mesh.f.len())
             .map(|i| eigenvalues[&face_charts[i]])
             .collect::<Vec<F>>();
-        let [min_e, max_e] = face_eigens
-            .iter()
-            .fold([F::INFINITY, F::NEG_INFINITY], |[l, h], &n| {
-                [l.min(n), h.max(n)]
-            });
-        assert!(max_e.is_finite());
-        assert!(min_e.is_finite());
-        assert!(max_e >= min_e);
         let r = max_e - min_e;
-        println!("[INFO] eigenvalues in range [{min_e}, {max_e}]");
         for e in &mut face_eigens {
             *e -= min_e;
             if r != 0. {
@@ -259,16 +260,7 @@ pub fn face_clustering<'a, 'b>(
         }
     }
 
-    let mut vertex_adj = vec![vec![]; vs.len()];
-    for &[e0, e1] in edge_face_adj.keys() {
-        if e0 == e1 {
-            continue;
-        }
-        assert!(!vertex_adj[e0].contains(&e1));
-        vertex_adj[e0].push(e1);
-        assert!(!vertex_adj[e1].contains(&e0));
-        vertex_adj[e1].push(e0);
-    }
+    //let vert_vert_adj = pars3d::adjacency::VertexAdj::new(fs, vs.len());
 
     // for each real mesh edge, track which charts it is a part of.
     // Each edge can be at most part of 2 charts.
@@ -288,7 +280,7 @@ pub fn face_clustering<'a, 'b>(
                 .as_slice()
                 .iter()
                 .copied()
-                .map(|vi| vcs[vi])
+                .map(|vi| vcs.get(vi).copied().unwrap_or([0.; 3]))
                 .map(|vc| kmul(per_vert_weight, vc))
                 .fold([0.; 3], add);
             kmul(area.recip(), sum_color)
@@ -345,8 +337,8 @@ pub fn face_clustering<'a, 'b>(
             // deviation in the range [0, 1]
             let dev = 1. - theta;
             assert!((0.0..=1.0).contains(&dev));
-            // close to L0
-            dev //.sqrt()
+            // close to L0?
+            dev * dev //.sqrt()
         }};
     }
     // for each chart
@@ -362,8 +354,10 @@ pub fn face_clustering<'a, 'b>(
             assert_ne!(ci, ni);
             assert_ne!(pi, ni);
             let prev = incident_angles[fi].entry(ci).or_default();
-            assert!(!prev.contains(&minmax(pi, ni)));
-            prev.push(minmax(pi, ni));
+            assert!(!prev.contains(&[pi, ni]));
+            // imporant to retain original winding order here, so we can determine what is right
+            // and left.
+            prev.push([pi, ni]);
         }
     }
 
@@ -418,8 +412,6 @@ pub fn face_clustering<'a, 'b>(
               // metrics.
               _ if args.eigen_eps <= 0. || args.color_eps <= 0. => 0.,
               ShapeMetric::None => 0.,
-              ShapeMetric::Convexity => todo!(),
-              //ShapeMetric::Planarity => neigens[1],
               ShapeMetric::BoundaryLength => {
                 // Tested here: dividing by new area seems to make it prefer rounder charts,
                 // whereas just plain seems to be ok with skinny charts.
@@ -531,17 +523,23 @@ pub fn face_clustering<'a, 'b>(
             .unwrap(),
     );
 
+    // for pairs of charts (in minmax order)
+    // store an additional stateful preference for their merge
+    let mut merge_preferences: BTreeMap<[usize; 2], F> = BTreeMap::new();
+
     let mut pq2 = PriorityQueue::new();
     // fml this is some bullshit I need to rewrite
     let mut pq3 = PriorityQueue::new();
-    'outer: while let Some((e, [dev, cd, len])) = pq.pop() {
+    'outer: while let Some((e, [dev, cd, s])) = pq.pop() {
         assert!(pq2.is_empty());
-        pq2.push(e, [cd, dev, len]);
-        while let Some((e, [cd, dev, len])) = pq2.pop() {
+        pq2.push(e, [cd, dev, s]);
+        while let Some((e, [cd, dev, s])) = pq2.pop() {
             assert!(pq3.is_empty());
-            pq3.push(e, [len, cd, dev]);
+            let merge_pref = merge_preferences.get(&e).copied().unwrap_or(0.);
+            let merge_pref = NotNan::new(merge_pref).unwrap();
+            pq3.push(e, [merge_pref, s, cd, dev]);
             // hohoho kms
-            while let Some(([e0, e1], [_len, cd, dev])) = pq3.pop() {
+            while let Some(([e0, e1], [_mp, _s, cd, dev])) = pq3.pop() {
                 assert!(e0 < e1);
                 assert_ne!(e0, e1);
                 // Termination criteria
@@ -574,21 +572,19 @@ pub fn face_clustering<'a, 'b>(
                     shared_chart_edges.entry(nc).or_default().append(&mut sce);
                 }
 
-                if args.shape_metric == ShapeMetric::AngleDeviation {
-                    for (c, pns) in std::mem::take(&mut incident_angles[e0]) {
-                        use std::collections::btree_map::Entry as BEntry;
-                        match incident_angles[e1].entry(c) {
-                            BEntry::Vacant(v) => {
-                                v.insert(pns);
-                            }
-                            BEntry::Occupied(mut o) => {
-                                let opn = o.get_mut();
-                                for pn in pns {
-                                    let (new_len, new_wedge) = new_wedges(opn, pn);
-                                    opn.truncate(new_len);
-                                    if let Some(new_wedge) = new_wedge {
-                                        opn.push(new_wedge);
-                                    }
+                for (c, pns) in std::mem::take(&mut incident_angles[e0]) {
+                    use std::collections::btree_map::Entry as BEntry;
+                    match incident_angles[e1].entry(c) {
+                        BEntry::Vacant(v) => {
+                            v.insert(pns);
+                        }
+                        BEntry::Occupied(mut o) => {
+                            let opn = o.get_mut();
+                            for pn in pns {
+                                let (new_len, new_wedge) = new_wedges(opn, pn);
+                                opn.truncate(new_len);
+                                if let Some(new_wedge) = new_wedge {
+                                    opn.push(new_wedge);
                                 }
                             }
                         }
@@ -623,17 +619,18 @@ pub fn face_clustering<'a, 'b>(
                 }
 
                 let first_eps = args.ordering.first_eps(args.eigen_eps, args.color_eps);
-                while let Some((ne, [ndev, ncd, nlen])) =
+                while let Some((ne, [ndev, ncd, ns])) =
                     pq.pop_if(|_, [ndev, _, _]| approx_eq(**ndev, *dev, first_eps))
                 {
-                    pq2.push(ne, [ncd, ndev, nlen]);
+                    pq2.push(ne, [ncd, ndev, ns]);
                 }
 
                 let snd_eps = args.ordering.second_eps(args.eigen_eps, args.color_eps);
-                while let Some((ne, [ncd, ndev, nlen])) =
+                while let Some((ne, [ncd, ndev, ns])) =
                     pq2.pop_if(|_, [ncd, _, _]| approx_eq(**ncd, *cd, snd_eps))
                 {
-                    pq3.push(ne, [nlen, ncd, ndev]);
+                    let merge_pref = merge_preferences.get(&ne).copied().unwrap_or(0.);
+                    pq3.push(ne, [NotNan::new(merge_pref).unwrap(), ns, ncd, ndev]);
                 }
 
                 p.set_position(m.num_vertices() as u64);
@@ -681,26 +678,26 @@ impl Eigenvalue {
     }
 }
 
-fn merge_wedges(a: [usize; 2], b: [usize; 2]) -> Option<[usize; 2]> {
-    match [a, b] {
-        [[w0, w1], [c0, c1]]
-        | [[w0, w1], [c1, c0]]
-        | [[w1, w0], [c0, c1]]
-        | [[w1, w0], [c1, c0]]
-            if w0 == c0 =>
-        {
-            Some(minmax(w1, c1))
-        }
-        _ => None,
-    }
+fn merge_wedges([a0, a1]: [usize; 2], [b0, b1]: [usize; 2]) -> Option<[usize; 2]> {
+    assert_ne!(a0, b0, "Shouldn't happen if winding order is consistent");
+    assert_ne!(a1, b1, "Shouldn't happen if winding order is consistent");
+
+    let v = if a1 == b0 {
+        [a0, b1]
+    } else if a0 == b1 {
+        [b0, a1]
+    } else {
+        return None;
+    };
+    Some(v)
 }
 
 // TODO decide if this only works for meshes without repeat faces or not
 /// Sorts this set of set wedges such that all those which will be deleted are at the end.
 /// Then, the last (return value) can be removed and replaced with the optional return value.
 fn new_wedges(wedges: &mut [[usize; 2]], mut curr: [usize; 2]) -> (usize, Option<[usize; 2]>) {
-    assert!(curr[0] < curr[1]);
-    assert!(wedges.iter().all(|[a, b]| a < b));
+    //assert!(curr[0] < curr[1]);
+    //assert!(wedges.iter().all(|[a, b]| a < b));
     let mut to_keep = wedges.len();
     while to_keep > 0 {
         let mut any = false;
@@ -784,12 +781,6 @@ pub enum ShapeMetric {
     /// The angle at each boundary point in the cluster's deviation from 180 degrees.
     /// (Prefer straight edges)
     AngleDeviation,
-    // How flat each shape is
-    //Planarity,
-
-    /// This is a simple metric which instead measures the connected boundary of adjacent faces within each
-    /// chart?
-    Convexity,
 
     None,
 }
@@ -798,8 +789,6 @@ impl_display!(
   ShapeMetric,
   BoundaryLength => "boundary-length",
   AngleDeviation => "angle-deviation",
-  //Planarity => "planarity",
-  Convexity => "convexity",
   None => "none",
 );
 

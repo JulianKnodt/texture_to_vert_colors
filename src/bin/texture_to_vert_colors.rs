@@ -68,11 +68,11 @@ pub struct Args {
     pixel_sep: F,
 
     /// How much to pull each vertex associated with an edge toward it.
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long, default_value_t = 0.5)]
     edge_pull: F,
 
     /// How much to pull each vertex associated with a vertex toward it.
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long, default_value_t = 0.5)]
     vertex_pull: F,
 
     /// Area below which faces can be deleted
@@ -344,10 +344,10 @@ pub fn texture_to_vert_colors<'a>(
                 fi,
                 &src_txs,
                 &mut out,
-                &mut face_labels,
                 &mut corner_map,
                 &mut edge_map,
                 &mut labels,
+                &mut face_labels,
                 args,
             ),
             SampleKind::Direct => sample_direct(
@@ -1081,6 +1081,31 @@ pub fn sample_exact(
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
+    let cardinal_dirs = |[u, v]: [i32; 2]| [[u + 1, v], [u, v + 1], [u - 1, v], [u, v - 1]];
+    let diags = |[u, v]: [i32; 2]| {
+        [
+            [u + 1, v + 1],
+            [u + 1, v - 1],
+            [u - 1, v + 1],
+            [u - 1, v - 1],
+        ]
+    };
+    let mut any_isolated = false;
+    for &uv in pixel_map.keys() {
+        let has_nbr = cardinal_dirs(uv)
+            .into_iter()
+            .chain(diags(uv).into_iter())
+            .any(|[nu, nv]| pixel_map.contains_key(&[nu, nv]));
+        any_isolated = any_isolated || !has_nbr;
+    }
+
+    if any_isolated {
+        out.v.truncate(start);
+        out.n.truncate(start);
+        out.vertex_attrs.truncate(start);
+        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+    }
+
     // hohoho what a funny name
     macro_rules! triagram {
         () => {{
@@ -1092,14 +1117,14 @@ pub fn sample_exact(
             );
             println!();
             for h in iaabb.height_range() {
-                print!("{h}");
+                print!("{h: >4}");
                 for w in iaabb.width_range() {
                     let c = if pixel_map.contains_key(&[w, h]) {
                         "x"
                     } else {
                         "-"
                     };
-                    print!("{c}");
+                    print!("{c: >4}");
                 }
                 println!();
             }
@@ -1426,7 +1451,6 @@ pub fn sample_approx(
     fi: usize,
     src: &SourceTextures,
     out: &mut Mesh,
-    face_labels: &mut Vec<FaceLabel>,
 
     // map from edge -> (original face idx, vertices), which stores vertices along every half edge
     corner_map: &mut Map<[U; 3], Vec<(usize, usize)>>,
@@ -1434,6 +1458,7 @@ pub fn sample_approx(
     edge_map: &mut Map<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
     // map from new vertex index to original vertex position and distance
     labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
+    face_labels: &mut Vec<FaceLabel>,
 
     args: &Args,
 ) -> bool {
@@ -1511,6 +1536,31 @@ pub fn sample_approx(
         assert!(pixel_map.insert(c, vi).is_none());
     }
 
+    macro_rules! triagram {
+        () => {{
+            print!("  ");
+            print!(
+                "{} {} ",
+                iaabb.width_range().start,
+                iaabb.width_range().start + 1
+            );
+            println!();
+            for h in iaabb.height_range() {
+                print!("{h} ");
+                for w in iaabb.width_range() {
+                    let c = if let Some(c) = pixel_map.get(&[w, h]) {
+                        let c = c % 10000;
+                        format!("{c}")
+                    } else {
+                        String::from("-")
+                    };
+                    print!("{c: >4} ");
+                }
+                println!();
+            }
+        }};
+    }
+
     // There aren't even enough vertices to make a triangle,
     // Fall back to using direct sampling
     if out.v.len() < start + 3 {
@@ -1538,6 +1588,53 @@ pub fn sample_approx(
         out.vertex_attrs.truncate(start);
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
+
+    // check that no vertex will become non-manifold
+    let mut any_nonmanifold_cnt = 0;
+    for &[u, v] in pixel_map.keys() {
+        let has_lr = pixel_map.contains_key(&[u + 1, v]) && pixel_map.contains_key(&[u - 1, v]);
+        let has_one_ud = pixel_map.contains_key(&[u + 1, v + 1])
+            || pixel_map.contains_key(&[u + 1, v - 1])
+            || pixel_map.contains_key(&[u - 1, v + 1])
+            || pixel_map.contains_key(&[u - 1, v - 1])
+            || pixel_map.contains_key(&[u, v + 1])
+            || pixel_map.contains_key(&[u, v - 1]);
+        // if it has left-right, it must also have at least one up or down
+        if has_lr && !has_one_ud {
+            any_nonmanifold_cnt += 1;
+        }
+
+        let has_ud = pixel_map.contains_key(&[u, v + 1]) && pixel_map.contains_key(&[u, v - 1]);
+        let has_one_lr = pixel_map.contains_key(&[u + 1, v])
+            || pixel_map.contains_key(&[u - 1, v])
+            || pixel_map.contains_key(&[u + 1, v + 1])
+            || pixel_map.contains_key(&[u - 1, v + 1])
+            || pixel_map.contains_key(&[u + 1, v - 1])
+            || pixel_map.contains_key(&[u - 1, v - 1]);
+        if has_ud && !has_one_lr {
+            any_nonmanifold_cnt += 1;
+        }
+    }
+    // if there is exactly one non-manifold item, possibly may be ok, but need to add a more
+    // complex check.
+    if any_nonmanifold_cnt > 0 {
+        //return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        return sample_exact(
+            mesh,
+            f,
+            fi,
+            src,
+            out,
+            corner_map,
+            edge_map,
+            labels,
+            face_labels,
+            args,
+        );
+        /*
+         */
+    }
+    //triagram!();
 
     // also check if a vertex only has collinear neighbors
 
@@ -1582,31 +1679,6 @@ pub fn sample_approx(
         out.vertex_attrs.truncate(start);
         // TODO may be better to use sample_exact for this one.
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
-    }
-
-    macro_rules! triagram {
-        () => {{
-            print!("  ");
-            print!(
-                "{} {} ",
-                iaabb.width_range().start,
-                iaabb.width_range().start + 1
-            );
-            println!();
-            for h in iaabb.height_range() {
-                print!("{h} ");
-                for w in iaabb.width_range() {
-                    let c = if let Some(c) = pixel_map.get(&[w, h]) {
-                        let c = c % 10000;
-                        format!("{c}")
-                    } else {
-                        String::from("----")
-                    };
-                    print!("{c} ");
-                }
-                println!();
-            }
-        }};
     }
 
     let cardinal_dirs = |[u, v]: [i32; 2]| [[u + 1, v], [u, v + 1], [u - 1, v], [u, v - 1]];
@@ -1845,19 +1917,26 @@ pub fn sample_approx(
             }
             curr
         };
+        let mut fix_up_side = |v| {
+            let end_pt = iter(v, new_vi);
+            assert_ne!(end_pt, new_vi, "{start_f} {}", out.f.len());
+            let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
+            let [e0_key, e1_key] = [og_vi, next_og_vi].map(|vi| mesh.v[vi].map(F::to_bits));
 
-        // add to the edge map here, to ensure that even if the edge doesn't have any
-        // intermediate vertices it will be labeled.
-        let end_pt = iter(l, new_vi);
-        let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
-        let [e0_key, e1_key] = [og_vi, next_og_vi].map(|vi| mesh.v[vi].map(F::to_bits));
-        let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
-        if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
-            fvs.push((fi, vec![]));
+            // add to the edge map here, to ensure that even if the edge doesn't have any
+            // intermediate vertices it will be labeled.
+            assert_ne!(e0_key, e1_key);
+            let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
+            if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
+                fvs.push((fi, vec![]));
+            }
+            true
+        };
+
+        // important to go both ways since sometimes vert_adj is not oriented correctly.
+        if !fix_up_side(l) || !fix_up_side(r) {
+            return false;
         }
-
-        // TODO I don't think I need to do this for the opposite side, but worth checking later
-        iter(r, new_vi);
     }
     let check = labels
         .range(start..)

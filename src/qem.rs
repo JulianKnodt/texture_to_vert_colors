@@ -26,10 +26,9 @@ pub struct Args {
     /// Minimum edge weight for each edge.
     pub min_edge_weight: F,
 
-    /// Epsilon value to use when comparing quadric errors.
-    pub abs_eps: F,
+    /// Additional scalar weighting to use for all edges.
+    pub edge_weight: F,
 
-    pub max_degree: usize,
     /// What percentage of faces should be retained at the end?
     pub target_tri_ratio: F,
     pub target_tri_num: usize,
@@ -47,16 +46,14 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             color_weight: 1.,
+            //color_weight: 0.1,
             color_preservation_weight: 5.,
 
             // XXX IMPORTANT this must be zero. Because there are many degenerate faces
             // if they are not zero, they will have an outsized impact on the final result.
             min_face_area: 0.,
-            min_edge_weight: 1e-2,
-
-            abs_eps: 1e-5,
-
-            max_degree: 100,
+            min_edge_weight: 0.,
+            edge_weight: 0.,
 
             display_progress: false,
 
@@ -74,8 +71,6 @@ impl Default for Args {
 pub struct QEMBuffers {
     edge_face_adj: HashMap<[usize; 2], EdgeKind>,
     pq: PriorityQueue<[usize; 2], NotNan<F>>,
-    snd_pq: PriorityQueue<[usize; 2], (u32, NotNan<F>)>,
-    recencies: BTreeMap<[usize; 2], u32>,
     did_update: Vec<[usize; 2]>,
     face_normals: Vec<[F; 3]>,
     face_verts: Vec<Vec<usize>>,
@@ -88,8 +83,6 @@ impl QEMBuffers {
     pub fn clear(&mut self) {
         self.edge_face_adj.clear();
         self.pq.clear();
-        self.snd_pq.clear();
-        self.recencies.clear();
         self.did_update.clear();
         self.face_normals.clear();
         // face verts handled separately
@@ -257,18 +250,17 @@ pub fn simplify_range_colored(
             continue;
         }
         let area = f.area(&mesh.v).max(0.);
-        let area = area + args.min_face_area;
         let n = normalize(bufs.face_normals[fi]);
 
+        let area = area + args.min_face_area;
         if length(n) == 0. {
-            // Handle this better (there will be many degenerate triangles)
             continue;
         }
 
         let f_slice = f.as_slice();
         for (i, &v) in f_slice.iter().enumerate() {
             let curr = mesh.v[v];
-            let pi = f_slice[i.checked_sub(1).unwrap_or_else(|| f.len() - 1)];
+            let pi = f_slice[(i + f.len() - 1) % f.len()];
             let prev = mesh.v[pi];
             let ni = f_slice[(i + 1) % f.len()];
             let e = std::cmp::minmax(v, ni);
@@ -282,6 +274,10 @@ pub fn simplify_range_colored(
             let mut q = Quadric::new_plane(curr, n, area) * interior_angle;
             q.area = area;
             m.data[v - offset].0 += q;
+
+            if args.edge_weight <= 0. {
+                continue;
+            }
 
             const PI: F = std::f64::consts::PI as F;
 
@@ -314,13 +310,13 @@ pub fn simplify_range_colored(
             }
             let edge_dir = normalize(edge_dir);
             let edge_quadric = Quadric::new_plane(curr, normalize(cross(n, edge_dir)), 0.);
-
             let colpw =
                 dist(mesh.vert_colors[v], mesh.vert_colors[ni]) * args.color_preservation_weight;
 
+
             let e_w = e_w.max(colpw);
 
-            let total_e_w = e_w * edge_len;
+            let total_e_w = e_w * edge_len * args.edge_weight;
             let mut edge_quadric = edge_quadric * total_e_w.max(1e-4);
             edge_quadric.area = 0.;
 
@@ -405,229 +401,186 @@ pub fn simplify_range_colored(
 
     let v0_adj = &mut bufs.v0_adj;
     let v1_adj = &mut bufs.v1_adj;
-    'outer: while let Some((e, q)) = bufs.pq.pop() {
-        assert!(bufs.snd_pq.is_empty());
-        bufs.snd_pq.push(e, (0, q));
-        bufs.recencies.clear();
-        while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
-            assert!(e0 < e1);
-            assert!(vert_range.contains(&(e0 + offset)));
-            assert!(vert_range.contains(&(e1 + offset)));
-            if m.is_deleted(e0) || m.is_deleted(e1) {
-                continue;
-            }
-            if locked(e0 + offset) || locked(e1 + offset) {
-                continue;
-            }
-            if curr_tris <= target_num_tris {
-                break 'outer;
-            }
+    'outer: while let Some(([e0, e1], _q_err)) = bufs.pq.pop() {
+        assert!(e0 < e1);
+        assert!(vert_range.contains(&(e0 + offset)));
+        assert!(vert_range.contains(&(e1 + offset)));
+        if m.is_deleted(e0) || m.is_deleted(e1) {
+            continue;
+        }
+        if locked(e0 + offset) || locked(e1 + offset) {
+            continue;
+        }
+        if curr_tris <= target_num_tris {
+            break 'outer;
+        }
 
-            let is_bd = bd_edges
-                .get(&e0)
-                .map(|bd_es| {
-                    bd_es.iter().any(|bd_e| {
-                        let [v0, v1] = bd_e.map(|v| m.get_new_vertex(v));
-                        std::cmp::minmax(v0, v1) == [e0, e1]
-                    })
+        let is_bd = bd_edges
+            .get(&e0)
+            .map(|bd_es| {
+                bd_es.iter().any(|bd_e| {
+                    let [v0, v1] = bd_e.map(|v| m.get_new_vertex(v));
+                    std::cmp::minmax(v0, v1) == [e0, e1]
                 })
-                .unwrap_or(false);
+            })
+            .unwrap_or(false);
 
-            if is_bd {
-                assert!(bd_edges.contains_key(&e1));
+        debug_assert!((!is_bd) ^ bd_edges.contains_key(&e1));
+
+        // link condition
+        // https://github.com/cnr-isti-vclab/vcglib/blob/88c881d8393929c8e09b9df765ce8582bf386499/vcg/simplex/face/topology.h#L460
+        macro_rules! all_adj_verts {
+            ($dst: expr, $v: expr) => {{
+                $dst.clear();
+                for &adj_fi in &face_verts[$v] {
+                    let iter = mesh.f[adj_fi]
+                        .as_triangle_fan()
+                        .map(|t| t.map(|vi| vi - offset))
+                        .map(|t| t.map(|vi| m.get_new_vertex(vi)))
+                        .filter(|t| t.contains(&$v))
+                        // remove degenerate tris
+                        .filter(|[t0, t1, t2]| t0 != t1 && t0 != t2 && t1 != t2)
+                        .flat_map(|t| t.into_iter())
+                        .filter(|&v| v != $v);
+                    $dst.extend(iter);
+                }
+                $dst.sort_unstable();
+                $dst.dedup();
+            }};
+        }
+        all_adj_verts!(v0_adj, e0);
+        all_adj_verts!(v1_adj, e1);
+
+        let cnt = v1_adj.iter().filter(|v1a| v0_adj.contains(&v1a)).count();
+
+        if is_bd && cnt != 1 {
+            continue;
+        } else if !is_bd && cnt != 2 {
+            continue;
+        }
+
+        let mut q_acc = QuadricAccumulator::default();
+        let &(q0, p0, a0) = m.get(e0);
+        let &(q1, p1, a1) = m.get(e1);
+        q_acc += q0;
+        q_acc += q1;
+        let pos = q_acc
+            .point_with_volume_opt()
+            .unwrap_or_else(|| kmul(0.5, add(p0, p1)));
+        let q01 = q0 + q1;
+        let attr = q01.attributes_opt(pos, attr_ws);
+        let attr = std::array::from_fn(|i| {
+            if let Some(a) = attr[i] {
+                a
+            } else {
+                (a0[i] + a1[i]) / 2.
             }
+        });
+        if dist(attr, a0).max(dist(attr, a1)) > args.color_diff_threshold {
+            continue;
+        }
 
-            // link condition
-            // https://github.com/cnr-isti-vclab/vcglib/blob/88c881d8393929c8e09b9df765ce8582bf386499/vcg/simplex/face/topology.h#L460
-            macro_rules! all_adj_verts {
-                ($dst: expr, $v: expr) => {{
-                    $dst.clear();
-                    for &adj_fi in &face_verts[$v] {
-                        let iter = mesh.f[adj_fi]
-                            .as_triangle_fan()
-                            .map(|t| t.map(|vi| vi - offset))
-                            .map(|t| t.map(|vi| m.get_new_vertex(vi)))
-                            .filter(|t| t.contains(&$v))
-                            // remove degenerate tris
-                            .filter(|[t0, t1, t2]| t0 != t1 && t0 != t2 && t1 != t2)
-                            .flat_map(|t| t.into_iter())
-                            .filter(|&v| v != $v);
-                        $dst.extend(iter);
+        // -- Commit
+
+        m.merge(e0, e1, |_, _| {
+            curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
+            (q01, pos, attr)
+        });
+        debug_assert!(m.is_deleted(e0));
+        debug_assert!(!m.is_deleted(e1));
+
+        macro_rules! remap_bd {
+            ($adj_bds: expr) => {{
+                for adj_bd in $adj_bds.iter_mut() {
+                    let [e0, e1] = adj_bd.map(|v| m.get_new_vertex(v));
+                    *adj_bd = std::cmp::minmax(e0, e1);
+                }
+            }};
+        }
+        match (bd_edges.remove(&e0), bd_edges.remove(&e1)) {
+            (None, None) => {}
+            (Some(mut adj_bds), None) => {
+                remap_bd!(adj_bds);
+                bd_edges.insert(e1, adj_bds);
+            }
+            (None, Some(mut adj_bds)) => {
+                remap_bd!(adj_bds);
+                bd_edges.insert(e1, adj_bds);
+            }
+            (Some(mut bd0s), Some(mut bd1s)) => {
+                remap_bd!(bd0s);
+                remap_bd!(bd1s);
+                // TODO delete shared between bd0s, bd1s to not allocate a new vector
+                let mut new = vec![];
+                for &bd0 in &bd0s {
+                    if !bd1s.contains(&bd0) {
+                        new.push(bd0);
                     }
-                    $dst.sort_unstable();
-                    $dst.dedup();
-                }};
-            }
-            all_adj_verts!(v0_adj, e0);
-            all_adj_verts!(v1_adj, e1);
-
-            let cnt = v1_adj.iter().filter(|v1a| v0_adj.contains(&v1a)).count();
-
-            if is_bd && cnt != 1 {
-                continue;
-            } else if !is_bd && cnt != 2 {
-                continue;
-            }
-
-            let mut q_acc = QuadricAccumulator::default();
-            let &(q0, p0, a0) = m.get(e0);
-            let &(q1, p1, a1) = m.get(e1);
-            q_acc += q0;
-            q_acc += q1;
-            let pos = q_acc
-                .point_with_volume_opt()
-                .unwrap_or_else(|| kmul(0.5, add(p0, p1)));
-            let q01 = q0 + q1;
-            let attr = q01.attributes_opt(pos, attr_ws);
-            let attr = std::array::from_fn(|i| {
-                if let Some(a) = attr[i] {
-                    a
-                } else {
-                    (a0[i] + a1[i]) / 2.
                 }
-            });
-            if dist(attr, a0).max(dist(attr, a1)) > args.color_diff_threshold {
-                continue;
-            }
-
-            // -- Commit
-
-            if let Some(adj_faces) = bufs.edge_face_adj.get(&[e0, e1]) {
-                for &af in adj_faces.as_slice() {
-                    let f = &mesh.f[af];
-                    let Some([q0, q1]) = f.quad_opp_edge(e0, e1) else {
-                        continue;
-                    };
-                    let r = bufs
-                        .recencies
-                        .entry(std::cmp::minmax(q0, q1))
-                        .or_insert(rec);
-                    *r += 1;
-                }
-            };
-
-            m.merge(e0, e1, |_, _| {
-                curr_costs[e1] = q01.cost_attrib(pos, attr, attr_ws).max(0.);
-                (q01, pos, attr)
-            });
-            debug_assert!(m.is_deleted(e0));
-            debug_assert!(!m.is_deleted(e1));
-
-            macro_rules! remap_bd {
-                ($adj_bds: expr) => {{
-                    for adj_bd in $adj_bds.iter_mut() {
-                        let [e0, e1] = adj_bd.map(|v| m.get_new_vertex(v));
-                        *adj_bd = std::cmp::minmax(e0, e1);
+                for &bd1 in &bd1s {
+                    if !bd0s.contains(&bd1) {
+                        new.push(bd1);
                     }
-                }};
+                }
+                new.sort_unstable();
+                new.dedup();
+                bd_edges.insert(e1, new);
             }
-            match (bd_edges.remove(&e0), bd_edges.remove(&e1)) {
-                (None, None) => {}
-                (Some(mut adj_bds), None) => {
-                    remap_bd!(adj_bds);
-                    bd_edges.insert(e1, adj_bds);
-                }
-                (None, Some(mut adj_bds)) => {
-                    remap_bd!(adj_bds);
-                    bd_edges.insert(e1, adj_bds);
-                }
-                (Some(mut bd0s), Some(mut bd1s)) => {
-                    remap_bd!(bd0s);
-                    remap_bd!(bd1s);
-                    // TODO delete shared between bd0s, bd1s to not allocate a new vector
-                    let mut new = vec![];
-                    for &bd0 in &bd0s {
-                        if !bd1s.contains(&bd0) {
-                            new.push(bd0);
-                        }
-                    }
-                    for &bd1 in &bd1s {
-                        if !bd0s.contains(&bd1) {
-                            new.push(bd1);
-                        }
-                    }
-                    new.sort_unstable();
-                    new.dedup();
-                    bd_edges.insert(e1, new);
-                }
+        }
+
+        let [ef0, ef1] = face_verts.get_disjoint_mut([e0, e1]).unwrap();
+        let ef1_len = ef1.len();
+        for f in std::mem::take(ef0) {
+            if !ef1[0..ef1_len].contains(&f) {
+                ef1.push(f);
             }
-
-            let [ef0, ef1] = face_verts.get_disjoint_mut([e0, e1]).unwrap();
-            let ef1_len = ef1.len();
-            for f in std::mem::take(ef0) {
-                if !ef1[0..ef1_len].contains(&f) {
-                    ef1.push(f);
-                }
+        }
+        let prev_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
+        ef1.retain(|&fi| {
+            mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
+            // important to not rotate here otherwise the ordering may change
+            // leading to non-manifold edge introduction
+            let retain = !mesh.f[fi].canonicalize_no_rotate();
+            if !retain {
+                // necessary for triangle counting
+                mesh.f[fi] = FaceKind::empty();
             }
-            let prev_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
-            ef1.retain(|&fi| {
-                mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
-                // important to not rotate here otherwise the ordering may change
-                // leading to non-manifold edge introduction
-                let retain = !mesh.f[fi].canonicalize_no_rotate();
-                if !retain {
-                    // necessary for triangle counting
-                    mesh.f[fi] = FaceKind::empty();
+            retain
+        });
+        let new_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
+        curr_tris -= prev_tri - new_tri;
+
+        for &mut fi in ef1 {
+            bufs.face_normals[fi] = normalize(mesh.f[fi].normal_with(|vi| m.get(vi - offset).1));
+        }
+
+        // TEMPORARY check that face verts is correct
+
+        bufs.did_update.clear();
+        let e_dst = m.get_new_vertex(e1);
+        for adj in m.vertex_adj(e_dst) {
+            let prio = update_cost_of_edge!(e_dst, adj);
+            let adj_e = std::cmp::minmax(e_dst, adj);
+            bufs.pq.push(adj_e, prio);
+            bufs.did_update.push(adj_e);
+        }
+
+        for adj in m.vertex_adj(e_dst) {
+            for adj2 in m.vertex_adj(adj) {
+                let adj_e = std::cmp::minmax(adj, adj2);
+                if adj2 == e_dst || bufs.did_update.contains(&adj_e) {
+                    continue;
                 }
-                retain
-            });
-            let new_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
-            curr_tris -= prev_tri - new_tri;
 
-            for &mut fi in ef1 {
-                bufs.face_normals[fi] =
-                    normalize(mesh.f[fi].normal_with(|vi| m.get(vi - offset).1));
-            }
-
-            // TEMPORARY check that face verts is correct
-
-            bufs.did_update.clear();
-            let e_dst = m.get_new_vertex(e1);
-            for adj in m.vertex_adj(e_dst) {
-                let prio = update_cost_of_edge!(e_dst, adj);
-                let adj_e = std::cmp::minmax(e_dst, adj);
-                bufs.snd_pq.remove(&adj_e);
-                bufs.pq.push(adj_e, prio);
                 bufs.did_update.push(adj_e);
+                let prio = update_cost_of_edge!(adj, adj2);
+
+                bufs.pq.push(adj_e, prio);
             }
+        }
 
-            for adj in m.vertex_adj(e_dst) {
-                for adj2 in m.vertex_adj(adj) {
-                    let adj_e = std::cmp::minmax(adj, adj2);
-                    if adj2 == e_dst || bufs.did_update.contains(&adj_e) {
-                        continue;
-                    }
-
-                    bufs.did_update.push(adj_e);
-                    let prio = update_cost_of_edge!(adj, adj2);
-                    let recency = bufs.recencies.get(&adj_e).copied().unwrap_or(0);
-
-                    if !approx_eq(*prio, *q_err, args.abs_eps) {
-                        bufs.snd_pq.remove(&adj_e);
-                        bufs.pq.push(adj_e, prio);
-                        continue;
-                    }
-                    let changed = bufs
-                        .snd_pq
-                        .change_priority(&adj_e, (recency, prio))
-                        .is_some();
-                    if !changed {
-                        bufs.pq.push(adj_e, prio);
-                    }
-                }
-            }
-
-            while let Some((_e, nq_err)) = bufs.pq.peek()
-                && approx_eq(**nq_err, *q_err, args.abs_eps)
-            {
-                let (e, nq_err) = bufs.pq.pop().unwrap();
-                let recency = bufs.recencies.get(&e).copied().unwrap_or(0);
-                bufs.snd_pq.push(e, (recency, nq_err));
-            }
-
-            if let Some(ref p) = p {
-                p.set_position(curr_tris as u64);
-            }
+        if let Some(ref p) = p {
+            p.set_position(curr_tris as u64);
         }
     }
 
@@ -660,9 +613,11 @@ fn inv_sigmoid(y: F) -> F {
 }
 */
 
+/*
 fn approx_eq(a: F, b: F, abs_eps: F) -> bool {
     if a == b {
         return true;
     }
     (a - b).abs() < abs_eps
 }
+*/

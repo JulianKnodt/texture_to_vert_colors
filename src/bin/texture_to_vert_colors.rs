@@ -116,6 +116,10 @@ pub struct Args {
     /// edges when choosing to use quads.
     #[arg(long, default_value_t = 0.)]
     gap_fill_dist: F,
+
+    /// Resize this image to a fraction of its input.
+    #[arg(long, short, default_value_t = 1.)]
+    image_size_frac: F,
 }
 
 pub fn main() {
@@ -132,7 +136,7 @@ pub fn main() {
     let mut input_bd_edges = 0;
     let mut input_non_manifold_edges = 0;
     for m in &scene.meshes {
-        let (bd, _, nm) = m.num_edge_kinds_by_position();
+        let (_, bd, nm) = m.num_edge_kinds_by_position();
         input_bd_edges += bd;
         input_non_manifold_edges += nm;
     }
@@ -156,9 +160,40 @@ pub fn main() {
             ))
             .flipv();
 
-        println!("[INFO]: Diffuse W = {}, H = {}", img.width(), img.height());
+        let (w, h) = img.dimensions();
+        println!("[INFO]: Diffuse W = {w}, H = {h}");
+        let img = if args.image_size_frac != 1. {
+            let nw = (w as F * args.image_size_frac).ceil() as u32;
+            let nh = (h as F * args.image_size_frac).ceil() as u32;
+            let img = img.resize(nw, nh, image::imageops::FilterType::Triangle);
+            let (nw, nh) = img.dimensions();
+            println!(
+                "[INFO]: Resized image ({}) from {w}, {h} to {nw}, {nh}",
+                args.diffuse_img
+            );
+            img
+        } else {
+            img
+        };
         Some(img)
     } else {
+        for texture in scene.textures.iter_mut() {
+            let Some(txt) = texture.image.as_mut() else {
+                continue;
+            };
+            *txt = txt.flipv();
+            if args.image_size_frac != 1. {
+                let (w, h) = txt.dimensions();
+                let nw = (w as F * args.image_size_frac).ceil() as u32;
+                let nh = (h as F * args.image_size_frac).ceil() as u32;
+                *txt = txt.resize(nw, nh, image::imageops::FilterType::Triangle);
+                let (nw, nh) = txt.dimensions();
+                println!(
+                    "[INFO]: Resized image ({}) from {w}, {h} to {nw}, {nh}",
+                    texture.original_path
+                );
+            }
+        }
         None
     };
 
@@ -182,7 +217,9 @@ pub fn main() {
                 if let Some(diff_img) = diff_img.as_ref() {
                     return diff_img;
                 }
-                let mi = mesh.mat_for_face(fi).unwrap();
+                let mi = mesh
+                    .mat_for_face(fi)
+                    .expect(&format!("{:?}", mesh.face_mat_idx));
                 let &ti = scene.materials[mi]
                     .textures
                     .iter()
@@ -200,7 +237,7 @@ pub fn main() {
     let mut output_bd_edges = 0;
     let mut output_non_manifold_edges = 0;
     for m in &out_scene.meshes {
-        let (bd, _, nm) = m.num_edge_kinds();
+        let (_, bd, nm) = m.num_edge_kinds();
         output_bd_edges += bd;
         output_non_manifold_edges += nm;
     }
@@ -733,7 +770,7 @@ pub fn texture_to_vert_colors<'a>(
                     let n = &edge_adj[&quad[i - 1]];
                     let Some(&next) = n.iter().find(|&&v| !quad.contains(&v)) else {
                         println!(
-                            "{i:?} {:?}",
+                            "here {i:?} {:?}",
                             fvs.iter()
                                 .map(|fv| (fv.1, edge_adj[&fv.1].clone()))
                                 .collect::<Vec<_>>()
@@ -1018,7 +1055,7 @@ pub fn sample_exact(
 
         let outside_all = uv_f.as_triangle_fan().all(|uv_t| {
             let t_bary = cfs.map(|cf| pars3d::barycentric_2d(cf, uv_t));
-            (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0. || b[i] > 1.))
+            (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0.) || t_bary.iter().all(|b| b[i] > 1.))
         });
         if outside_all {
             continue;
@@ -1028,6 +1065,8 @@ pub fn sample_exact(
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         assert!(tex_u.is_finite() && tex_v.is_finite(), "{bary:?} {uv_f:?}");
 
+        let default_rgb = src.get_value(tex_u, tex_v);
+
         let raw_pos = barys.map(|bary| v_f.from_barycentric(bary));
 
         let new_verts = std::array::from_fn(|i| {
@@ -1036,7 +1075,7 @@ pub fn sample_exact(
             let (ti, bs) = bary.tri_idx_and_coords();
             if !bs.iter().any(|&b| b < -1e-3) {
                 let normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
-                return (pos, normal);
+                return (pos, default_rgb, normal);
             };
 
             let tri = v_f.as_triangle_fan().nth(ti).unwrap();
@@ -1044,9 +1083,11 @@ pub fn sample_exact(
             // NOTE have to be very careful here to not make the triangle non-convex
             let new_pos = nearest_point_on_tri(tri, pos);
 
-            let new_normal = n_f
-                .as_ref()
-                .map(|n_f| n_f.from_barycentric(v_f.barycentric(new_pos)));
+            let new_bary = v_f.barycentric(new_pos);
+            let [tu, tv] = uv_f.from_barycentric(new_bary);
+            let rgb = src.get_value(tu, tv);
+
+            let new_normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(new_bary));
             debug_assert!(
                 v_f.barycentric(new_pos)
                     .coords()
@@ -1055,14 +1096,14 @@ pub fn sample_exact(
                 "{:?}",
                 v_f.barycentric(new_pos).coords(),
             );
-            (new_pos, new_normal)
+            (new_pos, rgb, new_normal)
         });
 
         // commit to this new pixel
-        let new_verts = new_verts.map(|(new_vert, normal)| {
+        let new_verts = new_verts.map(|(new_vert, rgb, normal)| {
             let vi = out.v.len();
             out.v.push(new_vert);
-            src.push_to_mesh(out, tex_u, tex_v);
+            out.vert_colors.push(rgb);
             if let Some(normal) = normal {
                 out.n.push(normal);
             }
@@ -1103,6 +1144,8 @@ pub fn sample_exact(
         out.v.truncate(start);
         out.n.truncate(start);
         out.vertex_attrs.truncate(start);
+        out.f.truncate(start_f);
+        face_labels.truncate(start_f);
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1502,28 +1545,31 @@ pub fn sample_approx(
         // small epsilon to handle points which are very close to edges.
         let outside_all = uv_f.as_triangle_fan().all(|uv_t| {
             let t_bary = cfs.map(|cf| pars3d::barycentric_2d(cf, uv_t));
-            (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0.))
+            (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0.) || t_bary.iter().all(|b| b[i] > 1.))
         });
         if outside_all {
             continue;
         }
 
         let bary = uv_f.barycentric(cf);
+        let rgb = src.get_value(cf[0], cf[1]);
         let (ti, bs) = bary.tri_idx_and_coords();
         let pos = v_f.from_barycentric(bary);
-        let (p, bary) = if !bs.iter().any(|&b| b < -1e-3) {
-            (pos, bary)
+        let (p, rgb, bary) = if !bs.iter().any(|&b| b < 0.) {
+            (pos, rgb, bary)
         } else {
             let tri = v_f.as_triangle_fan().nth(ti).unwrap();
             let new_pos = nearest_point_on_tri(tri, pos);
             let new_bary = v_f.barycentric(new_pos);
-            (new_pos, new_bary)
+            let [tu, tv] = uv_f.from_barycentric(new_bary);
+            let new_rgb = src.get_value(tu, tv);
+            (new_pos, new_rgb, new_bary)
         };
         let n = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
 
         let vi = out.v.len();
         out.v.push(p);
-        src.push_to_mesh(out, cf[0], cf[1]);
+        out.vert_colors.push(rgb);
         if let Some(n) = n {
             out.n.push(n);
         }
@@ -1554,13 +1600,24 @@ pub fn sample_approx(
             }
         }};
     }
+    assert_eq!(start_f, out.f.len());
+
+    macro_rules! truncate {
+        () => {{
+            out.v.truncate(start);
+            out.vert_colors.truncate(start);
+            out.n.truncate(start);
+            out.vertex_attrs.truncate(start);
+            out.f.truncate(start_f);
+            face_labels.truncate(start_f);
+        }};
+    }
 
     // There aren't even enough vertices to make a triangle,
     // Fall back to using direct sampling
-    if out.v.len() < start + 3 {
-        out.v.truncate(start);
-        out.n.truncate(start);
-        out.vertex_attrs.truncate(start);
+    let num_verts = out.v.len() - start;
+    if num_verts < 3 || num_verts < f.len() {
+        truncate!();
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1577,9 +1634,7 @@ pub fn sample_approx(
             || pixel_map.contains_key(&[u, v.wrapping_sub(1)]);
     }
     if !has_width || !has_height {
-        out.v.truncate(start);
-        out.n.truncate(start);
-        out.vertex_attrs.truncate(start);
+        truncate!();
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1625,8 +1680,6 @@ pub fn sample_approx(
             face_labels,
             args,
         );
-        /*
-         */
     }
     //triagram!();
 
@@ -1782,6 +1835,21 @@ pub fn sample_approx(
                 })
                 .or_insert(EdgeKind::Boundary(fi));
         }
+    }
+    if edge_face_adj.values().any(EdgeKind::is_non_manifold) {
+        truncate!();
+        return sample_exact(
+            mesh,
+            f,
+            fi,
+            src,
+            out,
+            corner_map,
+            edge_map,
+            labels,
+            face_labels,
+            args,
+        );
     }
 
     // Compute adjacent vertices to each boundary vertex
@@ -2113,10 +2181,8 @@ pub fn del_degen_bridges(
             let new_v = kmul(0.5, add(mesh.v[a], mesh.v[b]));
             let new_vc = kmul(0.5, add(mesh.vert_colors[a], mesh.vert_colors[b]));
 
-            unsafe {
-                *mesh.v.get_unchecked_mut(a) = new_v;
-                *mesh.vert_colors.get_unchecked_mut(a) = new_vc;
-            }
+            mesh.v[a] = new_v;
+            mesh.vert_colors[a] = new_vc;
             remap.set(b, a);
         };
 

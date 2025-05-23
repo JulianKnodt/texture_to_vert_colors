@@ -44,7 +44,6 @@ impl Default for Args {
         Self {
             color_weight: 1.,
             //color_weight: 1e-3,
-
             edge_weight: 1.,
 
             display_progress: false,
@@ -52,9 +51,9 @@ impl Default for Args {
             target_tri_ratio: 0.,
             target_tri_num: 100,
 
-            abs_eps: 5e-5, // has an outsized impact on the vertex colors, need to be careful
-            //abs_eps: 5e-7,
-
+            //abs_eps: 5e-5, // has an outsized impact on the vertex colors, need to be careful
+            // prefer 5e-7 usually
+            abs_eps: 5e-7,
             color_diff_threshold: F::INFINITY,
 
             check_bd: true,
@@ -416,7 +415,7 @@ pub fn simplify_range_colored(
                                 true => e_dst,
                                 false => m.get_new_vertex(v),
                             });
-                            (!mesh.f[fi].is_degenerate() /*&& mesh.f[fi].len() > 4 */).then_some(fi)
+                            (!mesh.f[fi].is_degenerate()/*&& mesh.f[fi].len() > 4 */).then_some(fi)
                         });
                     match EdgeKind::from_iter(faces_culled) {
                         Some(mut ek) => {
@@ -427,7 +426,6 @@ pub fn simplify_range_colored(
                     };
                 }
             }
-
 
             if let Some(prev) = bufs.recency.remove(&e) {
                 bufs.recency

@@ -62,10 +62,6 @@ pub struct Args {
     #[arg(long)]
     no_area_weight: bool,
 
-    /// Weight for each edge
-    #[arg(long, default_value_t = 1e-2)]
-    edge_weight: F,
-
     /// How much to weigh colors
     #[arg(long, default_value_t = 0.1)]
     color_weight: F,
@@ -523,10 +519,6 @@ pub fn face_clustering<'a, 'b>(
             .unwrap(),
     );
 
-    // for pairs of charts (in minmax order)
-    // store an additional stateful preference for their merge
-    let mut merge_preferences: BTreeMap<[usize; 2], F> = BTreeMap::new();
-
     let mut pq2 = PriorityQueue::new();
     // fml this is some bullshit I need to rewrite
     let mut pq3 = PriorityQueue::new();
@@ -535,11 +527,9 @@ pub fn face_clustering<'a, 'b>(
         pq2.push(e, [cd, dev, s]);
         while let Some((e, [cd, dev, s])) = pq2.pop() {
             assert!(pq3.is_empty());
-            let merge_pref = merge_preferences.get(&e).copied().unwrap_or(0.);
-            let merge_pref = NotNan::new(merge_pref).unwrap();
-            pq3.push(e, [merge_pref, s, cd, dev]);
+            pq3.push(e, [s, cd, dev]);
             // hohoho kms
-            while let Some(([e0, e1], [_mp, _s, cd, dev])) = pq3.pop() {
+            while let Some(([e0, e1], [_s, cd, dev])) = pq3.pop() {
                 assert!(e0 < e1);
                 assert_ne!(e0, e1);
                 // Termination criteria
@@ -629,8 +619,7 @@ pub fn face_clustering<'a, 'b>(
                 while let Some((ne, [ncd, ndev, ns])) =
                     pq2.pop_if(|_, [ncd, _, _]| approx_eq(**ncd, *cd, snd_eps))
                 {
-                    let merge_pref = merge_preferences.get(&ne).copied().unwrap_or(0.);
-                    pq3.push(ne, [NotNan::new(merge_pref).unwrap(), ns, ncd, ndev]);
+                    pq3.push(ne, [ns, ncd, ndev]);
                 }
 
                 p.set_position(m.num_vertices() as u64);
@@ -679,13 +668,20 @@ impl Eigenvalue {
 }
 
 fn merge_wedges([a0, a1]: [usize; 2], [b0, b1]: [usize; 2]) -> Option<[usize; 2]> {
-    assert_ne!(a0, b0, "Shouldn't happen if winding order is consistent");
-    assert_ne!(a1, b1, "Shouldn't happen if winding order is consistent");
+    // TODO here handle inconsistent winding order
+    //assert_ne!(a0, b0, "Shouldn't happen if winding order is consistent");
+    //assert_ne!(a1, b1, "Shouldn't happen if winding order is consistent");
 
     let v = if a1 == b0 {
         [a0, b1]
     } else if a0 == b1 {
         [b0, a1]
+    } else if a0 == b0 {
+        // inconsistent winding
+        [a1, b1]
+    } else if a1 == b1 {
+        // inconsistent winding
+        [a0, b0]
     } else {
         return None;
     };
@@ -704,7 +700,7 @@ fn new_wedges(wedges: &mut [[usize; 2]], mut curr: [usize; 2]) -> (usize, Option
         for i in 0..to_keep {
             let wedge = wedges[i];
             // if an existing wedge exactly matches, delete both of them and return None.
-            if wedge == curr {
+            if wedge == curr || wedge == [curr[1], curr[0]] {
                 wedges.swap(i, to_keep - 1);
                 return (to_keep - 1, None);
             }

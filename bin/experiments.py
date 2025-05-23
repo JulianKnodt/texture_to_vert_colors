@@ -14,14 +14,16 @@ args = None
 
 out_dir = lambda is_ablation=False: "ablations" if is_ablation else "outputs"
 
-def run(src, dst, flags, is_abl=True, src_dir="data", bin=bin_file, eval=True):
+def run(src, dst, flags, is_abl=True, src_dir="data", bin=bin_file, eval=True, missing_only=False):
   def cb():
     if "run" not in args.stages: return []
     if args.match_output is not None and args.match_output not in dst: return []
     out_json = f"{out_dir(is_abl)}/{dst[:-4]}.json"
+    if missing_only and os.path.exists(out_json): return []
     cmds = [
       f"{bin} -i {src_dir}/{src} -o {out_dir(is_abl)}/{dst} {flags} --stats {out_json}",
     ]
+    print(cmds[0])
     if (not args.no_eval) and eval:
       if ".fbx" in src:
         cmds.append('echo "FBX is not currently supported for Hausdorff"')
@@ -59,22 +61,51 @@ def runnable_cmds(cmds, stage_kind="run"):
   return cb
 
 dataset = [
-  #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 1000000),
-  #("cabbage.obj", "cabbage_diffuse.jpg", 300000),
-  #("shiba.obj", "shiba_texture.png", 1000000),
-  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 1000000),
-  #("watercolor_cake.obj", "watercolor_cake.jpg", 1000000),
-  #("silent_ash.obj", "silent_ash_texture.png", 10000000),
-  #("scan_vase.obj", "scan_vase_texture.jpg", 100000),
-  #("strawberry.obj", "strawberry_textures/diffuse.png", 1000000),
-  #("ding_censer.obj", "ding_censer_textures/diffuse.jpg", 500000),
-  #("musashi_panels.obj", "musashi_panels_textures/diffuse.jpg", 1000000),
-  #("tiger_lily.obj", "tiger_lily.jpeg", 1000000),
-  #("shiny_fish.fbx", "shiny_fish_textures/Fishka_2_G_Fish_BaseColor2.jpg", 1000000),
-  #("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 300000),
-  #("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 300000),
-  #("jar_with_dragon_design.obj", "jar_with_dragon_design.png", 500000),
-  ("japanese_tea_cup.obj", "japanese_tea_cup_texture.png", 100000),
+  #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 1000000, None),
+  #("cabbage.obj", "cabbage_diffuse.jpg", 300000, None),
+  #("shiba.obj", "shiba_texture.png", 1000000, None),
+  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 1000000, None),
+  #("watercolor_cake.obj", "watercolor_cake.jpg", 1000000, None),
+  #("silent_ash.obj", "silent_ash_texture.png", 10000000, None),
+  #("scan_vase.obj", "scan_vase_texture.jpg", 500000, None),
+  #("strawberry.obj", "strawberry_textures/diffuse.png", 1000000, None),
+  #("ding_censer.obj", "ding_censer_textures/diffuse.jpg", 2000000, None),
+  #("musashi_panels.obj", "musashi_panels_textures/diffuse.jpg", 1000000, None),
+  #("tiger_lily.obj", "tiger_lily.jpeg", 2000000, None),
+  #("shiny_fish.fbx", "shiny_fish_textures/Fishka_2_G_Fish_BaseColor2.jpg", 1000000, None),
+  #("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 1000000, None),
+  #("jar_with_dragon_design.obj", "jar_with_dragon_design.png", 1000000, None),
+  #("japanese_tea_cup.obj", "japanese_tea_cup_texture.png", 500000, None),
+
+  #("musk_melon.obj", "", 4000000, 0.27555/2),
+  #("fire_bellied_newt.obj", "fire_bellied_newt_diffuse.jpg", 1000000, 0.2733/2.),
+  #("lychee.obj", "lychee_textures/lychee.jpg", 500000, 0.25),
+  #("officebot.obj", "officebot_textures/diffuse.png", 500000, 0.5),
+
+  #("building_front.obj", "building_front.jpg", 1000000, None),
+  #("japanese_toro.obj", "japanese_toro_textures/japanese_toro_small.png", 850000, None),
+  #("breakfast_still_life.obj", "", 1000000, 0.5),
+  #("ibis.obj", "", 1000000, 0.5),
+
+
+  # need to rerun this one and see what the problem is
+  ("watermelon.obj", "watermelon.jpg", 1000000, None),
+
+  ("chozuya.obj", "", 2000000, None),
+  ("flowers_in_vase.obj", "flowers_in_vase.jpg", 500000, None),
+  ("millers-falls-drill.fbx", "millers-falls-drill-textures/diffuse.png", 1000000, None),
+  ("garlic_knight.obj", "", 1000000, None),
+
+  # very expensive but doable?
+  #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
+  #("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 2000000),
+]
+
+dataset_direct = [
+  ("takifugu.obj", "", 1000000),
+  ("musk_melon.obj", "", 100000),
+  ("oshima_cherry.obj", "", 2000000),
+  #("mango.obj", "", 1000000),
 ]
 
 experiments = {
@@ -82,7 +113,7 @@ experiments = {
   "basic-cube": [
     *[
       run("cube.obj", f"cube_{k}.ply", f"-d data/uv_grid.png -t 100000 --sample-kind {k}")
-      for k in ["exact", "approx", "direct"]
+      for k in ["approx"]#["exact", "approx", "direct"]
     ]
   ],
   "sphere": [
@@ -141,7 +172,7 @@ experiments = {
       "../ablations/spot.ply",
       "spot_constant_colors.ply",
       f"-t 50 --eigenvalue zero --cluster-vis ablations/spot_clusters.ply --eigen-eps 1e-2 \
-      --color-eps 1e-4 --eigen-vis ablations/spot_eigen.ply",
+      --color-eps 0. --eigen-vis ablations/spot_eigen.ply",
       bin=clustering_bin, eval=False,
     ),
   ],
@@ -356,14 +387,38 @@ experiments = {
     ),
   ],
 
-  "dataset": [
+  "dataset-exact": [
     *[
       run(
-        model, model[:-4] + ".ply",
-        f"-d data/{texture} -t {tri_num} --no-incremental-qem",
+        model, model[:-4] + "_exact.ply",
+        f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
+          --no-incremental-qem --sample-kind exact",
         is_abl=False,
       )
-      for (model, texture, tri_num) in dataset
+      for (model, texture, tri_num, img_size_frac) in dataset
+    ],
+  ],
+  "dataset-approx": [
+    *[
+      run(
+        model, model[:-4] + "_approx.ply",
+        f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
+          --no-incremental-qem --sample-kind approx \
+          {'' if img_size_frac is None else f'--image-size-frac {img_size_frac}'}",
+        is_abl=False,
+      )
+      for (model, texture, tri_num, img_size_frac) in dataset
+    ],
+  ],
+  "dataset-direct": [
+    *[
+      run(
+        model, model[:-4] + "_direct.ply",
+        f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
+          --no-incremental-qem --sample-kind direct",
+        is_abl=False,
+      )
+      for (model, texture, tri_num) in dataset_direct
     ],
   ],
 }

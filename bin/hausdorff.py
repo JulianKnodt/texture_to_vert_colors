@@ -66,14 +66,13 @@ def main():
   chamfer = new_to_og.mean() + og_to_new.mean()
 
 
-  og_to_new = og_to_new if type(og_to_new) == str else og_to_new.max()
   print()
   print(f"hausdorff(new to original) = {new_to_og.max()}")
-  print(f"hausdorff(original to new) = {og_to_new}")
+  print(f"hausdorff(original to new) = {og_to_new.max()}")
   print(f"hausdorff = {hausdorff}")
   print()
-  print(f"chamfer(new to input) = {new_to_og.mean()}")
-  print(f"chamfer(input to new) = {og_to_new.mean()}")
+  print(f"chamfer(new to original) = {new_to_og.mean()}")
+  print(f"chamfer(original to new) = {og_to_new.mean()}")
   print(f"chamfer = {chamfer}")
   print()
   stats = {}
@@ -86,10 +85,11 @@ def main():
         exit(1)
 
   stats["hausdorff_new_to_original"] = new_to_og.max()
-  stats["hausdorff_original_to_new"] = og_to_new
+  stats["hausdorff_original_to_new"] = og_to_new.max()
   stats["hausdorff"] = hausdorff
   stats["chamfer"] = chamfer
   stats["chamfer_new_to_original"] = new_to_og.mean()
+  stats["chamfer_original_to_new"] = og_to_new.mean()
 
   if args.stats is not None:
     with open(args.stats, "w") as f:

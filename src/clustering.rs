@@ -1,235 +1,61 @@
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
-#![feature(let_chains)]
-#![feature(generic_arg_infer)]
+use std::cmp::minmax;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap};
+use ordered_float::NotNan;
 
-use clap::Parser;
+use clap::ValueEnum;
 
-use texture_to_vert_colors::clustering::{
-    Args as ClusterArgs, Eigenvalue, OrderingKind, ShapeMetric,
-};
-use texture_to_vert_colors::F;
+use priority_queue::PriorityQueue;
 
-#[derive(Clone, Parser, Debug)]
-#[clap(group(
-  clap::ArgGroup::new("target")
-    .required(true)
-    .args(&["target_num_charts", "error_bound"])
-))]
+use super::manifold::{CollapsibleManifold, EdgeKind};
+use super::quadric::Quadric;
+use super::{F, add, dist, dot, kmul, l1dist, normalize, poly_area, sub};
+
+use indicatif::ProgressBar;
+
+const PI: F = std::f64::consts::PI as F;
+
 pub struct Args {
-    /// Input OBJ file.
-    #[arg(short, long, required = true)]
-    pub input: String,
-
-    /// Output PLY file.
-    #[arg(short, long, required = true)]
-    pub output: String,
-
-    /// Output PLY file, where clusters are colored by their clustering instead of average color
-    #[arg(short, long, default_value_t = String::new())]
-    pub cluster_vis: String,
-
-    /// Output PLY file, to visualize the optimized eigenvalue of each cluster normalized to the
-    /// range [0,1]
-    #[arg(long, default_value_t = String::new())]
-    pub eigen_vis: String,
-
     /// Target output number of charts.
-    #[arg(short, long, group = "target")]
     pub target_num_charts: Option<usize>,
 
-    #[arg(long, default_value_t = Eigenvalue::Zero)]
-    eigenvalue: Eigenvalue,
+    pub eigenvalue: Eigenvalue,
 
     /// How long before stopping
-    #[arg(long, short='e', group="target", default_value_t = F::NEG_INFINITY)]
-    error_bound: F,
+    pub error_bound: F,
 
     /// Do not use area weighting.
-    #[arg(long)]
-    no_area_weight: bool,
+    pub no_area_weight: bool,
 
     /// Absolute value difference permitted between eigenvalues, before switching to color
     /// checking.
-    #[arg(long, default_value_t = 1e-4)]
-    eigen_eps: F,
+    pub eigen_eps: F,
 
     /// Absolute value difference permitted between colors, before switching to bd length
     /// checking.
-    #[arg(long, default_value_t = 1e-6)]
-    color_eps: F,
-
-    /// Where to output stats (unused currently)
-    #[arg(long, default_value_t = String::new())]
-    stats: String,
+    pub color_eps: F,
 
     /// What ordering is preferred when constructing a cluster
-    #[arg(long, default_value_t = OrderingKind::GeomColorShape)]
-    ordering: OrderingKind,
+    pub ordering: OrderingKind,
 
     /// What metric to use when evaluating the quality of output cluster shape
-    #[arg(long, default_value_t = ShapeMetric::AngleDeviation)]
-    shape_metric: ShapeMetric,
+    pub shape_metric: ShapeMetric,
 
     /// Prefer opposite effect of shape metric (For jokes)
     /// Mey kill perf.
-    #[arg(long, hide = true)]
-    invert_shape: bool,
+    pub invert_shape: bool,
 }
 
-impl From<Args> for ClusterArgs {
-    fn from(a: Args) -> Self {
-        Self {
-            target_num_charts: a.target_num_charts,
-            eigenvalue: a.eigenvalue,
-            error_bound: a.error_bound,
-            no_area_weight: a.no_area_weight,
-            eigen_eps: a.eigen_eps,
-            color_eps: a.color_eps,
-            ordering: a.ordering,
-            shape_metric: a.shape_metric,
-            invert_shape: a.invert_shape,
-        }
-    }
-}
-
-pub fn main() -> std::io::Result<()> {
-    let args = Args::parse();
-    if !args.output.ends_with(".ply") {
-        eprintln!("[WARN]: Output will not be colored if output format is not PLY");
-    }
-
-    let scene = pars3d::load(&args.input)?;
-    let mut mesh = scene.into_flattened_mesh();
-    let (s, t) = mesh.normalize();
-    let (cs, ct) = mesh.normalize_colors();
-
-    let start = std::time::Instant::now();
-    /*
-    let (face_charts, m) =
-        face_clustering(&mesh.v, &mesh.vert_colors, &mesh.f, mesh.f.len(), &args);
-        */
-    let (face_charts, m) = texture_to_vert_colors::clustering::face_clustering(
-        &mesh.v,
-        &mesh.vert_colors,
-        &mesh.f,
-        mesh.f.len(),
-        &args.clone().into(),
-    );
-    println!("[INFO]: Took {:?} for clustering", start.elapsed());
-
-    let mut remap = HashMap::new();
-    let mut num_charts = 0;
-    for &f in &face_charts {
-        match remap.entry(f) {
-            Entry::Occupied(_) => {}
-            Entry::Vacant(v) => {
-                v.insert(num_charts);
-                num_charts += 1;
-            }
-        }
-    }
-    eprintln!("[INFO]: Output # Charts = {}", remap.len());
-
-    let wireframe_parts = pars3d::visualization::face_segmentation_wireframes(
-        |fi| mesh.f[fi].as_slice(),
-        |fi| face_charts[fi],
-        mesh.f.len(),
-        &mesh.v,
-        3e-4,
-    );
-    let mut wireframe_mesh = pars3d::visualization::wireframe_to_mesh(wireframe_parts);
-    wireframe_mesh.denormalize(s, t);
-
-    if !args.cluster_vis.is_empty() {
-        let face_coloring = pars3d::visualization::greedy_face_coloring(
-            |i| face_charts[i],
-            face_charts.len(),
-            |i, j| m.is_adj(i, j),
-            &pars3d::coloring::HIGH_CONTRAST,
-        );
-
-        let mut colored_mesh = mesh.with_face_coloring(&face_coloring);
-        colored_mesh.denormalize(s, t);
-        colored_mesh.append(&mut wireframe_mesh.clone());
-        let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.cluster_vis, &out_scene)?;
-    }
-
-    let eigenvalues = m
-        .vertices()
-        .map(|(vi, (q, _, _))| {
-            let eigens = q.a.eigen_sorted().0;
-            (vi, args.eigenvalue.apply(eigens))
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
-
-    let [min_e, max_e] = eigenvalues
-        .values()
-        .fold([F::INFINITY, F::NEG_INFINITY], |[l, h], &n| {
-            [l.min(n), h.max(n)]
-        });
-    assert!(max_e.is_finite());
-    assert!(min_e.is_finite());
-    assert!(max_e >= min_e);
-    println!("[INFO] eigenvalues in range [{min_e}, {max_e}]");
-
-    if !args.eigen_vis.is_empty() {
-        let mut face_eigens = (0..mesh.f.len())
-            .map(|i| eigenvalues[&face_charts[i]])
-            .collect::<Vec<F>>();
-        let r = max_e - min_e;
-        for e in &mut face_eigens {
-            *e -= min_e;
-            if r != 0. {
-                *e /= r;
-            }
-        }
-        let face_colors = face_eigens
-            .into_iter()
-            .map(pars3d::coloring::magma)
-            .collect::<Vec<_>>();
-        let mut colored_mesh = mesh.with_face_coloring(&face_colors);
-
-        colored_mesh.denormalize(s, t);
-
-        colored_mesh.append(&mut wireframe_mesh.clone());
-
-        let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.eigen_vis, &out_scene)?;
-    }
-
-    {
-        let face_colors = (0..mesh.f.len())
-            .map(|i| m.get(face_charts[i]).1)
-            .collect::<Vec<[F; 3]>>();
-
-        let mut colored_mesh = mesh.with_face_coloring(&face_colors);
-        colored_mesh.denormalize(s, t);
-        colored_mesh.denormalize_colors(cs, ct);
-
-        colored_mesh.append(&mut wireframe_mesh);
-
-        let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.output, &out_scene)?;
-    }
-
-    Ok(())
-}
-
-/*
 pub fn face_clustering<'a, 'b>(
     vs: &'a [[F; 3]],
     vcs: &'a [[F; 3]],
     fs: &'a [pars3d::FaceKind],
     nf: usize,
-    args: &ClusterArgs,
+    args: &Args,
 ) -> (
     Vec<usize>,
-    CollapsibleManifold<(SymMatrix3, [F; 3], F), union_find::AtomicUnionFind>,
+    CollapsibleManifold<(Quadric<0>, [F; 3], F), union_find::AtomicUnionFind>,
 ) {
     // face normals
     let f_n = (0..nf).map(|fi| fs[fi].normal(&vs)).collect::<Vec<_>>();
@@ -272,10 +98,11 @@ pub fn face_clustering<'a, 'b>(
 
     // for each real mesh edge, track which charts it is a part of.
     // Each edge can be at most part of 2 charts.
-    let mut m = CollapsibleManifold::<(SymMatrix3, [F; 3], F), _>::atomic_new_with(nf, |fi| {
+    let mut m = CollapsibleManifold::<(Quadric<0>, [F; 3], F), _>::atomic_new_with(nf, |fi| {
         let n = f_n[fi];
         let area = face_area[fi];
-        let q = SymMatrix3::outer(n);
+        let v0 = vs[fs[fi].as_slice()[0]];
+        let q = Quadric::new_plane(v0, n, 1.);
 
         let f = &fs[fi];
         let per_vert_weight = area / f.len() as F;
@@ -373,7 +200,7 @@ pub fn face_clustering<'a, 'b>(
 
     let mut prev_eigens = vec![0.; nf];
     for (vi, (q, _, _)) in m.vertices() {
-        let eigens = q.eigen_sorted().0;
+        let eigens = q.a.eigen_sorted().0;
         prev_eigens[vi] = args.eigenvalue.apply(eigens);
     }
 
@@ -390,7 +217,7 @@ pub fn face_clustering<'a, 'b>(
             let q_new = q0 + q1;
 
             // sorted eigenvalues
-            let neigens = q_new.eigen_sorted().0;
+            let neigens = q_new.a.eigen_sorted().0;
             let evn = args.eigenvalue.apply(neigens);
 
             let ev0 = prev_eigens[e0];
@@ -609,7 +436,7 @@ pub fn face_clustering<'a, 'b>(
 
                 assert!(m.is_deleted(e0));
                 assert!(!m.is_deleted(e1));
-                prev_eigens[e1] = args.eigenvalue.apply(m.get(e1).0.eigen_sorted().0);
+                prev_eigens[e1] = args.eigenvalue.apply(m.get(e1).0.a.eigen_sorted().0);
 
                 for adj in m.vertex_adj(e1) {
                     let c = cost_of_edge!(adj, e1);
@@ -643,4 +470,166 @@ pub fn face_clustering<'a, 'b>(
     let charts = (0..nf).map(|i| m.get_new_vertex(i)).collect::<Vec<_>>();
     (charts, m)
 }
-*/
+
+pub fn edges(f: &[usize]) -> impl Iterator<Item = [usize; 2]> + '_ {
+    (0..f.len()).map(|i| [f[i], f[(i + 1) % f.len()]])
+}
+
+macro_rules! impl_display {
+  ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {
+    impl std::fmt::Display for $name {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use $name::*;
+            let s = match self {
+                $($kind => $disp,)+
+            };
+            write!(f, "{s}")
+        }
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum Eigenvalue {
+    Zero,
+    One,
+    Two,
+}
+
+impl Eigenvalue {
+    pub fn apply(self, [e0, e1, e2]: [F; 3]) -> F {
+        match self {
+            Eigenvalue::Zero => e0,
+            Eigenvalue::One => e1,
+            Eigenvalue::Two => e2,
+        }
+    }
+}
+
+fn merge_wedges([a0, a1]: [usize; 2], [b0, b1]: [usize; 2]) -> Option<[usize; 2]> {
+    // TODO here handle inconsistent winding order
+    //assert_ne!(a0, b0, "Shouldn't happen if winding order is consistent");
+    //assert_ne!(a1, b1, "Shouldn't happen if winding order is consistent");
+
+    let v = if a1 == b0 {
+        [a0, b1]
+    } else if a0 == b1 {
+        [b0, a1]
+    } else if a0 == b0 {
+        // inconsistent winding
+        [a1, b1]
+    } else if a1 == b1 {
+        // inconsistent winding
+        [a0, b0]
+    } else {
+        return None;
+    };
+    Some(v)
+}
+
+// TODO decide if this only works for meshes without repeat faces or not
+/// Sorts this set of set wedges such that all those which will be deleted are at the end.
+/// Then, the last (return value) can be removed and replaced with the optional return value.
+fn new_wedges(wedges: &mut [[usize; 2]], mut curr: [usize; 2]) -> (usize, Option<[usize; 2]>) {
+    //assert!(curr[0] < curr[1]);
+    //assert!(wedges.iter().all(|[a, b]| a < b));
+    let mut to_keep = wedges.len();
+    while to_keep > 0 {
+        let mut any = false;
+        for i in 0..to_keep {
+            let wedge = wedges[i];
+            // if an existing wedge exactly matches, delete both of them and return None.
+            if wedge == curr || wedge == [curr[1], curr[0]] {
+                wedges.swap(i, to_keep - 1);
+                return (to_keep - 1, None);
+            }
+
+            // otherwise check if any of the values are shared, and delete them if so
+            if let Some(w) = merge_wedges(wedge, curr) {
+                wedges.swap(i, to_keep - 1);
+                to_keep -= 1;
+                curr = w;
+                any = true;
+                break;
+            }
+        }
+        if !any {
+            break;
+        }
+    }
+    (to_keep, Some(curr))
+}
+
+#[test]
+fn test_wedges() {
+    let mut wedges = [[0, 1], [2, 3], [7, 8]];
+    assert_eq!(new_wedges(&mut wedges, [1, 2]), (1, Some([0, 3])));
+    assert_eq!(wedges[0], [7, 8]);
+
+    let mut wedges = [[3, 4], [1, 2], [6, 7]];
+    assert_eq!(new_wedges(&mut wedges, [1, 2]), (2, None));
+    assert_eq!(wedges[2], [1, 2]);
+
+    let mut wedges = [[3, 4], [1, 2], [6, 7]];
+    assert_eq!(new_wedges(&mut wedges, [0, 10]), (3, Some([0, 10])));
+}
+
+impl_display!(Eigenvalue, Zero => "zero", One => "one", Two => "two");
+
+/// What order to prefer when simplifying.
+/// It is assumed that length is final (has no eps)
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum OrderingKind {
+    GeomColorShape,
+    ColorGeomShape,
+    GeomShapeColor,
+}
+
+impl OrderingKind {
+    pub fn first_eps(&self, geom_eps: F, color_eps: F) -> F {
+        match self {
+            OrderingKind::GeomColorShape | OrderingKind::GeomShapeColor => geom_eps,
+            OrderingKind::ColorGeomShape => color_eps,
+        }
+    }
+    pub fn second_eps(&self, geom_eps: F, color_eps: F) -> F {
+        match self {
+            OrderingKind::GeomColorShape => color_eps,
+            OrderingKind::ColorGeomShape => geom_eps,
+            OrderingKind::GeomShapeColor => 0.,
+        }
+    }
+}
+
+impl_display!(
+  OrderingKind,
+  GeomColorShape => "geom-color-shape",
+  ColorGeomShape => "color-geom-shape",
+  GeomShapeColor => "geom-shape-color",
+);
+
+/// What metric to use to evaluate the quality of output cluster shapes.
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum ShapeMetric {
+    /// The total boundary length of each cluster
+    BoundaryLength,
+    /// The angle at each boundary point in the cluster's deviation from 180 degrees.
+    /// (Prefer straight edges)
+    AngleDeviation,
+
+    None,
+}
+
+impl_display!(
+  ShapeMetric,
+  BoundaryLength => "boundary-length",
+  AngleDeviation => "angle-deviation",
+  None => "none",
+);
+
+pub fn approx_eq(a: F, b: F, eps: F) -> bool {
+    if a == b {
+        return true;
+    }
+    (a - b).abs() < eps
+}

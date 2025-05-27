@@ -28,3 +28,5 @@ pub mod aabb;
 pub mod qem;
 
 pub mod weighting;
+
+pub mod clustering;

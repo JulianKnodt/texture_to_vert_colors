@@ -11,7 +11,7 @@ fn sqr(x: F) -> F {
     x * x
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct SymMatrix<const N: usize>
 where
     [(); sum_up_to::<N>()]:,

@@ -204,7 +204,7 @@ fn invert_quadric_volume(
     Some(kmul(denom, numer))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Quadric<const N: usize = N_ATTRIB> {
     pub a: SymMatrix3,
     pub b: [F; 3],
@@ -426,6 +426,14 @@ impl<const N: usize> Quadric<N> {
         }
 
         vt_a_v + 2. * bt_v + self.c
+    }
+
+    pub fn drop_positions(&mut self) {
+        self.b.fill(0.);
+        self.c = 0.;
+        self.d.fill(0.);
+
+        // nv and dv are not considered at all in cost
     }
 
     pub fn invert(&self) -> Option<[F; 3]> {

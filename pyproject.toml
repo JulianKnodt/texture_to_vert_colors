@@ -1,0 +1,11 @@
+[project]
+name = "texture-to-vert-colors"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.7.0",
+    "trimesh>=4.6.10",
+    "xatlas>=0.0.10",
+]

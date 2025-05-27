@@ -10,3 +10,4 @@ experiment_log.json
 *.svg
 *.mtl
 profile.json.gz
+__pycache__/

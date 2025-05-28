@@ -32,14 +32,16 @@ impl WeightingKind {
         pos_color_norm: PosColorNorm,
     ) -> Result<VertexAdj<F>, Error> {
         let mut edge_face_adj = BTreeMap::new();
-        for (fi, f) in mesh.f.iter().enumerate() {
-            for e in f.edges_ord() {
-                let slots = edge_face_adj.entry(e).or_insert([usize::MAX; 2]);
-                let slot = slots.iter_mut().find(|v| **v == usize::MAX || **v == fi);
-                let Some(slot) = slot else {
-                    return Result::Err(Error::NonManifoldEdge(e, *slots, fi));
-                };
-                *slot = fi;
+        if matches!(self, WeightingKind::MeanValue | WeightingKind::Laplacian) {
+            for (fi, f) in mesh.f.iter().enumerate() {
+                for e in f.edges_ord() {
+                    let slots = edge_face_adj.entry(e).or_insert([usize::MAX; 2]);
+                    let slot = slots.iter_mut().find(|v| **v == usize::MAX || **v == fi);
+                    let Some(slot) = slot else {
+                        return Result::Err(Error::NonManifoldEdge(e, *slots, fi));
+                    };
+                    *slot = fi;
+                }
             }
         }
         let vert_adj = mesh.vertex_vertex_adj();

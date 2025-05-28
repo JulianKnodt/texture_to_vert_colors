@@ -9,7 +9,7 @@ import numpy as np
 
 import robust_laplacian
 
-#torch.set_anomaly_enabled(True)
+torch.set_anomaly_enabled(True)
 
 def arguments():
   a = ArgumentParser(
@@ -17,10 +17,6 @@ def arguments():
   )
   a.add_argument("-i", "--input", required=True, help="Path to input mesh")
   a.add_argument("-o", "--output", required=True, help="Path to saved mesh")
-  a.add_argument(
-    "--spokes-and-rims", action="store_true",
-    help="Instead of just using spokes, use spokes-and-rims"
-  )
   a.add_argument(
     "--device", default="cpu",
     help="Device to run on",
@@ -30,20 +26,16 @@ def arguments():
     help="How cube-y to make the output"
   )
   a.add_argument(
-    "--color-cubeness", type=float, default=0.,
-    help="How much to weigh the straightness of color gradients"
-  )
-  a.add_argument(
-    "--opt-color", action="store_true",
-    help="Optimize colors as well as vertex positions (TODO this needs to be figured out more)",
-  )
-  a.add_argument(
     "--iters", type=int, default=50,
     help="Iterations to run of cubification",
   )
   a.add_argument(
-    "--lr", type=float, default=3e-3,
+    "--lr", type=float, default=5e-3,
     help="Learning rate",
+  )
+  a.add_argument(
+    "--debug", action="store_true",
+    help="Slow mode but definitely works"
   )
   return a.parse_args()
 
@@ -62,15 +54,12 @@ def main():
   V = v.shape[0]
   print(f"[INFO]: Input #F = {mesh.faces.shape[0]}, #V = {V}")
 
-  vc = None
-  if args.color_cubeness > 0:
-    # TODO here emit an error if this does not have vertex colors
-    vc = torch.from_numpy(mesh.visual.vertex_colors).div(255).to(device)[:, :3]
-    vc.requires_grad_(True)
-    assert(vc.shape == v.shape)
-
   # TODO get new edge set from this L, instead of using original edges?
-  L, M = robust_laplacian.mesh_laplacian(np.array(mesh.vertices), np.array(mesh.faces))
+  L, M = robust_laplacian.mesh_laplacian(
+    np.array(mesh.vertices),
+    np.array(mesh.faces),
+    #mollify_factor=0,
+  )
 
   print("[INFO]: Starting precomputation...")
   L_map = {}
@@ -83,26 +72,44 @@ def main():
   # for each vertex, construct neighborhood edges (either spokes or spokes-or-rims)
   nbr_edges = [set() for _ in range(V)]
   bary_area = torch.zeros(V,requires_grad=False, device=device)
-  #bary_area = torch.from_numpy(M[range(V), range(V)]).to(device).squeeze()
-  #print(bary_area.shape)
-
   area_weighted_normal = torch.zeros_like(v, requires_grad=False)
 
   with torch.no_grad():
-    for v0, v1, v2 in tqdm(mesh.faces, leave=False):
-      v0, v1, v2 = [int(vi) for vi in [v0, v1, v2]]
+    verts = [[], [], []]
+    for vi0, vi1, vi2 in tqdm(mesh.faces, leave=False):
+      vi0, vi1, vi2 = [int(vi) for vi in [vi0, vi1, vi2]]
+      verts[0].append(vi0)
+      verts[1].append(vi1)
+      verts[2].append(vi2)
 
-      edge_set = [(v0, v1), (v1, v2), (v2, v0)]
-      nbr_edges[v0].update(edge_set)
-      nbr_edges[v1].update(edge_set)
-      nbr_edges[v2].update(edge_set)
-      normal = torch.cross(v[v1] - v[v0], v[v2] - v[v0], dim=-1)
+      edge_set = [(vi0, vi1), (vi1, vi2), (vi2, vi0)]
+      nbr_edges[vi0].update(edge_set)
+      nbr_edges[vi1].update(edge_set)
+      nbr_edges[vi2].update(edge_set)
+      v0 = v[vi0]
+      v1 = v[vi1]
+      v2 = v[vi2]
+
+      normal = torch.cross(v1 - v0, v2 - v0, dim=-1)
       area = normal.norm() / 2.
-      for vi in [v0, v1, v2]:
+      for vi in [vi0, vi1, vi2]:
         bary_area[vi] += area / 3.
-        area_weighted_normal[vi] += F.normalize(normal, dim=0) * area
+        area_weighted_normal[vi] += F.normalize(normal, dim=-1) * area
 
-    area_weighted_normal = F.normalize(area_weighted_normal, dim=-1)
+    #vi0, vi1, vi2 = [torch.tensor(v) for v in verts]
+    #v0 = v[vi0]
+    #v1 = v[vi1]
+    #v2 = v[vi2]
+
+    #normal = torch.cross(v1 - v0, v2 - v0, dim=-1)
+    #area = normal.norm(dim=-1) / 2.
+    #for vi in [vi0, vi1, vi2]:
+    #  bary_area[vi] += area / 3.
+    #  # TODO check that this is correct
+    #  area_weighted_normal[vi] += F.normalize(normal, dim=-1) * area[:, None]
+
+    #area_weighted_normal = F.normalize(area_weighted_normal, dim=-1)
+
     ## given area weighted normals, compute linear functional G for luma of each point?
     #P = torch.stack([
     #  append_val(v0),
@@ -130,7 +137,6 @@ def main():
   for es in tqdm(nbr_edges, leave=False):
     lapl_diag = []
     for e0, e1 in es:
-      assert(L[e0, e1] == L[e1, e0])
       lapl_diag.append(-L[e0, e1])
       #lapl_diag.append( -L_map.get((e0, e1), 0) )
     laplacians.append(torch.tensor(lapl_diag, dtype=torch.float, device=device))
@@ -163,9 +169,6 @@ def main():
   # DONE COMPUTING ACCELERATION ---
 
   params=[v]
-  if args.opt_color:
-    assert(vc is not None)
-    params.append(vc)
   opt = optim.Adam(params=[v], lr=args.lr)
 
   t_outer = trange(args.iters)
@@ -175,12 +178,51 @@ def main():
     device=device,
     requires_grad = True,
   )
-  with torch.no_grad(): quats[:, -1] = 1.
-
-  rot_opt = optim.Adam(params=[quats], lr=args.lr)
+  quats.data[:, -1] = 1
   for i in t_outer:
+    rot_opt = optim.Adam(params=[quats], lr=args.lr)
     # START QUAT OPTIMIZATION --------
     #manually renormalize
+
+    def naive_optim_step(mats, dp_v):
+      loss = 0
+      for vi in range(V):
+        R = mats[vi]
+        D = torch.stack(
+          [og_v[e1] - og_v[e0] for [e0, e1] in nbr_edges[vi]],
+          dim=-1,
+        )
+        Dp = torch.stack(
+          [dp_v[e1] - dp_v[e0] for [e0, e1] in nbr_edges[vi]],
+          dim=-1,
+        )
+        z = (R @ D) - Dp
+        arap = 0.5 * torch.trace((z * laplacians[vi][None]) @ z.T)
+        cubeness = args.cubeness * bary_area[vi] * (R @ area_weighted_normal[vi]).abs().sum()
+        loss = loss + arap + cubeness
+      return loss
+
+    def optim_step(mats, dp_v):
+      loss = 0
+      for i in range(len(nbr_ets)):
+        idxs = nbr_eis[i]
+        ei0, ei1 = [ei.squeeze(-1) for ei in nbr_ets[i].split([1,1], dim=-1)]
+        R = mats[idxs]
+        D = (og_v[ei1] - og_v[ei0])
+
+        Dp = dp_v[ei1] - dp_v[ei0]
+        z = (R @ D.mT) - Dp.mT
+
+        Ls = nbr_ls[i][:, None]
+        arap = 0.5 * torch.vmap(torch.trace)((z * Ls) @ z.mT)
+        A = bary_area[idxs]
+        ni = area_weighted_normal[idxs, :, None]
+
+        cubeness = args.cubeness * A * (R @ ni).abs().squeeze(dim=-1).sum(dim=-1)
+        loss = loss + arap.sum() + cubeness.sum()
+      return loss
+
+    opt_fn = naive_optim_step if args.debug else optim_step
 
     vd = v.clone().detach().requires_grad_(False)
     t = trange(25, leave=False)
@@ -188,49 +230,17 @@ def main():
       rot_opt.zero_grad()
 
       mats = quat_to_mat(quats, dim=-1)
-      loss = 0
-      for i in range(len(nbr_ets)):
-        idxs = nbr_eis[i]
-        ei0, ei1 = [ei.squeeze(-1) for ei in nbr_ets[i].split([1,1], dim=-1)]
-        R = mats[idxs]
-        D = og_v[ei1] - og_v[ei0]
-        Dp = vd[ei1] - vd[ei0]
-        z = (R @ D.mT) - Dp.mT
-
-        Ls = nbr_ls[i][:, None]
-        A = bary_area[idxs]
-        ni = area_weighted_normal[idxs, :, None]
-
-        arap = 0.5 * torch.vmap(torch.trace)((z * Ls) @ z.mT)
-        cubeness = args.cubeness * A * (R @ ni).abs().squeeze(dim=-1).sum(dim=-1)
-        loss = loss + (arap + cubeness).sum()
-
+      loss = opt_fn(mats, vd)
       t.set_postfix(L=f"{loss.item():.3f}")
       loss.backward()
       rot_opt.step()
       quats.data = F.normalize(quats.data, dim=-1)
 
-    mats = quat_to_mat(quats).detach().requires_grad_(False)
+    mats = quat_to_mat(F.normalize(quats, dim=-1)).detach().requires_grad_(False)
     # END QUAT OPTIMIZATION ----------
 
     opt.zero_grad()
-    loss = 0
-
-    for i in range(len(nbr_ets)):
-      idxs = nbr_eis[i]
-      ei0, ei1 = [ei.squeeze(-1) for ei in nbr_ets[i].split([1,1], dim=-1)]
-      R = mats[idxs]
-      D = og_v[ei1] - og_v[ei0]
-      Dp = v[ei1] - v[ei0]
-      z = (R @ D.mT) - Dp.mT
-
-      Ls = nbr_ls[i][:, None]
-      A = bary_area[idxs]
-      ni = area_weighted_normal[idxs, :, None]
-
-      arap = 0.5 * torch.vmap(torch.trace)((z * Ls) @ z.mT)
-      cubeness = args.cubeness * A * (R @ ni).abs().squeeze(dim=-1).sum(dim=-1)
-      loss = loss + (arap + cubeness).sum()
+    loss = opt_fn(mats, v)
 
     t_outer.set_postfix(L=f"{loss.item():.3f}")
     loss.backward()

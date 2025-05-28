@@ -5,7 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "pillow>=11.2.1",
+    "robust-laplacian>=1.0.0",
+    "scipy>=1.15.3",
     "torch>=2.7.0",
+    "tqdm>=4.67.1",
     "trimesh>=4.6.10",
     "xatlas>=0.0.10",
 ]

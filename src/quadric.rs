@@ -258,10 +258,12 @@ impl<const N: usize> Quadric<N> {
             dv: area * c / 3.,
         }
     }
+    /*
     pub fn new_from_bary([b0, b1]: [F; 2], area: F) -> Self {
         let b2 = 1. - b0 - b1;
         Self::new_plane([b0, b1, b2], [0., 0., 1.], area)
     }
+    */
 
     /// For a single vertex, add a constant `d` value so that the attributes default to that
     /// value.

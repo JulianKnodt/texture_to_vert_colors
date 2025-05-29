@@ -26,11 +26,19 @@ def arguments():
     help="How cube-y to make the output"
   )
   a.add_argument(
+    "--color-cubeness", type=float, default=0.,
+    help="How cube-y to make color dirs",
+  )
+  a.add_argument(
+    "--scale-luma", action="store_true",
+    help="Scale edge length for normal computation by luma difference",
+  )
+  a.add_argument(
     "--iters", type=int, default=50,
     help="Iterations to run of cubification",
   )
   a.add_argument(
-    "--lr", type=float, default=5e-3,
+    "--lr", type=float, default=2e-3,
     help="Learning rate",
   )
   a.add_argument(
@@ -50,6 +58,10 @@ def main():
   v = torch.from_numpy(mesh.vertices).float().to(device)
   og_v = v.clone().detach()
   v.requires_grad_(True)
+
+  vc = getattr(mesh.visual, "vertex_colors", None)
+  if vc is not None:
+    vc = torch.from_numpy(vc)[:, :3].float().to(device)
 
   V = v.shape[0]
   print(f"[INFO]: Input #F = {mesh.faces.shape[0]}, #V = {V}")
@@ -73,6 +85,7 @@ def main():
   nbr_edges = [set() for _ in range(V)]
   bary_area = torch.zeros(V,requires_grad=False, device=device)
   area_weighted_normal = torch.zeros_like(v, requires_grad=False)
+  luma_dir = torch.zeros_like(v, requires_grad=False)
 
   with torch.no_grad():
     verts = [[], [], []]
@@ -86,16 +99,49 @@ def main():
       nbr_edges[vi0].update(edge_set)
       nbr_edges[vi1].update(edge_set)
       nbr_edges[vi2].update(edge_set)
-      v0 = v[vi0]
-      v1 = v[vi1]
-      v2 = v[vi2]
+      v0,v1,v2 = [v[i] for i in [vi0, vi1,vi2]]
 
-      normal = torch.cross(v1 - v0, v2 - v0, dim=-1)
+      e0 = v1 - v0
+      if args.scale_luma:
+        luma_delta = (luma(vc[vi1]) - luma(vc[vi0])).abs()
+        e0 *= luma_delta
+      e1 = v2 - v0
+      if args.scale_luma:
+        luma_delta = (luma(vc[vi2]) - luma(vc[vi0])).abs()
+        e1 *= luma_delta
+
+      normal = torch.cross(e0, e1, dim=-1)
       area = normal.norm() / 2.
+
       for vi in [vi0, vi1, vi2]:
         bary_area[vi] += area / 3.
         area_weighted_normal[vi] += F.normalize(normal, dim=-1) * area
 
+      if vc is None: continue
+
+      l0,l1,l2 = [luma(vc[i]) for i in [vi0, vi1,vi2]]
+      P = torch.stack([
+        append_val(v0),
+        append_val(v1),
+        append_val(v2),
+        append_val(F.normalize(normal, dim=-1), zero=True)
+      ], dim=-2)
+      S = torch.stack([
+        l0, l1, l2, torch.zeros_like(l0)
+      ], dim=-1)
+
+      G = torch.zeros_like(normal)
+      try:
+        GD = torch.linalg.solve(P, S)
+        G = GD[:3]
+      except:
+        ...
+
+      for vi in [vi0, vi1, vi2]:
+        luma_dir[vi] += G * area
+
+
+    # TESTING
     #vi0, vi1, vi2 = [torch.tensor(v) for v in verts]
     #v0 = v[vi0]
     #v1 = v[vi1]
@@ -108,7 +154,8 @@ def main():
     #  # TODO check that this is correct
     #  area_weighted_normal[vi] += F.normalize(normal, dim=-1) * area[:, None]
 
-    #area_weighted_normal = F.normalize(area_weighted_normal, dim=-1)
+    area_weighted_normal = F.normalize(area_weighted_normal, dim=-1)
+    luma_dir = F.normalize(luma_dir, dim=-1)
 
     ## given area weighted normals, compute linear functional G for luma of each point?
     #P = torch.stack([
@@ -137,8 +184,9 @@ def main():
   for es in tqdm(nbr_edges, leave=False):
     lapl_diag = []
     for e0, e1 in es:
-      lapl_diag.append(-L[e0, e1])
-      #lapl_diag.append( -L_map.get((e0, e1), 0) )
+      #assert(L[e0, e1] == L_map.get((e0, e1), 0))
+      #lapl_diag.append(-L[e0, e1])
+      lapl_diag.append( -L_map.get((e0, e1), 0) )
     laplacians.append(torch.tensor(lapl_diag, dtype=torch.float, device=device))
 
 
@@ -169,6 +217,9 @@ def main():
   # DONE COMPUTING ACCELERATION ---
 
   params=[v]
+  #if args.opt_colors:
+  #  vc = vc.requires_grad_(True)
+  #  params.append(vc)
   opt = optim.Adam(params=[v], lr=args.lr)
 
   t_outer = trange(args.iters)
@@ -180,9 +231,8 @@ def main():
   )
   quats.data[:, -1] = 1
   for i in t_outer:
-    rot_opt = optim.Adam(params=[quats], lr=args.lr)
     # START QUAT OPTIMIZATION --------
-    #manually renormalize
+    rot_opt = optim.Adam(params=[quats], lr=args.lr)
 
     def naive_optim_step(mats, dp_v):
       loss = 0
@@ -199,7 +249,8 @@ def main():
         z = (R @ D) - Dp
         arap = 0.5 * torch.trace((z * laplacians[vi][None]) @ z.T)
         cubeness = args.cubeness * bary_area[vi] * (R @ area_weighted_normal[vi]).abs().sum()
-        loss = loss + arap + cubeness
+        #color_cubeness = args.color_cubeness * bary_area[vi] * (R @ luma_dir[vi]).abs().sum()
+        loss = loss + arap + cubeness #+ color_cubeness
       return loss
 
     def optim_step(mats, dp_v):
@@ -219,7 +270,11 @@ def main():
         ni = area_weighted_normal[idxs, :, None]
 
         cubeness = args.cubeness * A * (R @ ni).abs().squeeze(dim=-1).sum(dim=-1)
-        loss = loss + arap.sum() + cubeness.sum()
+
+        #li = luma_dir[idxs, :, None]
+        #color_cubeness = args.color_cubeness * A * (R @ li).abs().squeeze(dim=-1).sum(dim=-1)
+
+        loss = loss + arap.sum() + cubeness.sum() #+ color_cubeness.sum()
       return loss
 
     opt_fn = naive_optim_step if args.debug else optim_step
@@ -248,6 +303,7 @@ def main():
 
   mesh.vertices = v.detach().numpy()
   mesh.export(args.output)
+  print(f"[INFO]: Done, saved to {args.output}")
 
 def quat_to_mat(q, dim=-1):
   x,y,z,w = q.split([1,1,1,1], dim=-1)
@@ -266,6 +322,20 @@ def quat_to_mat(q, dim=-1):
     torch.stack([2. * (qxy + qwz), 1. - 2. * (qxx + qzz), 2. * (qyz - qwx)], dim=dim),
     torch.stack([2. * (qxz - qwy), 2. * (qyz + qwx), 1. - 2. * (qxx + qyy)], dim=dim),
   ], dim=dim-1)
+
+def luma(rgb, dim=-1, keepdim=False):
+  r,g,b = rgb.split(1, dim=dim)
+  y = 0.299 * r + 0.587 * g + 0.114 * b
+  if keepdim: return y
+  return y.squeeze(dim=dim)
+
+def append_val(v, zero:bool=False, dim=-1):
+  s = list(v.shape)
+  s[dim] = 1
+  func = torch.ones
+  if zero: func = torch.zeros
+  return torch.cat([v, func(s, device=v.device, dtype=v.dtype)], dim=dim)
+
 
 #t = F.normalize(torch.tensor([0.3,0.2,-0.5,0.7071]), dim=-1)
 #print(quat_to_mat(torch.tensor([t.tolist(), [0., 0., 0., 1.]])))

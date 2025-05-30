@@ -10,6 +10,9 @@ tutte_bin = "target/release/tutte_param"
 smooth_bin = "target/release/smoothing"
 clustering_bin = "target/release/clustering"
 
+hatching_bin = "target/release/hatching"
+dithering_bin = "target/release/dithering"
+
 args = None
 
 out_dir = lambda is_ablation=False: "ablations" if is_ablation else "outputs"
@@ -76,25 +79,26 @@ dataset = [
   #("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 1000000, None),
   #("jar_with_dragon_design.obj", "jar_with_dragon_design.png", 1000000, None),
   #("japanese_tea_cup.obj", "japanese_tea_cup_texture.png", 500000, None),
+  #("eyeball.fbx", "eyeball_base_color.png", 200000, None),
 
   #("musk_melon.obj", "", 4000000, 0.27555/2),
   #("fire_bellied_newt.obj", "fire_bellied_newt_diffuse.jpg", 1000000, 0.2733/2.),
   #("lychee.obj", "lychee_textures/lychee.jpg", 500000, 0.25),
   #("officebot.obj", "officebot_textures/diffuse.png", 500000, 0.5),
 
-  #("building_front.obj", "building_front.jpg", 1000000, None),
-  #("japanese_toro.obj", "japanese_toro_textures/japanese_toro_small.png", 850000, None),
-  #("breakfast_still_life.obj", "", 1000000, 0.5),
+  #("building_front.obj", "building_front.jpg", 2000000, None),
+  #("japanese_toro.obj", "japanese_toro_textures/japanese_toro_small.png", 900000, None),
+  ("breakfast_still_life.obj", "", 1000000, 0.5),
   #("ibis.obj", "", 1000000, 0.5),
 
 
   # need to rerun this one and see what the problem is
-  ("watermelon.obj", "watermelon.jpg", 1000000, None),
+  #("watermelon.obj", "watermelon.jpg", 2000000, 0.5),
 
-  ("chozuya.obj", "", 2000000, None),
-  ("flowers_in_vase.obj", "flowers_in_vase.jpg", 500000, None),
-  ("millers-falls-drill.fbx", "millers-falls-drill-textures/diffuse.png", 1000000, None),
-  ("garlic_knight.obj", "", 1000000, None),
+  #("chozuya.obj", "", 4000000, None),
+  #("flowers_in_vase.obj", "flowers_in_vase.jpg", 2000000, None),
+  #("millers-falls-drill.fbx", "millers-falls-drill-textures/diffuse.png", 1000000, None),
+  #("garlic_knight.obj", "", 1000000, 0.5),
 
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
@@ -102,9 +106,9 @@ dataset = [
 ]
 
 dataset_direct = [
-  ("takifugu.obj", "", 1000000),
-  ("musk_melon.obj", "", 100000),
-  ("oshima_cherry.obj", "", 2000000),
+  #("takifugu.obj", "", 1000000),
+  ("musk_melon.obj", "", 2000000),
+  #("oshima_cherry.obj", "", 2000000),
   #("mango.obj", "", 1000000),
 ]
 
@@ -206,12 +210,12 @@ experiments = {
     ),
   ],
   "nanchan_clustering": [
-    #run(
-    #  "nanchan.obj",
-    #  "nanchan.ply",
-    #  f"-d data/nanchan_texture.png --target-tri-num 500000 --sample-kind exact \
-    #  --no-incremental-qem",
-    #),
+    run(
+      "nanchan.obj",
+      "nanchan.ply",
+      f"-d data/nanchan_textures/diffuse.png --target-tri-num 800000 --sample-kind exact \
+      --no-incremental-qem",
+    ),
     run(
       "../ablations/nanchan.ply",
       "nanchan_colors.ply",
@@ -386,13 +390,42 @@ experiments = {
       "-d data/baluster_vase_textures/diffuse.jpg --target-tri-num 400000",
     ),
   ],
+  "cubify-musk-melon": [
+    runnable_cmds([
+      "uv run bin/cubify.py -i outputs/musk_melon_direct.ply \
+        -o ablations/cube_musk_melon.ply --cubeness 50 --lr 1e-3 --scale-luma"
+    ]),
+    #runnable_cmds([
+    #  "uv run bin/cubify.py -i outputs/musk_melon_direct.ply \
+    #    -o ablations/cube_musk_melon_color_only.ply --cubeness 0 --color-cubeness 500 --lr 1e-3"
+    #]),
+    #runnable_cmds([
+    #  "uv run bin/cubify.py -i outputs/musk_melon_direct.ply \
+    #    -o ablations/cube_musk_melon_colored.ply --cubeness 2 --color-cubeness 500 --lr 1e-3"
+    #]),
+  ],
+  "breakfast-still-life-line-art": [
+    run(
+      "../outputs/breakfast_still_life_approx.ply",
+      "breakfast_still_life_line_art.ply",
+      f"--dist-thresh 5e-3 --color-thresh 0.1 --dir min-curvature --width 1e-3 --length 0.05",
+      bin=hatching_bin, is_abl=False,
+      eval=False,
+    ),
+    render(
+      "outputs/breakfast_still_life_line_art.ply",
+      5, -15, 1, 0,
+      out="outputs/breakfast_still_life_line_art.png",
+    ),
+  ],
 
   "dataset-exact": [
     *[
       run(
         model, model[:-4] + "_exact.ply",
         f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
-          --no-incremental-qem --sample-kind exact",
+          --no-incremental-qem --sample-kind exact \
+          {'' if img_size_frac is None else f'--image-size-frac {img_size_frac}'}",
         is_abl=False,
       )
       for (model, texture, tri_num, img_size_frac) in dataset

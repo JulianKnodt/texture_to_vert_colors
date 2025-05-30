@@ -3,15 +3,15 @@
 #![feature(let_chains)]
 #![feature(generic_arg_infer)]
 
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap};
 
 use clap::Parser;
 
+use texture_to_vert_colors::F;
 use texture_to_vert_colors::clustering::{
     Args as ClusterArgs, Eigenvalue, OrderingKind, ShapeMetric,
 };
-use texture_to_vert_colors::F;
 
 #[derive(Clone, Parser, Debug)]
 #[clap(group(
@@ -78,6 +78,11 @@ pub struct Args {
     /// Mey kill perf.
     #[arg(long, hide = true)]
     invert_shape: bool,
+
+    /// Store data to be passed to XAtlas here. For now should be an OBJ file which specifies
+    /// a separate mesh for each cluster
+    #[arg(long, default_value_t = String::new())]
+    xatlas_output: String,
 }
 
 impl From<Args> for ClusterArgs {
@@ -217,430 +222,29 @@ pub fn main() -> std::io::Result<()> {
         pars3d::save(&args.output, &out_scene)?;
     }
 
+    if !args.xatlas_output.is_empty() {
+        // for each chart, output a separate mesh
+        let mut out_scene = pars3d::Scene::default();
+        for ci in 0..num_charts {
+            let mut new_mesh = pars3d::Mesh::default();
+            new_mesh.v.clone_from(&mesh.v);
+            let faces_in_chart = mesh
+                .f
+                .iter()
+                .enumerate()
+                .filter(|&(fi, _)| remap[&face_charts[fi]] == ci)
+                .map(|(_, f)| f.clone());
+            new_mesh.f.extend(faces_in_chart);
+
+            new_mesh.delete_unused_vertices();
+            new_mesh.denormalize(s, t);
+            // for trimesh to generate a separate mesh for each (but not actually used)
+            new_mesh.assign_single_mat(ci);
+            out_scene.materials.push(Default::default());
+            out_scene.meshes.push(new_mesh);
+        }
+        pars3d::save(&args.xatlas_output, &out_scene)?;
+    }
+
     Ok(())
 }
-
-/*
-pub fn face_clustering<'a, 'b>(
-    vs: &'a [[F; 3]],
-    vcs: &'a [[F; 3]],
-    fs: &'a [pars3d::FaceKind],
-    nf: usize,
-    args: &ClusterArgs,
-) -> (
-    Vec<usize>,
-    CollapsibleManifold<(SymMatrix3, [F; 3], F), union_find::AtomicUnionFind>,
-) {
-    // face normals
-    let f_n = (0..nf).map(|fi| fs[fi].normal(&vs)).collect::<Vec<_>>();
-
-    // vertex normals
-    let mut v_ns = vec![[0.; 3]; vs.len()];
-    for (fi, f_n) in f_n.iter().copied().enumerate() {
-        for &vi in fs[fi].as_slice() {
-            v_ns[vi] = add(v_ns[vi], f_n);
-        }
-    }
-
-    for v_n in v_ns.iter_mut() {
-        *v_n = normalize(*v_n);
-    }
-
-    let mut face_area = vec![0.; nf];
-    let mut edge_face_adj: HashMap<[usize; 2], EdgeKind> = HashMap::new();
-
-    for (fi, f) in (0..nf).map(|fi| &fs[fi]).enumerate() {
-        face_area[fi] = if !args.no_area_weight {
-            poly_area(f.as_slice().iter().map(|&v| vs[v]))
-        } else {
-            1.
-        };
-        let f = f.as_slice();
-        for i in 0..f.len() {
-            let n = (i + 1) % f.len();
-            let e = minmax(f[i], f[n]);
-            edge_face_adj
-                .entry(e)
-                .and_modify(|old| {
-                    old.insert(fi);
-                })
-                .or_insert_with(|| EdgeKind::Boundary(fi));
-        }
-    }
-
-    //let vert_vert_adj = pars3d::adjacency::VertexAdj::new(fs, vs.len());
-
-    // for each real mesh edge, track which charts it is a part of.
-    // Each edge can be at most part of 2 charts.
-    let mut m = CollapsibleManifold::<(SymMatrix3, [F; 3], F), _>::atomic_new_with(nf, |fi| {
-        let n = f_n[fi];
-        let area = face_area[fi];
-        let q = SymMatrix3::outer(n);
-
-        let f = &fs[fi];
-        let per_vert_weight = area / f.len() as F;
-        assert!(!f.is_empty());
-        assert!(area.is_sign_positive());
-        let avg_color = if area == 0. {
-            [0.; 3]
-        } else {
-            let sum_color = f
-                .as_slice()
-                .iter()
-                .copied()
-                .map(|vi| vcs.get(vi).copied().unwrap_or([0.; 3]))
-                .map(|vc| kmul(per_vert_weight, vc))
-                .fold([0.; 3], add);
-            kmul(area.recip(), sum_color)
-        };
-        assert!(avg_color.iter().copied().all(F::is_finite));
-
-        (q * area, avg_color, area)
-    });
-
-    for e in edge_face_adj.values() {
-        let s = e.as_slice();
-        // connect all adjacent faces
-        for i in 0..s.len() {
-            for j in i + 1..s.len() {
-                assert_ne!(s[i], s[j]);
-                m.add_edge(s[i], s[j]);
-            }
-        }
-    }
-
-    // from this point, edge_face_adj now corresponds to the chart of each mesh.
-    eprintln!("[INFO]: Input # vertices = {}", vs.len());
-    eprintln!("[INFO]: Input # faces = {}", nf);
-
-    // for each chart pair (ordered minmax)
-    // store edges between these charts
-    // update this on every iteration before merging
-    let mut shared_chart_edges: HashMap<[usize; 2], Vec<[usize; 2]>> = HashMap::new();
-    for (fi, _) in m.vertices() {
-        let f0 = &fs[fi];
-        for f_adj in m.vertex_adj(fi) {
-            assert_ne!(fi, f_adj);
-            if f_adj < fi {
-                continue;
-            }
-            let adj_f = &fs[f_adj];
-
-            assert!(fi < f_adj);
-            let shared_e = shared_chart_edges.entry([fi, f_adj]).or_default();
-            assert!(shared_e.is_empty());
-            shared_e.extend(f0.shared_edges(&adj_f));
-        }
-    }
-
-    let mut barycentric_area = vec![];
-    pars3d::geom_processing::barycentric_areas(fs, vs, &mut barycentric_area);
-
-    macro_rules! straightness_deviation {
-        ($pi: expr, $ci: expr, $ni: expr) => {{
-            let [p, c, n] = [$pi, $ci, $ni].map(|vi| vs[vi]);
-            let e0 = normalize(sub(p, c));
-            let e1 = normalize(sub(n, c));
-            let theta = dot(e0, e1).clamp(-1., 1.).acos() / PI;
-            // deviation in the range [0, 1]
-            let dev = 1. - theta;
-            assert!((0.0..=1.0).contains(&dev));
-            // close to L0?
-            dev * dev //.sqrt()
-        }};
-    }
-    // for each chart
-    // store all pairs of incident edges on the boundary of that chart along with the summed
-    // deviation from pi for each pair. TODO test squared distance vs abs distance
-    let mut incident_angles: Vec<BTreeMap<usize, Vec<[usize; 2]>>> =
-        vec![BTreeMap::new(); m.num_vertices()];
-    //let mut total_incident_angle = vec![0.; m.num_vertices()];
-    for (fi, _) in m.vertices() {
-        let f = &fs[fi];
-        for [pi, ci, ni] in f.incident_edges() {
-            assert_ne!(pi, ci);
-            assert_ne!(ci, ni);
-            assert_ne!(pi, ni);
-            let prev = incident_angles[fi].entry(ci).or_default();
-            assert!(!prev.contains(&[pi, ni]));
-            // imporant to retain original winding order here, so we can determine what is right
-            // and left.
-            prev.push([pi, ni]);
-        }
-    }
-
-    let mut pq = PriorityQueue::new();
-
-    let mut prev_eigens = vec![0.; nf];
-    for (vi, (q, _, _)) in m.vertices() {
-        let eigens = q.eigen_sorted().0;
-        prev_eigens[vi] = args.eigenvalue.apply(eigens);
-    }
-
-    macro_rules! cost_of_edge {
-        ($e0:expr, $e1: expr) => {{
-            let [e0, e1] = std::cmp::minmax($e0, $e1);
-
-            assert!(!m.is_deleted(e0));
-            assert!(!m.is_deleted(e1));
-            let (q0, avg_color0, area0) = *m.get(e0);
-            let (q1, avg_color1, area1) = *m.get(e1);
-            // if the charts are merged together then we don't need to combine any additional
-            // costs, otherwise we need to add them.
-            let q_new = q0 + q1;
-
-            // sorted eigenvalues
-            let neigens = q_new.eigen_sorted().0;
-            let evn = args.eigenvalue.apply(neigens);
-
-            let ev0 = prev_eigens[e0];
-            let ev1 = prev_eigens[e1];
-            let [evn, ev0, ev1] = [evn, ev0, ev1].map(F::abs);
-            // subtract previous values here (only penalize added deviation)?
-            let cost = evn - (ev0 + ev1);
-
-            // also need to compute deviation from constant color
-            let new_area = area0 + area1;
-            let total_clr = add(kmul(area0, avg_color0), kmul(area1, avg_color1));
-            assert!(new_area >= 0.);
-            let new_avg = if new_area == 0. {
-                [0.; 3]
-            } else {
-                kmul(new_area.recip(), total_clr)
-            };
-
-            // TODO use a different color distance here?
-            let clr_diff =
-                area0 * l1dist(new_avg, avg_color0) + area1 * l1dist(new_avg, avg_color1);
-            assert!(clr_diff.is_finite());
-            assert!(clr_diff >= 0.);
-
-            let shape_metric = match args.shape_metric {
-              // if either of these is 0., then there will be no space for optimizing shape
-              // metrics.
-              _ if args.eigen_eps <= 0. || args.color_eps <= 0. => 0.,
-              ShapeMetric::None => 0.,
-              ShapeMetric::BoundaryLength => {
-                // Tested here: dividing by new area seems to make it prefer rounder charts,
-                // whereas just plain seems to be ok with skinny charts.
-                // Maybe that's fine?
-                shared_chart_edges[&[e0, e1]]
-                    .iter()
-                    .map(|&[e0, e1]| dist(vs[e0], vs[e1]))
-                    .sum::<F>()
-              }
-              ShapeMetric::AngleDeviation => {
-                assert!(e1 < incident_angles.len());
-                assert_ne!(e0, e1);
-                let [ia_e0,  ia_e1] = incident_angles.get_disjoint_mut([e0, e1]).unwrap();
-                let angle_delta = ia_e0
-                    .iter_mut()
-                    .filter_map(|(&vi, pns)| {
-                        // for vertices which are contained in both chart, compute the new
-                        // straightness for each vertex.
-
-                        // NOTE: if there was no entry before the cost is the same
-
-                        // TODO figure out if there's a way to do this without a buffer?
-                        // NOTE: the common case (1 element) probably does not need a buffer, maybe that can be
-                        // optimized and the rare case can allocate
-                        let opns : &mut [[usize;2]] = ia_e1.get_mut(&vi)?;
-                        match (pns.as_mut_slice(), opns) {
-                          (&mut [], _) | (_, &mut []) => return None,
-                          (&mut [pn], &mut [opn]) => {
-                            let [new_p, new_n] = merge_wedges(pn, opn)?;
-                            let prev = straightness_deviation!(pn[0],vi, pn[1]) +
-                              straightness_deviation!(opn[0],vi, opn[1]);
-                            let new = straightness_deviation!(new_p, vi, new_n);
-                            Some(new - prev)
-                          }
-                          (&mut [pn], mut rest) | (mut rest, &mut [pn]) => {
-                            let (to_keep, new) = new_wedges(&mut rest, pn);
-                            let mut new_angle = new
-                              .map(|[new_p, new_n]| straightness_deviation!(new_p, vi, new_n))
-                              .unwrap_or(0.);
-                            for &[p,n] in &rest[0..to_keep] {
-                              new_angle += straightness_deviation!(p, vi, n);
-                            }
-                            let prev = straightness_deviation!(pn[0], vi, pn[1])
-                              + rest.iter()
-                                  .map(|&[p,n]| straightness_deviation!(p, vi, n))
-                                  .sum::<F>();
-                            Some(new_angle - prev)
-                          }
-                          (_, opns) => {
-                            let mut opns: Vec<[usize; 2]> = opns.to_vec();
-                            let e0_angle_dev = pns.iter()
-                              .map(|&[p,n]| straightness_deviation!(p, vi, n))
-                              .sum::<F>();
-                            let e1_angle_dev = opns.iter()
-                              .map(|&[p,n]| straightness_deviation!(p, vi, n))
-                              .sum::<F>();
-
-                            for &mut pn in pns {
-                              let (to_keep, new) = new_wedges(&mut opns, pn);
-                              opns.truncate(to_keep);
-                              if let Some(new) = new {
-                                opns.push(new);
-                              }
-                            }
-
-                            let new = opns.iter().map(|&[pi, ni]| straightness_deviation!(pi, vi, ni)).sum::<F>();
-
-                            Some(new - (e0_angle_dev + e1_angle_dev))
-                          },
-                        }
-                    })
-                    .sum::<F>();
-                  -angle_delta
-              }
-            };
-
-
-            let l = if args.invert_shape {
-                shape_metric
-            } else {
-                -shape_metric
-            };
-
-            let arr = match args.ordering {
-                OrderingKind::GeomColorShape => [cost, clr_diff, l],
-                OrderingKind::ColorGeomShape => [clr_diff, cost, l],
-                OrderingKind::GeomShapeColor => [cost, l, clr_diff],
-            };
-
-            arr.map(|v| NotNan::new(-v).unwrap())
-        }};
-    }
-
-    // This loop can be very slow for processing all components together since it is a dense
-    // mesh.
-    let ec = Mutex::new(&mut pq);
-    m.edges()
-        // since just deduplicated edges, only check when e0 < e1
-        .filter(|[e0, e1]| e0 < e1)
-        .for_each(|[e0, e1]| {
-            let c = cost_of_edge!(e0, e1);
-            ec.lock().unwrap().push(minmax(e0, e1), c);
-        });
-
-    let p = ProgressBar::new(m.num_vertices() as u64);
-    p.set_style(
-        indicatif::ProgressStyle::default_bar()
-            .template("{wide_bar} {pos}/{len} (Elapsed = {elapsed_precise})")
-            .unwrap(),
-    );
-
-    let mut pq2 = PriorityQueue::new();
-    // fml this is some bullshit I need to rewrite
-    let mut pq3 = PriorityQueue::new();
-    'outer: while let Some((e, [dev, cd, s])) = pq.pop() {
-        assert!(pq2.is_empty());
-        pq2.push(e, [cd, dev, s]);
-        while let Some((e, [cd, dev, s])) = pq2.pop() {
-            assert!(pq3.is_empty());
-            pq3.push(e, [s, cd, dev]);
-            // hohoho kms
-            while let Some(([e0, e1], [_s, cd, dev])) = pq3.pop() {
-                assert!(e0 < e1);
-                assert_ne!(e0, e1);
-                // Termination criteria
-                let reached = args
-                    .target_num_charts
-                    .map(|tf| m.num_vertices() <= tf)
-                    .unwrap_or(false)
-                    || (*dev < args.error_bound);
-
-                if reached {
-                    break 'outer;
-                }
-                if m.is_deleted(e0) || m.is_deleted(e1) {
-                    continue;
-                }
-
-                // --- Commit
-
-                assert!(shared_chart_edges.remove(&[e0, e1]).is_some());
-
-                // update shared edges between e0 - adj to instead be between e1 - adj
-                for adj in m.vertex_adj(e0) {
-                    if adj == e1 {
-                        continue;
-                    }
-                    let c = minmax(adj, e0);
-                    let mut sce = shared_chart_edges.remove(&c).unwrap();
-                    let nc = minmax(adj, e1);
-                    // should not have any dupes
-                    shared_chart_edges.entry(nc).or_default().append(&mut sce);
-                }
-
-                for (c, pns) in std::mem::take(&mut incident_angles[e0]) {
-                    use std::collections::btree_map::Entry as BEntry;
-                    match incident_angles[e1].entry(c) {
-                        BEntry::Vacant(v) => {
-                            v.insert(pns);
-                        }
-                        BEntry::Occupied(mut o) => {
-                            let opn = o.get_mut();
-                            for pn in pns {
-                                let (new_len, new_wedge) = new_wedges(opn, pn);
-                                opn.truncate(new_len);
-                                if let Some(new_wedge) = new_wedge {
-                                    opn.push(new_wedge);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                m.merge(e0, e1, |&(sa, ca, area_a), &(sb, cb, area_b)| {
-                    assert!(area_a >= 0.);
-                    assert!(area_b >= 0.);
-                    let new_area = area_a + area_b;
-                    assert!(new_area >= 0.);
-                    let total_clr = add(kmul(area_a, ca), kmul(area_b, cb));
-                    let new_avg = if new_area == 0. {
-                        [0.; 3]
-                    } else {
-                        kmul(new_area.recip(), total_clr)
-                    };
-                    (sa + sb, new_avg, new_area)
-                });
-
-                assert!(m.is_deleted(e0));
-                assert!(!m.is_deleted(e1));
-                prev_eigens[e1] = args.eigenvalue.apply(m.get(e1).0.eigen_sorted().0);
-
-                for adj in m.vertex_adj(e1) {
-                    let c = cost_of_edge!(adj, e1);
-                    let e = minmax(e1, adj);
-
-                    pq2.remove(&e);
-                    pq3.remove(&e);
-                    pq.push(e, c);
-                }
-
-                let first_eps = args.ordering.first_eps(args.eigen_eps, args.color_eps);
-                while let Some((ne, [ndev, ncd, ns])) =
-                    pq.pop_if(|_, [ndev, _, _]| approx_eq(**ndev, *dev, first_eps))
-                {
-                    pq2.push(ne, [ncd, ndev, ns]);
-                }
-
-                let snd_eps = args.ordering.second_eps(args.eigen_eps, args.color_eps);
-                while let Some((ne, [ncd, ndev, ns])) =
-                    pq2.pop_if(|_, [ncd, _, _]| approx_eq(**ncd, *cd, snd_eps))
-                {
-                    pq3.push(ne, [ns, ncd, ndev]);
-                }
-
-                p.set_position(m.num_vertices() as u64);
-            }
-        }
-    }
-
-    // for each face which chart is it assigned to?
-    let charts = (0..nf).map(|i| m.get_new_vertex(i)).collect::<Vec<_>>();
-    (charts, m)
-}
-*/

@@ -36,6 +36,10 @@ pub struct Args {
     /// Use a different palette for dithering (Default = [0., 1.])
     #[arg(long, short)]
     palette: Vec<F>,
+
+    /// Unused
+    #[arg(long)]
+    stats: String,
 }
 
 fn main() {

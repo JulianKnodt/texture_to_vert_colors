@@ -2,7 +2,7 @@
 #![allow(unused)]
 use clap::Parser;
 use texture_to_vert_colors::quadric::Quadric;
-use texture_to_vert_colors::{F, add, dist, dot, kmul, normalize, sub, length};
+use texture_to_vert_colors::{F, add, dist, dot, kmul, length, normalize, sub};
 
 use pars3d::adjacency::VertexAdj;
 use std::collections::HashMap;
@@ -22,11 +22,20 @@ pub struct Args {
     grayscale: bool,
 
     /// How wide to trace curves
-    #[arg(long, default_value_t = 1e-3)]
+    #[arg(long, default_value_t = 8e-4)]
     width: F,
 
+    /// How long to trace each curve on the surface.
+    /// Likely needs to be tuned per model.
+    #[arg(long, default_value_t = 0.01)]
+    length: F,
+
+    /// How bendy to make each line
+    #[arg(long, default_value_t = 0.)]
+    bend_amt: F,
+
     /// Color threshold above which to draw curves
-    #[arg(long, default_value_t = 0.1)]
+    #[arg(long, default_value_t = 0.05)]
     color_thresh: F,
 
     /// Distance threshold above which to draw curves
@@ -36,6 +45,10 @@ pub struct Args {
     /// Direction along which to draw hatches
     #[arg(long, default_value_t = DirKind::MaxCurvature)]
     dir: DirKind,
+
+    /// Unused currently
+    #[arg(long, default_value_t = String::new())]
+    stats: String,
 }
 
 fn main() {
@@ -85,7 +98,8 @@ pub fn edge_hatching(
     let v = &m.v;
     let edge_adj = m.edge_kinds();
 
-    use pars3d::tracing::{ColorKind, Curve, trace_curve_from_mid};
+    use pars3d::func::ScalarFn;
+    use pars3d::tracing::{Curve, trace_curve_from_mid};
     let mut out = pars3d::Mesh::default();
     let ne = vv_adj.all_pairs_ord().count();
     let prog = indicatif::ProgressBar::new(ne as u64);
@@ -113,7 +127,7 @@ pub fn edge_hatching(
             continue;
         }
         let [vc0, vc1] = vis.map(|vi| vc[vi]);
-        let cd = dist(vc0, vc1);
+        let cd = (luma(vc0) - luma(vc1)).abs();
         if cd < args.color_thresh {
             continue;
         }
@@ -124,7 +138,6 @@ pub fn edge_hatching(
         let ([_, k0, k1], [_, curv0, curv1]) = q01.a.eigen_sorted();
 
         let midpoint = kmul(0.5, add(v0, v1));
-        let color_mid = kmul(0.5, add(vc0, vc1));
         let fi = edge_adj[&e].as_slice()[0];
 
         let f = &m.f[fi];
@@ -132,10 +145,10 @@ pub fn edge_hatching(
 
         let tri = start.tri(f);
         let (d, dir) = match args.dir {
-          DirKind::Edge => (el, normalize(sub(v1, v0))),
-          DirKind::MaxCurvature => (k0, curv0),
-          DirKind::MinCurvature => (k1, curv1),
-          // TODO also some kind of lerp between the two?
+            DirKind::Edge => (el, normalize(sub(v1, v0))),
+            DirKind::MaxCurvature => (k0, curv0),
+            DirKind::MinCurvature => (k1, curv1),
+            // TODO also some kind of lerp between the two?
         };
         let direction = pars3d::dir_to_barycentric(dir, tri.map(|vi| v[vi]));
 
@@ -144,13 +157,14 @@ pub fn edge_hatching(
             start,
             start_face: fi,
             direction,
-            width: args.width * (1. + cd),
-            length: 0.1,
+            width: ScalarFn::Linear([args.width], [0.25 * args.width]),
+
+            length: args.length,
 
             // TODO make bend amt random?
-            bend_amt: 0.0, //25.,
+            bend_amt: args.bend_amt, //25.,
 
-            color: ColorKind::Linear(vc0, vc1),
+            color: ScalarFn::Linear(vc0.map(|v| v * v), vc1.map(|v| v.sqrt())),
         };
 
         let (wv, wvc, wf) = trace_curve_from_mid(
@@ -163,6 +177,10 @@ pub fn edge_hatching(
         out.append(&mut wf);
     }
     out
+}
+
+fn luma([r, g, b]: [F; 3]) -> F {
+    0.299 * r + 0.587 * g + 0.114 * b
 }
 
 macro_rules! impl_display {

@@ -72,7 +72,7 @@ dataset = [
   #("silent_ash.obj", "silent_ash_texture.png", 10000000, None),
   #("scan_vase.obj", "scan_vase_texture.jpg", 500000, None),
   #("strawberry.obj", "strawberry_textures/diffuse.png", 1000000, None),
-  #("ding_censer.obj", "ding_censer_textures/diffuse.jpg", 2000000, None),
+  #("ding_censer.obj", "ding_censer_textures/diffuse.jpg", 2000000, 0.75),
   #("musashi_panels.obj", "musashi_panels_textures/diffuse.jpg", 1000000, None),
   #("tiger_lily.obj", "tiger_lily.jpeg", 2000000, None),
   #("shiny_fish.fbx", "shiny_fish_textures/Fishka_2_G_Fish_BaseColor2.jpg", 1000000, None),
@@ -88,7 +88,7 @@ dataset = [
 
   #("building_front.obj", "building_front.jpg", 2000000, None),
   #("japanese_toro.obj", "japanese_toro_textures/japanese_toro_small.png", 900000, None),
-  ("breakfast_still_life.obj", "", 1000000, 0.5),
+  #("breakfast_still_life.obj", "", 1000000, 0.5),
   #("ibis.obj", "", 1000000, 0.5),
 
 
@@ -107,12 +107,21 @@ dataset = [
 
 dataset_direct = [
   #("takifugu.obj", "", 1000000),
-  ("musk_melon.obj", "", 2000000),
+  #("musk_melon.obj", "", 2000000),
   #("oshima_cherry.obj", "", 2000000),
   #("mango.obj", "", 1000000),
+  ("nishiki_utsugi.obj", "", 1000000),
 ]
 
 experiments = {
+  "test-render": [
+    render(
+      "data/cube.obj",
+      8, -30, -2, 0, fy=-10.,
+      out="test_render.png",
+      extras="--flip-light",
+    ),
+  ],
   # basic test of a cube
   "basic-cube": [
     *[
@@ -405,17 +414,107 @@ experiments = {
     #]),
   ],
   "breakfast-still-life-line-art": [
+    #run(
+    #  "../outputs/breakfast_still_life_approx.ply",
+    #  "breakfast_still_life_line_art.ply",
+    #  f"--dist-thresh 0. --color-thresh 0.2 --dir min-curvature --width 5e-4 --length 0.01 \
+    #  --bend-amt 1",
+    #  bin=hatching_bin, is_abl=False,
+    #  eval=False,
+    #),
     run(
       "../outputs/breakfast_still_life_approx.ply",
       "breakfast_still_life_line_art.ply",
-      f"--dist-thresh 5e-3 --color-thresh 0.1 --dir min-curvature --width 1e-3 --length 0.05",
+      f"--dist-thresh 3e-3 --color-thresh 0.1 --dir edge --width 1e-3 --length 0.01 \
+        --bend-amt 5",
       bin=hatching_bin, is_abl=False,
       eval=False,
     ),
     render(
       "outputs/breakfast_still_life_line_art.ply",
-      5, -15, 1, 0,
+      15, -25, 0, 0, fy=-20, rz=-5,
       out="outputs/breakfast_still_life_line_art.png",
+
+    ),
+  ],
+  "strawberry-line-art": [
+    run(
+      "../outputs/strawberry_approx.ply",
+      "strawberry_line_art.ply",
+      f"--dist-thresh 3e-3 --color-thresh 0.2 --dir edge --width 1e-3 --length 0.1 \
+        --bend-amt 3",
+      bin=hatching_bin, is_abl=False,
+      eval=False,
+    ),
+    render(
+      "outputs/strawberry_line_art.ply",
+      6, -22, -4, 0, fy=-10,
+      out="outputs/strawberry_line_art.png",
+      extras="--flip-light --light-z 20",
+    ),
+  ],
+
+  "nishiki-utsugi-line-art": [
+    run(
+      "../outputs/nishiki_utsugi_direct.ply",
+      "nishiki_utsugi_line_art_max.ply",
+      f"--dist-thresh 4e-3 --color-thresh 0.02 --dir max-curvature --width 1e-3 --length 0.01 \
+        --bend-amt 5",
+      bin=hatching_bin, is_abl=False,
+      eval=False,
+    ),
+    render(
+      "outputs/nishiki_utsugi_line_art_max.ply",
+      10, -27, 0, 0, fy=-7,
+      out="outputs/nishiki_utsugi_line_art_max.png",
+    ),
+    run(
+      "../outputs/nishiki_utsugi_direct.ply",
+      "nishiki_utsugi_line_art_edge.ply",
+      f"--dist-thresh 4e-3 --color-thresh 0.02 --dir edge --width 1e-3 --length 0.01 \
+        --bend-amt 5",
+      bin=hatching_bin, is_abl=False,
+      eval=False,
+    ),
+    render(
+      "outputs/nishiki_utsugi_line_art_edge.ply",
+      10, -27, 0, 0, fy=-7,
+      out="outputs/nishiki_utsugi_line_art_edge.png",
+    ),
+  ],
+
+  "officebot-dithering": [
+    #run(
+    #  "../outputs/officebot_approx.ply",
+    #  "officebot_uniform_dithering.ply",
+    #  "--weighting uniform",
+    #  bin=dithering_bin, is_abl=False, eval=False
+    #),
+    run(
+      "../outputs/officebot_approx.ply",
+      "officebot_length_dithering.ply",
+      "--weighting length",
+      bin=dithering_bin, is_abl=False, eval=False
+    ),
+    render(
+      "outputs/officebot_length_dithering.ply",
+      11, -19, 5, 0, fy=0.5, rz=-45,
+      out="outputs/officebot_length_dithering.png",
+      extras="--flip-light --light-z 200",
+    ),
+  ],
+  "watercolor-cake-dithering": [
+    run(
+      "../outputs/watercolor_cake_approx.ply",
+      "watercolor_cake_dithering.ply",
+      "--weighting length",
+      bin=dithering_bin, is_abl=False, eval=False
+    ),
+    render(
+      "outputs/watercolor_cake_dithering.ply",
+      8, -24, 5, 0, fy=0.2, cx=1.5,lx=1.5,
+      out="outputs/watercolor_cake_dithering.png",
+      extras="--flip-light --light-z 200",
     ),
   ],
 

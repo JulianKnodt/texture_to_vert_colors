@@ -137,8 +137,7 @@ pub fn face_clustering<'a, 'b>(
     }
 
     // from this point, edge_face_adj now corresponds to the chart of each mesh.
-    eprintln!("[INFO]: Input # vertices = {}", vs.len());
-    eprintln!("[INFO]: Input # faces = {}", nf);
+    eprintln!("[INFO]: Clustering Input # F = {}, # V = {}", nf, vs.len());
 
     // for each chart pair (ordered minmax)
     // store edges between these charts
@@ -185,9 +184,9 @@ pub fn face_clustering<'a, 'b>(
     for (fi, _) in m.vertices() {
         let f = &fs[fi];
         for [pi, ci, ni] in f.incident_edges() {
-            assert_ne!(pi, ci);
-            assert_ne!(ci, ni);
-            assert_ne!(pi, ni);
+            assert_ne!(pi, ci, "{f:?}");
+            assert_ne!(ci, ni, "{f:?}");
+            assert_ne!(pi, ni, "{f:?}");
             let prev = incident_angles[fi].entry(ci).or_default();
             assert!(!prev.contains(&[pi, ni]));
             // imporant to retain original winding order here, so we can determine what is right

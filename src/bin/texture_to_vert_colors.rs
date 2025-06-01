@@ -219,7 +219,7 @@ pub fn main() {
                 }
                 let mi = mesh
                     .mat_for_face(fi)
-                    .expect(&format!("{:?}", mesh.face_mat_idx));
+                    .expect(&format!("No material found in {:?}", mesh.face_mat_idx));
                 let &ti = scene.materials[mi]
                     .textures
                     .iter()

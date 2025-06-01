@@ -28,7 +28,7 @@ pub struct Args {
     target_uv: usize,
 
     /// How to combine position and color when computing norms.
-    #[arg(long, default_value_t = PosColorNorm::GeometricMean)]
+    #[arg(long, default_value_t = PosColorNorm::Add)]
     pos_color_norm: PosColorNorm,
 
     /// Save SVG of UV to this destination. If empty will not save.
@@ -39,6 +39,10 @@ pub struct Args {
     #[arg(long, default_value_t = String::new())]
     bake_texture: String,
 
+    /// Resolution of baked texture
+    #[arg(long, default_value_t = 1024)]
+    bake_res: u32,
+
     /// Unused for now
     #[arg(long, default_value_t = String::new())]
     stats: String,
@@ -46,6 +50,10 @@ pub struct Args {
     /// How many iterations to do for the lazy tutte.
     #[arg(long, default_value_t = 10000)]
     iters: usize,
+
+    /// How much to weigh color compared to geometry
+    #[arg(long, default_value_t = 1.)]
+    color_weight: F,
 }
 
 fn main() {
@@ -81,6 +89,7 @@ fn main() {
         args.pos_color_norm,
         args.input,
     );
+    println!("[INFO]: Saved to {}", args.output);
 
     if !args.uv_svg.is_empty() {
         assert!(
@@ -89,7 +98,7 @@ fn main() {
             args.uv_svg
         );
         let m0 = &scene.meshes[0];
-        if let Err(e) = pars3d::svg::save_uv(args.uv_svg, &m0.uv[args.target_uv], &m0.f, 0.0003) {
+        if let Err(e) = pars3d::svg::save_uv(args.uv_svg, &m0.uv[args.target_uv], &m0.f, 0.4) {
             eprintln!("Failed to save SVG due to {e:?}");
         }
     }
@@ -97,7 +106,7 @@ fn main() {
     if !args.bake_texture.is_empty() {
         let m0 = &scene.meshes[0];
         let mut img = pars3d::coloring::bake_vertex_colors_to_texture(
-            [512, 512],
+            [args.bake_res, args.bake_res],
             &m0.uv[args.target_uv],
             &m0.f,
             &m0.vert_colors,
@@ -127,21 +136,26 @@ fn main() {
 pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) {
     let mut vert_adj = args
         .weighting
-        .vertex_weights(&mesh, args.pos_color_norm)
+        .vertex_weights(&mesh, args.pos_color_norm, args.color_weight)
         .expect("Failed to construct vertex adjacency");
-    // remove influence of introduced edges
-    for vi in 0..mesh.v.len() {
-        let (adj_vs, adj_ds) = vert_adj.adj_data_mut(vi);
-        for i in 0..adj_vs.len() {
-            let e = std::cmp::minmax(vi, adj_vs[i] as usize);
-            if new_edges.contains(&e) {
-                adj_ds[i] = 0.;
+    // remove influence of introduced edges with length or uniform weighting
+    if matches!(
+        args.weighting,
+        WeightingKind::Length | WeightingKind::Uniform
+    ) {
+        for vi in 0..mesh.v.len() {
+            let (adj_vs, adj_ds) = vert_adj.adj_data_mut(vi);
+            for i in 0..adj_vs.len() {
+                let e = std::cmp::minmax(vi, adj_vs[i] as usize);
+                if new_edges.contains(&e) {
+                    adj_ds[i] = 0.;
+                }
             }
         }
     }
     let vert_adj = vert_adj;
     let (num_loops, bd_loops) = vert_adj.boundary_loops(&mesh);
-    assert_eq!(num_loops, 1);
+    assert_eq!(num_loops, 1, "{bd_loops:?}");
 
     let mut bd = vec![];
     let (&first, &[last, mut next]) = bd_loops.first_key_value().unwrap();
@@ -224,27 +238,37 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
     for _ in (0..args.iters).progress() {
         buf.fill([0.; 2]);
         use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
-        //for (vi, dst) in buf.iter_mut().enumerate() {
         buf.par_iter_mut().enumerate().for_each(|(vi, dst)| {
             let mut total_w = 0.;
             for (adj, w) in vert_adj.adj_data(vi) {
                 // negative values cause this to explode
                 total_w += w;
-                assert!(w.is_finite());
+                //assert!(w.is_finite(), "{w}");
                 *dst = add(
                     *dst,
                     kmul(w as F, unsafe { *uvs.get_unchecked(adj as usize) }),
                 );
             }
+            debug_assert_ne!(total_w, 0.);
             *dst = kmul(total_w.recip(), *dst);
             debug_assert!(dst[0].is_finite());
             debug_assert!(dst[1].is_finite(), "{total_w:?} {:?}", *dst);
         });
-        //}
         for (&b, _) in &bd_loops {
             buf[b] = uvs[b];
         }
 
         std::mem::swap(&mut buf, &mut uvs);
     }
+
+    assert!(
+        uvs.iter()
+            .copied()
+            .all(|uv| uv[0].is_finite() && uv[1].is_finite()),
+        "{:?}",
+        uvs.iter()
+            .copied()
+            .filter(|uv| !(uv[0].is_finite() && uv[1].is_finite()))
+            .collect::<Vec<_>>()
+    );
 }

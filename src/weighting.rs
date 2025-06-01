@@ -1,11 +1,10 @@
-use crate::{F, cross, dist, dot, length, normalize, sub};
+use crate::{F, dist};
 use pars3d::adjacency::VertexAdj;
 use std::collections::BTreeMap;
 
 // NOTE USEFUL:
 // https://doc.cgal.org/latest/Weights/group__PkgWeightsRefAnalytic.html
 
-// TODO remove the difference between color and no color approaches.
 /// How to weigh relative importance of different vertices.
 #[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
 pub enum WeightingKind {
@@ -30,9 +29,11 @@ impl WeightingKind {
         &self,
         mesh: &pars3d::Mesh,
         pos_color_norm: PosColorNorm,
+        color_weight: F,
     ) -> Result<VertexAdj<F>, Error> {
+        let cw = color_weight;
         let mut edge_face_adj = BTreeMap::new();
-        if matches!(self, WeightingKind::MeanValue | WeightingKind::Laplacian) {
+        if matches!(self, WeightingKind::MeanValue) {
             for (fi, f) in mesh.f.iter().enumerate() {
                 for e in f.edges_ord() {
                     let slots = edge_face_adj.entry(e).or_insert([usize::MAX; 2]);
@@ -46,70 +47,87 @@ impl WeightingKind {
         }
         let vert_adj = mesh.vertex_vertex_adj();
         let per_face_info = match self {
-            WeightingKind::Uniform | WeightingKind::Length => vec![],
+            WeightingKind::Uniform | WeightingKind::Length | WeightingKind::Laplacian => vec![],
             WeightingKind::MeanValue => mesh
                 .f
                 .iter()
                 .map(|f| {
-                    let vis = f.as_tri().unwrap();
-                    let [v0, v1, v2] = vis.map(|vi| mesh.v[vi]);
-                    let tan_ang = |r, a, b| {
-                        let ar = normalize(sub(a, r));
-                        let br = normalize(sub(b, r));
-                        let cos_ang = dot(ar, br).clamp(-1., 1.);
-                        let v = (1. - cos_ang) / (1. + cos_ang + 1e-4);
-                        assert!(v.is_finite(), "{v} {cos_ang} {vis:?}");
-                        assert!(v >= 0., "{v:?} {cos_ang} {vis:?}");
-                        v.sqrt()
-                    };
-                    [
-                        tan_ang(v0, v1, v2),
-                        tan_ang(v1, v2, v0),
-                        tan_ang(v2, v0, v1),
-                    ]
-                })
-                .collect::<Vec<_>>(),
-            WeightingKind::Laplacian => mesh
-                .f
-                .iter()
-                .map(|f| {
                     let [v0, v1, v2] = f.as_tri().unwrap();
-                    let cot_ang = |ri, ai, bi| {
-                        let [r, a, b] = [ri, ai, bi].map(|vi| mesh.v[vi]);
-                        let ar = normalize(sub(a, r));
-                        let br = normalize(sub(b, r));
-                        let cos = dot(ar, br).clamp(-1., 1.);
-                        let sin = length(cross(ar, br)).clamp(-1., 1.);
-                        //assert!((sin - (1. - cos * cos).max(0.).sqrt()).abs() < 1e-6);
-                        // numerical stability
-                        let sin = (sin.abs() + 1e-4).copysign(sin);
-                        let cot = cos / sin;
-                        assert!(cot.is_finite(), "{cot:?}");
-                        let dist = if mesh.vert_colors.is_empty() {
-                            dist(a, b)
-                        } else {
-                            pos_color_norm
-                                .apply(dist(a, b), dist(mesh.vert_colors[ai], mesh.vert_colors[bi]))
-                        };
-                        cot * dist.max(1e-2)
+                    let dist_fn = |a, b| {
+                        let d = dist(mesh.v[a], mesh.v[b]);
+                        if mesh.vert_colors.is_empty() {
+                            return d;
+                        }
+                        let cd = dist(mesh.vert_colors[a], mesh.vert_colors[b]);
+                        pos_color_norm.apply(d, cw * cd)
                     };
-                    [
-                        cot_ang(v0, v1, v2),
-                        cot_ang(v1, v2, v0),
-                        cot_ang(v2, v0, v1),
-                    ]
+                    let opp_es = [dist_fn(v1, v2), dist_fn(v0, v2), dist_fn(v1, v0)];
+                    let cos_s = pars3d::cosine_angles(opp_es).map(|c| c.clamp(-1., 1.));
+
+                    let out = cos_s.map(|c| (1. - c) / (1. + c + 1e-5)).map(F::sqrt);
+                    assert!(out.iter().copied().all(F::is_finite));
+                    out
                 })
                 .collect::<Vec<_>>(),
         };
+
+        let mut per_edge_weights = BTreeMap::new();
+        if matches!(self, WeightingKind::Laplacian) {
+            for f in &mesh.f {
+                let dist_fn = |a, b| {
+                    let d = dist(mesh.v[a], mesh.v[b]);
+                    if mesh.vert_colors.is_empty() {
+                        return d;
+                    }
+                    let cd = color_dist(mesh.vert_colors[a], mesh.vert_colors[b]);
+                    pos_color_norm.apply(d, cw * cd)
+                };
+                assert!(f.is_tri());
+                for [pi, vi, ni] in f.incident_edges() {
+                    let a = dist_fn(pi, vi);
+                    let b = dist_fn(vi, ni);
+                    let c = dist_fn(pi, ni);
+                    let area = pars3d::herons_area([a, b, c]);
+                    let v = a * a + b * b - c * c;
+                    let cot_c = v / (4. * area);
+                    let ew = per_edge_weights
+                        .entry(std::cmp::minmax(pi, ni))
+                        .or_insert(0.);
+                    *ew += cot_c;
+                }
+            }
+        }
 
         let per_vert_weights = match self {
             WeightingKind::Laplacian => {
                 let mut vw = vec![0.; mesh.v.len()];
                 for f in mesh.f.iter() {
-                    let area = f.area(&mesh.v) / 3.;
+                    let [v0, v1, v2] = f.as_tri().unwrap();
+                    let dist_fn = |a, b| {
+                        let d = dist(mesh.v[a], mesh.v[b]);
+                        if mesh.vert_colors.is_empty() {
+                            return d;
+                        }
+                        let cd = color_dist(mesh.vert_colors[a], mesh.vert_colors[b]);
+                        pos_color_norm.apply(d, cw * cd)
+                    };
+                    let es = [dist_fn(v0, v1), dist_fn(v1, v2), dist_fn(v2, v0)];
+                    let area = pars3d::herons_area(es) / 3.;
                     for &vi in f.as_slice() {
                         vw[vi] += area;
                     }
+                    /*
+                    let other = [
+                      [0, 0, 1, 2, 2],
+                      [1, 2, 2, 0, 1],
+                      [2, 0, 2, 1, 1],
+                    ];
+                    let cots = per_face_info[fi];
+                    for [vi, e0, o0, e1, o1] in other {
+                      let w = es[e0] * es[e0] * cots[o0] + es[e1] * es[e1] * cots[o1];
+                      vw[vi] += w / 8.;
+                    }
+                    */
                 }
                 vw
             }
@@ -134,44 +152,31 @@ impl WeightingKind {
                         .unwrap();
                     per_face_info[fi][idx]
                 };
-                (get_val(f0) + get_val(f1))
+                get_val(f0) + get_val(f1)
             }};
         }
 
         // Compute per vertex weights
         let va = vert_adj.map(|_, v0, v1, ()| match self {
             WeightingKind::Uniform => 1.,
-            WeightingKind::Length => pos_color_norm
-                .apply(
-                    dist(mesh.v[v0], mesh.v[v1]),
-                    dist(mesh.vert_colors[v0], mesh.vert_colors[v1]),
-                )
-                .max(1e-3)
-                .recip(),
+            WeightingKind::Length => {
+                let d = dist(mesh.v[v0], mesh.v[v1]);
+                let cd = color_dist(mesh.vert_colors[v0], mesh.vert_colors[v1]);
+                let d = pos_color_norm.apply(d, cw * cd);
+                (d + 1e-4).recip().min(10.)
+            }
             WeightingKind::MeanValue => {
                 let d = dist(mesh.v[v0], mesh.v[v1]);
-                let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]) + 3e-3;
-                let w = pos_color_norm.apply(d, cd);
+                let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]);
+                let w = pos_color_norm.apply(d, cw * cd);
                 assert!(w.is_finite());
-                w.max(1e-3).recip() * mean_value!(v0, v1)
+                /*(d + 1e-8).recip() * */
+                mean_value!(v0, v1)
             }
             WeightingKind::Laplacian => {
-                let [f0, f1] = edge_face_adj[&std::cmp::minmax(v0, v1)];
-                if f0 == usize::MAX || f1 == usize::MAX {
-                    return 0.;
-                }
-                let get_val = |fi: usize| {
-                    let idx = mesh.f[fi]
-                        .as_slice()
-                        .iter()
-                        .position(|&vi| vi != v0 && vi != v1)
-                        .unwrap();
-                    per_face_info[fi][idx]
-                };
-                let w = get_val(f0) + get_val(f1);
-                let voronoi_area = per_vert_weights[v0] + 1e-4;
-                //assert_ne!(voronoi_area, 0.);
-                softplus(w / (2. * voronoi_area))
+                let voronoi = per_vert_weights[v0];
+                let l = per_edge_weights[&std::cmp::minmax(v0, v1)];
+                softplus(l / (2. * voronoi + 1e-8))
             }
         });
         Ok(va)
@@ -210,17 +215,11 @@ impl_display!(
 #[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
 pub enum PosColorNorm {
     Add,
-    Mul,
-    Min,
     Max,
-    Concat,
-    /// Similar to mul, except take the sqrt. Non-linearly affects the output.
     GeometricMean,
+    Concat,
     /// ||Color||
     ColorOnly,
-    /// ||Pos||
-    PosOnly,
-
     /// Gaussian(pos) * Gaussian(color)
     Bilateral,
 
@@ -231,13 +230,11 @@ pub enum PosColorNorm {
 impl_display!(
   PosColorNorm,
   Add => "add",
-  Mul => "mul",
-  Min => "min",
   Max => "max",
-  Concat => "concat",
   GeometricMean => "geometric-mean",
+
+  Concat => "concat",
   ColorOnly => "color-only",
-  PosOnly => "pos-only",
   Bilateral => "bilateral",
 
   Tester => "tester",
@@ -248,16 +245,13 @@ impl PosColorNorm {
         use PosColorNorm::*;
         match self {
             Add => pos + color,
-            Mul => pos * color,
-            Min => pos.min(color),
             Max => pos.max(color),
-            Concat => ((pos * pos) + (color * color)).sqrt(),
             GeometricMean => (pos * color).sqrt(),
+            Concat => ((pos * pos) + (color * color)).sqrt(),
             ColorOnly => color,
-            PosOnly => pos,
             Bilateral => gaussian(pos) * gaussian(color),
 
-            Tester => pos * (1. + color),
+            Tester => todo!(),
         }
     }
 }
@@ -265,4 +259,11 @@ impl PosColorNorm {
 pub fn gaussian(x: F) -> F {
     let k: F = 1. / std::f64::consts::TAU.sqrt() as F;
     k * (-0.5 * x * x).exp()
+}
+
+pub fn color_dist(a: [F; 3], b: [F; 3]) -> F {
+    dist(a, b)
+    //super::sub(a,b).map(F::abs).into_iter().sum()
+    //let s = [0.299, 0.587, 0.114];
+    //(super::dot(s,a) - super::dot(s,b)).abs()
 }

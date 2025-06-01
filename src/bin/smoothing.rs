@@ -24,7 +24,7 @@ pub struct Args {
     weighting: WeightingKind,
 
     /// How to combine position and color when computing norms.
-    #[arg(long, default_value_t = PosColorNorm::GeometricMean)]
+    #[arg(long, default_value_t = PosColorNorm::Add)]
     pos_color_norm: PosColorNorm,
 
     /// Unused for now
@@ -88,7 +88,7 @@ fn main() {
 pub fn smoothing(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) {
     let mut vert_adj = args
         .weighting
-        .vertex_weights(&mesh, args.pos_color_norm)
+        .vertex_weights(&mesh, args.pos_color_norm, 1.)
         .expect("Failed to construct vertex adjacency");
     // remove influence of introduced edges
     for vi in 0..mesh.v.len() {

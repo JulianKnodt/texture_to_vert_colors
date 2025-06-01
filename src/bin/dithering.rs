@@ -22,7 +22,7 @@ pub struct Args {
     weighting: WeightingKind,
 
     /// How to evaluate color and position
-    #[arg(long, default_value_t = PosColorNorm::PosOnly)]
+    #[arg(long, default_value_t = PosColorNorm::Add)]
     pos_color_norm: PosColorNorm,
 
     #[arg(long, default_value_t = OrderKind::Nearest)]
@@ -36,6 +36,10 @@ pub struct Args {
     /// Use a different palette for dithering (Default = [0., 1.])
     #[arg(long, short)]
     palette: Vec<F>,
+
+    /// Color weight for distances
+    #[arg(long)]
+    color_weight: F,
 
     /// Unused
     #[arg(long)]
@@ -60,7 +64,7 @@ fn main() {
 
     let vv_adj = args
         .weighting
-        .vertex_weights(&m, args.pos_color_norm)
+        .vertex_weights(&m, args.pos_color_norm, args.color_weight)
         .expect("Failed to construct weighting");
 
     if args.rgb {

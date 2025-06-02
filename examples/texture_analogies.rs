@@ -270,18 +270,6 @@ fn main() {
     println!("[INFO]: Took {:?} for visualization", start.elapsed());
 }
 
-/*
-macro_rules! impl_display {
-  ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {
-    impl std::fmt::Display for $name {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            use $name::*;
-            let s = match self {
-                $($kind => $disp,)+
-            };
-            write!(f, "{s}")
-        }
-    }
-  }
+fn sqr(x: F) -> F {
+    x * x
 }
-*/

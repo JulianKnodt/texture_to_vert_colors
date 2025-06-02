@@ -120,6 +120,10 @@ pub struct Args {
     /// Resize this image to a fraction of its input.
     #[arg(long, short, default_value_t = 1.)]
     image_size_frac: F,
+
+    /// Triangulate the output mesh
+    #[arg(long)]
+    triangulate: bool,
 }
 
 pub fn main() {
@@ -920,6 +924,9 @@ pub fn texture_to_vert_colors<'a>(
 
         mesh_stats!("After deleting gap fill");
     }
+    if args.triangulate {
+        out.triangulate();
+    }
 
     if !args.no_final_qem && (args.target_tri_ratio < 1. || args.target_tri_num < out.num_tris()) {
         let qem_args = QEMArgs {
@@ -940,7 +947,9 @@ pub fn texture_to_vert_colors<'a>(
             &mut remap,
             &mut qem_buf,
         );
-        mesh_stats!("After QEM");
+        if !args.triangulate {
+          mesh_stats!("After QEM");
+        }
     }
 
     out.f.retain_mut(|f| {

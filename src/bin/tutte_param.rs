@@ -1,6 +1,7 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
+#![feature(let_chains)]
 
 use std::collections::BTreeSet;
 
@@ -8,7 +9,7 @@ use clap::Parser;
 use pars3d::{self, Mesh};
 
 use texture_to_vert_colors::weighting::{PosColorNorm, WeightingKind};
-use texture_to_vert_colors::{F, add, dist, kmul};
+use texture_to_vert_colors::{F, add, dist, kmul, length, normalize};
 
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
@@ -54,6 +55,10 @@ pub struct Args {
     /// How much to weigh color compared to geometry
     #[arg(long, default_value_t = 1.)]
     color_weight: F,
+
+    /// How much to clamp the maximum weight of each influence
+    #[arg(long, default_value_t = F::INFINITY)]
+    max_w: F,
 }
 
 fn main() {
@@ -187,10 +192,14 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
     let mut uvs = &mut mesh.uv[args.target_uv];
     for (i, uv) in uvs.iter_mut().enumerate() {
         let i = i as F;
-        // stupid randomness but it probably works better than 0.5
+        // stupid randomness but it probably works better than setting everything to 0.5
         let rand_x = (i * 238471.32 + 11.45).sin();
         let rand_y = (i * 15437.65 + 2.13).cos();
         assert!(rand_x.is_finite() && rand_y.is_finite());
+        assert!((-1.0..=1.0).contains(&rand_x));
+        assert!((-1.0..=1.0).contains(&rand_y));
+        let r = length([rand_x, rand_y]).min(1.);
+        let [rand_x, rand_y] = kmul(0.99 * r, normalize([rand_x, rand_y]));
         assert!((-1.0..=1.0).contains(&rand_x));
         assert!((-1.0..=1.0).contains(&rand_y));
         *uv = [rand_x, rand_y].map(|v| (v + 1.) / 2.);
@@ -200,6 +209,7 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
         uvs[vi] = [(l.cos() + 1.) / 2., (l.sin() + 1.) / 2.];
     }
     let mut buf = uvs.clone();
+
     /*
     let mut triplets = vec![];
     let nv = mesh.v.len();
@@ -215,18 +225,20 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
             total_w += w;
         }
         assert!(total_w.is_finite());
+        assert_ne!(total_w, 0.);
         triplets.push(([vi, vi], -total_w));
     }
     triplets.sort_unstable_by_key(|a| a.0);
     triplets.dedup_by_key(|a| a.0);
     let csc =
         sparse_lu::Csc::from_triplets(nv, nv, &mut triplets).expect("Failed to construct csc?");
+    println!("Starting decomposition");
     let lu = sparse_lu::LeftLookingLUFactorization::new(&csc);
 
     let t = std::time::Instant::now();
-    for i in 0..10 {
+    println!("Starting to solve");
+    for i in 0..1 {
         lu.solve_arr(uvs, &mut buf);
-        println!("{i} in {:?}", t.elapsed());
     }
     if true {
         return;
@@ -235,12 +247,13 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
 
     // TODO here set up array instead of using stupid iterations
     use indicatif::ProgressIterator;
-    for _ in (0..args.iters).progress() {
+    for _it in (0..args.iters).progress() {
         buf.fill([0.; 2]);
         use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
         buf.par_iter_mut().enumerate().for_each(|(vi, dst)| {
             let mut total_w = 0.;
             for (adj, w) in vert_adj.adj_data(vi) {
+                let w = w.min(args.max_w);
                 // negative values cause this to explode
                 total_w += w;
                 //assert!(w.is_finite(), "{w}");

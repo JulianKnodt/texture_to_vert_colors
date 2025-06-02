@@ -308,54 +308,130 @@ experiments = {
   "tutte-param-example": [
     #run("open_top_box.obj", "open_top_box.ply", "-d data/spot_texture.png --target-tri-ratio 0.5"),
     #run("open_top_box.obj", "open_top_box.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3"),
-    run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.5"),
+    #run("open_top_box.obj", "open_top_box.ply", "-d data/uv_grid.png --target-tri-ratio 0.5"),
     *[
       run(
         "../ablations/open_top_box.ply",
         f"open_top_box_{label}.obj",
         f"--weighting {weighting} --bake-texture open_top_box_{label}.png \
           --uv-svg ablations/open_top_box_{label}.svg --iters 100000 \
-          --pos-color-norm {norm}",
+          --pos-color-norm {norm} --color-weight {cw} --bake-res 512",
         bin=tutte_bin, eval=False,
       )
-      for (weighting, norm, label) in [
-        #("uniform", "pos-only", "uniform"),
+      for (weighting, norm, cw, label) in [
+        #("uniform", "add", 0., "uniform"),
 
-        #("length", "pos-only", "len"),
-        #("length", "geometric-mean", "clen"),
+        #("length", "add", 0., "len_pos_only"),
+        #("length", "add", 0.1, "len_add_0_1"),
+        #("length", "add", 1., "len_add_1"),
+        #("length", "add", 10., "len_add_10"),
 
-        #("mean-value", "pos-only", "mv"),
-        #("mean-value", "geometric-mean", "cmv"),
+        ("length", "concat", 0.1, "len_concat_0_1"),
+        ("length", "concat", 1., "len_concat_1"),
+        ("length", "concat", 10., "len_concat_10"),
 
-        ("laplacian", "pos-only", "lpl"),
-        ("laplacian", "geometric-mean", "clpl")
+
+        ("laplacian", "add", 0., "lpl_pos_only"),
+
+        ("laplacian", "max", 0.05, "lpl_max_0_05"),
+        ("laplacian", "max", 0.1, "lpl_max_0_1"),
+        ("laplacian", "max", 1., "lpl_max_1"),
+
+        ("laplacian", "concat", 0.05, "lpl_concat_0_05"),
+        ("laplacian", "concat", 0.1, "lpl_concat_0_1"),
+        ("laplacian", "concat", 1, "lpl_concat_1"),
+
+        ("laplacian", "add", 0.1, "lpl_add_0_1"),
+        ("laplacian", "add", 1, "lpl_add_1"),
+        ("laplacian", "add", 10, "lpl_add_10"),
       ]
     ],
   ],
 
   # testing different ways to weigh distance versus color
   "tutte-param-ogre": [
-    #run(
-    #  "ogre.obj", "ogre.ply",
-    #  "-d data/ogre.png --target-tri-ratio 1. --no-incremental-delete --no-delete-degen \
-    #  --sample-kind direct"
-    #),
+    #run("ogre.obj", "ogre.ply", "-d data/ogre.png --target-tri-ratio 0.02 --sample-kind direct"),
+    #runnable_cmds([
+    #  "cp data/ogre.obj ablations/ogre_small_tex.obj",
+    #  "cp data/ogre.mtl ablations/ogre.mtl",
+    #  "convert data/ogre.png -resize 1024x1024 ablations/ogre.png",
+    #]),
     *[
       run(
         "../ablations/ogre.ply",
         f"ogre_{label}.obj",
-        f"--weighting color-length --pos-color-norm {norm} --bake-texture ogre_{label}.png \
-          --uv-svg ablations/ogre_{label}.svg --iters 100000",
+        f"--weighting {w} --pos-color-norm {norm} --bake-texture ogre_{label}.png \
+          --uv-svg ablations/ogre_{label}.svg --iters 500000 --color-weight {cw} \
+          --bake-res 1024",
         bin=tutte_bin, eval=False,
       )
-      for (norm, label) in [
-        ("tester", "tester"),
-        #("add", "add"),
-        #("mul", "mul"),
-        #("min", "min"),
-        #("max", "max"),
-        #("geometric-mean", "geom_mean"),
-        #("color-only", "color_only"),
+      for (w, norm, cw, label) in [
+        #("uniform", "add", 0., "uniform"),
+
+        #("length", "add", 0, "len_pos_only"),
+        #("length", "add", 0.1, "len_add_0_1"),
+        #("length", "add", 1, "len_add_1"),
+        #("length", "add", 10., "len_add_10"),
+
+        #("length", "concat", 0.05, "len_concat_0_05"),
+        #("length", "concat", 1., "len_concat_1"),
+        #("length", "concat", 10., "len_concat_10"),
+
+        #("length", "max", 0.1, "len_max_0_01"),
+        #("length", "max", 1, "len_max_1"),
+
+        ("laplacian", "add", 0., "lpl_pos_only"),
+        #("laplacian", "color-only", 0., "lpl_color_only"),
+
+        #("laplacian", "max", 0.05, "lpl_max_0_05"),
+        #("laplacian", "max", 0.1, "lpl_max_0_1"),
+        #("laplacian", "max", 1., "lpl_max_1"),
+
+        #("laplacian", "concat", 0.01, "lpl_concat_0_01"),
+        #("laplacian", "concat", 0.05, "lpl_concat_0_05"),
+        #("laplacian", "concat", 0.1, "lpl_concat_0_1"),
+        #("laplacian", "concat", 1, "lpl_concat_1"),
+        #("laplacian", "concat", 10, "lpl_concat_10"),
+
+        #("laplacian", "add", 0.1, "lpl_add_0_1"),
+        #("laplacian", "add", 1, "lpl_add_1"),
+        #("laplacian", "add", 10, "lpl_add_10"),
+      ]
+    ],
+  ],
+  "tutte-param-dragon-jar": [
+    #run(
+    #  "jar_with_dragon_design_boundary.obj", "jar_with_dragon_design_bd.ply",
+    #  "--target-tri-ratio 0.05 --sample-kind approx --triangulate"
+    #),
+    *[
+      run(
+        "../ablations/jar_with_dragon_design_bd.ply",
+        f"jar_with_dragon_design_bd_{label}.obj",
+        f"--weighting {w} --pos-color-norm {norm} \
+          --uv-svg ablations/jar_with_dragon_design_bd_{label}.svg --bake-texture \
+          jar_with_dragon_design_bd_{label}.png --iters 100000 --color-weight {cw} \
+          --bake-res 1024",
+        bin=tutte_bin, eval=False,
+      )
+      for (w, norm, cw, label) in [
+        ("uniform", "add", 0., "uniform"),
+        ("length", "add", 0., "len_pos_only"),
+        #("length", "add", 0.1, "len_add_0_1"),
+
+        ("laplacian", "add", 0., "lpl_pos_only"),
+        #("laplacian", "color-only", 0., "lpl_color_only"),
+
+        #("laplacian", "max", 0.05, "lpl_max_0_05"),
+        #("laplacian", "max", 0.1, "lpl_max_0_1"),
+        #("laplacian", "max", 1., "lpl_max_1"),
+
+        #("laplacian", "concat", 0.01, "lpl_concat_0_01"),
+        #("laplacian", "concat", 0.05, "lpl_concat_0_05"),
+
+        ("laplacian", "add", 1e-2, "lpl_add_1e-2"),
+        #("laplacian", "add", 1, "lpl_add_1"),
+        #("laplacian", "add", 10, "lpl_add_10"),
       ]
     ],
   ],
@@ -512,7 +588,7 @@ experiments = {
     ),
     render(
       "outputs/watercolor_cake_dithering.ply",
-      8, -24, 5, 0, fy=0.2, cx=1.5,lx=1.5,
+      8, -24, 5, 0, fy=0.2, cx=0.5,lx=0.5,
       out="outputs/watercolor_cake_dithering.png",
       extras="--flip-light --light-z 200",
     ),

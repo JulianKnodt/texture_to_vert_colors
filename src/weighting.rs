@@ -59,7 +59,7 @@ impl WeightingKind {
                             return d;
                         }
                         let cd = dist(mesh.vert_colors[a], mesh.vert_colors[b]);
-                        pos_color_norm.apply(d, cw * cd)
+                        pos_color_norm.apply(d, cd, cw)
                     };
                     let opp_es = [dist_fn(v1, v2), dist_fn(v0, v2), dist_fn(v1, v0)];
                     let cos_s = pars3d::cosine_angles(opp_es).map(|c| c.clamp(-1., 1.));
@@ -71,6 +71,7 @@ impl WeightingKind {
                 .collect::<Vec<_>>(),
         };
 
+        const EPS: F = 1e-5;
         let mut per_edge_weights = BTreeMap::new();
         if matches!(self, WeightingKind::Laplacian) {
             for f in &mesh.f {
@@ -80,7 +81,7 @@ impl WeightingKind {
                         return d;
                     }
                     let cd = color_dist(mesh.vert_colors[a], mesh.vert_colors[b]);
-                    pos_color_norm.apply(d, cw * cd)
+                    pos_color_norm.apply(d, cd, cw)
                 };
                 assert!(f.is_tri());
                 for [pi, vi, ni] in f.incident_edges() {
@@ -89,7 +90,9 @@ impl WeightingKind {
                     let c = dist_fn(pi, ni);
                     let area = pars3d::herons_area([a, b, c]);
                     let v = a * a + b * b - c * c;
-                    let cot_c = v / (4. * area);
+                    let cot_c = v / (4. * area + EPS);
+                    assert!(cot_c.is_finite(), "{cot_c:?} {area:?} {v:?}");
+                    //assert!(cot_c < 1000., "{cot_c}");
                     let ew = per_edge_weights
                         .entry(std::cmp::minmax(pi, ni))
                         .or_insert(0.);
@@ -109,7 +112,7 @@ impl WeightingKind {
                             return d;
                         }
                         let cd = color_dist(mesh.vert_colors[a], mesh.vert_colors[b]);
-                        pos_color_norm.apply(d, cw * cd)
+                        pos_color_norm.apply(d, cd, cw)
                     };
                     let es = [dist_fn(v0, v1), dist_fn(v1, v2), dist_fn(v2, v0)];
                     let area = pars3d::herons_area(es) / 3.;
@@ -161,14 +164,18 @@ impl WeightingKind {
             WeightingKind::Uniform => 1.,
             WeightingKind::Length => {
                 let d = dist(mesh.v[v0], mesh.v[v1]);
-                let cd = color_dist(mesh.vert_colors[v0], mesh.vert_colors[v1]);
-                let d = pos_color_norm.apply(d, cw * cd);
+                let d = if mesh.vert_colors.is_empty() {
+                    d
+                } else {
+                    let cd = color_dist(mesh.vert_colors[v0], mesh.vert_colors[v1]);
+                    pos_color_norm.apply(d, cd, cw)
+                };
                 (d + 1e-4).recip().min(10.)
             }
             WeightingKind::MeanValue => {
                 let d = dist(mesh.v[v0], mesh.v[v1]);
                 let cd = dist(mesh.vert_colors[v0], mesh.vert_colors[v1]);
-                let w = pos_color_norm.apply(d, cw * cd);
+                let w = pos_color_norm.apply(d, cd, cw);
                 assert!(w.is_finite());
                 /*(d + 1e-8).recip() * */
                 mean_value!(v0, v1)
@@ -176,7 +183,9 @@ impl WeightingKind {
             WeightingKind::Laplacian => {
                 let voronoi = per_vert_weights[v0];
                 let l = per_edge_weights[&std::cmp::minmax(v0, v1)];
-                softplus(l / (2. * voronoi + 1e-8))
+                assert!(l.is_finite());
+                softplus(l / (2. * voronoi + EPS))
+                //l / (2. * voronoi + EPS)
             }
         });
         Ok(va)
@@ -184,7 +193,7 @@ impl WeightingKind {
 }
 
 pub fn softplus(x: F) -> F {
-    if x > 20. { x } else { (1. + x.exp()).ln() }
+    if x > 1. { x } else { (1. + x.exp()).ln() }
 }
 
 macro_rules! impl_display {
@@ -241,13 +250,14 @@ impl_display!(
 );
 
 impl PosColorNorm {
-    pub fn apply(self, pos: F, color: F) -> F {
+    pub fn apply(self, pos: F, color: F, color_weight: F) -> F {
+        let cw = color_weight;
         use PosColorNorm::*;
         match self {
-            Add => pos + color,
-            Max => pos.max(color),
+            Add => pos + cw * color,
+            Max => pos.max(cw * color),
             GeometricMean => (pos * color).sqrt(),
-            Concat => ((pos * pos) + (color * color)).sqrt(),
+            Concat => ((pos * pos) + cw * (color * color)).sqrt(),
             ColorOnly => color,
             Bilateral => gaussian(pos) * gaussian(color),
 
@@ -263,7 +273,7 @@ pub fn gaussian(x: F) -> F {
 
 pub fn color_dist(a: [F; 3], b: [F; 3]) -> F {
     dist(a, b)
-    //super::sub(a,b).map(F::abs).into_iter().sum()
+    //super::sub(a, b).map(F::abs).into_iter().sum()
     //let s = [0.299, 0.587, 0.114];
     //(super::dot(s,a) - super::dot(s,b)).abs()
 }

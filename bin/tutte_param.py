@@ -8,12 +8,14 @@ def arguments():
   a.add_argument("-i", "--input", required=True, help="Input mesh")
   a.add_argument("-o", "--output", required=True, help="Output mesh")
   a.add_argument("--uniform", action="store_true", help="Use uniform weighting instead")
+  a.add_argument("--color-weight", default=1e-4, type=float, help="How much to weigh color")
   return a.parse_args()
 
 def main():
   args = arguments()
   print("Loading mesh")
   mesh = trimesh.load_mesh(args.input, process=False)
+  mesh.visual.vertex_colors = mesh.visual.vertex_colors.astype(float) / 255.
   V = len(mesh.vertices)
   # compute laplacian
   [bd_verts] = boundary(mesh)
@@ -33,16 +35,17 @@ def main():
   M = [0] * V
   for vis in mesh.faces:
     vi,vj,vk = [mesh.vertices[idx] for idx in vis]
-    vci,vcj,vck = [mesh.visual.vertex_colors[idx] for idx in vis]
-    a = dist_fn(vi,vci, vj,vcj)
-    b = dist_fn(vj,vcj, vk,vck)
-    c = dist_fn(vi,vci, vk,vck)
+    vci,vcj,vck = [mesh.visual.vertex_colors[idx][:-1]/255. for idx in vis]
+    a = dist_fn(vi,vci, vj,vcj, args.color_weight)
+    b = dist_fn(vj,vcj, vk,vck, args.color_weight)
+    c = dist_fn(vi,vci, vk,vck, args.color_weight)
     area = herons(a,b,c) / 3
     for vi in vis:
       M[vi] += area
   M = np.array(M)
 
 
+  EPS = 0
   rows = []
   cols = []
   data = []
@@ -57,19 +60,19 @@ def main():
     for ijk in edges:
       vi,vj,vk = [mesh.vertices[idx] for idx in ijk]
       vci,vcj,vck = [mesh.visual.vertex_colors[idx] for idx in ijk]
-      a = dist_fn(vi,vci, vj,vcj)
-      b = dist_fn(vj,vcj, vk,vck)
-      c = dist_fn(vi,vci, vk,vck)
+      a = dist_fn(vi,vci, vj,vcj, args.color_weight)
+      b = dist_fn(vj,vcj, vk,vck, args.color_weight)
+      c = dist_fn(vi,vci, vk,vck, args.color_weight)
       area = herons(a,b,c)
       v = a * a + b * b - c * c
-      cot_c = v / (4 * area + 1e-3)
+      cot_c = v / (4 * area + EPS)
       vals = [
         (ijk[0], ijk[2], 1. if args.uniform else cot_c),
         (ijk[2], ijk[0], 1. if args.uniform else cot_c),
       ]
       for r, c, val in vals:
         if r in bd_verts: continue
-        val = val / (2. * M[r] + 1e-3)
+        val = val / (2. * M[r] + EPS)
         totals[r] += val
         rows.append(r)
         cols.append(c)
@@ -102,14 +105,14 @@ def main():
   mesh.vertices[:,2] = 0
   mesh.export(args.output)
 
-def dist_fn(va,vca, vb, vcb, color_weight=1e-6):
-  #return np.linalg.norm(
-  #  np.concatenate([va, color_weight * vca]) - \
-  #  np.concatenate([vb, color_weight * vcb])
-  #)
-  geom = np.linalg.norm(va - vb)
-  color = np.linalg.norm(vca - vcb)
-  return geom + color_weight * color
+def dist_fn(va,vca, vb, vcb, color_weight=1e-4):
+  return np.linalg.norm(
+    np.concatenate([va, color_weight * vca]) - \
+    np.concatenate([vb, color_weight * vcb])
+  )
+  #geom = np.linalg.norm(va - vb)
+  #color = np.linalg.norm(vca - vcb)
+  #return geom + color_weight * color
   #return max(geom, color_weight * color)
 
 def herons(e0, e1, e2):

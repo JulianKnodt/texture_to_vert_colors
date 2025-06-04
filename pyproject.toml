@@ -14,4 +14,5 @@ dependencies = [
     "xatlas>=0.0.10",
     "bpy>=4.0.0",
     "blendertoolbox>=0.0.5",
+    "libigl>=2.6.1",
 ]

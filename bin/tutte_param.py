@@ -110,9 +110,9 @@ def dist_fn(va,vca, vb, vcb, color_weight=1e-4):
   #  np.concatenate([va, color_weight * vca]) - \
   #  np.concatenate([vb, color_weight * vcb])
   #)
-  #geom = np.linalg.norm(va - vb)
-  #color = np.linalg.norm(vca - vcb)
-  #return geom + color_weight * color
+  geom = np.linalg.norm(va - vb)
+  color = np.linalg.norm(vca - vcb)
+  return geom + color_weight * color
   #return max(geom, color_weight * color)
 
 def herons(e0, e1, e2):

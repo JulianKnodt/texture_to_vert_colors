@@ -71,8 +71,9 @@ impl WeightingKind {
                 .collect::<Vec<_>>(),
         };
 
-        //const EPS: F = 1e-5;
-        const EPS: F = 1e-6;
+        //const EPS: F = 1e-5; // this is too high?
+        //const EPS: F = 1e-6; // this works fine
+        const EPS: F = 2e-7;
         let mut per_edge_weights = BTreeMap::new();
         if matches!(self, WeightingKind::Laplacian) {
             for f in &mesh.f {
@@ -173,6 +174,7 @@ impl WeightingKind {
                 let voronoi = per_vert_weights[v0];
                 let l = per_edge_weights[&std::cmp::minmax(v0, v1)];
                 assert!(l.is_finite());
+                assert!(voronoi >= 0.);
                 softplus(l) / (2. * voronoi + EPS)
             }
         });

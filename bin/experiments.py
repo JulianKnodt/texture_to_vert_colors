@@ -359,27 +359,27 @@ experiments = {
       ("ogre.obj", 0.02, "direct", False, 1., 1024),
     ]
     for cmd in [
-      #run(
-      #  model, model[:-4] + ".ply",
-      #  f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
-      #  {'--triangulate' if triangulate else ''} --no-incremental-qem \
-      #  --image-size-frac {img_frac}",
-      #  missing_only=True,
-      #),
+      run(
+        model, model[:-4] + ".ply",
+        f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
+        {'--triangulate' if triangulate else ''} --no-incremental-qem \
+        --image-size-frac {img_frac}",
+        missing_only=True,
+      ),
       *[
         run(
           f"../ablations/{model[:-4]}.ply",
           f"{model[:-4]}_{label}.obj",
           f"--weighting {w} --pos-color-norm {norm} \
             --uv-svg ablations/{model[:-4]}_{label}.svg --bake-texture \
-            {model[:-4]}_{label}.png --iters 100000 --color-weight {cw} \
+            {model[:-4]}_{label}.png --iters 250000 --color-weight {cw} \
             --bake-res {bake_res}",
           bin=tutte_bin, eval=False, missing_only=True,
         )
         for (w, norm, cw, label) in [
           ("uniform", "add", 0., "uniform"),
 
-          ("laplacian", "add", 0., "lpl_pos_only_approx"),
+          ("laplacian", "add", 0., "lpl_pos_only"),
           ("laplacian", "concat", 3e-3, "lpl_concat_3e-3"),
           ("laplacian", "max", 3e-3, "lpl_max_3e-3"),
           ("laplacian", "add", 3e-3, "lpl_add_3e-3"),
@@ -399,7 +399,7 @@ experiments = {
           f"../ablations/{model[:-4]}.ply",
           f"{model[:-4]}_{label}.obj",
           f"--weighting {w} --pos-color-norm {norm} --bake-texture \
-            {model[:-4]}_{label}.png --iters 100000 --color-weight 0 \
+            {model[:-4]}_{label}.png --iters 500000 --color-weight 0 \
             --bake-res {bake_res} {'--approx-rebake' if approx_bake else ''}",
           bin=tutte_bin, eval=False,
         )

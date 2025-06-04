@@ -19,10 +19,18 @@ out_dir = lambda is_ablation=False: "ablations" if is_ablation else "outputs"
 
 def run(src, dst, flags, is_abl=True, src_dir="data", bin=bin_file, eval=True, missing_only=False):
   def cb():
+    nonlocal missing_only
     if "run" not in args.stages: return []
     if args.match_output is not None and args.match_output not in dst: return []
+    if args.force: missing_only=False
     out_json = f"{out_dir(is_abl)}/{dst[:-4]}.json"
-    if missing_only and os.path.exists(out_json): return []
+    if missing_only and os.path.exists(out_json):
+      print(f"Skipping {src} -> {dst}, destination results {out_json} already exists")
+      return []
+    out_file = f"{out_dir(is_abl)}/{dst}"
+    if missing_only and (not eval) and os.path.exists(out_file):
+      print(f"Skipping {src} -> {out_file}, destination already exists")
+      return []
     cmds = [
       f"{bin} -i {src_dir}/{src} -o {out_dir(is_abl)}/{dst} {flags} --stats {out_json}",
     ]
@@ -32,7 +40,7 @@ def run(src, dst, flags, is_abl=True, src_dir="data", bin=bin_file, eval=True, m
         cmds.append('echo "FBX is not currently supported for Hausdorff"')
       else:
         cmds.append(
-          f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_dir(is_abl)}/{dst} --stats {out_json}"
+          f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_file} --stats {out_json}"
         )
 
     return cmds
@@ -99,6 +107,7 @@ dataset = [
   #("flowers_in_vase.obj", "flowers_in_vase.jpg", 2000000, None),
   #("millers-falls-drill.fbx", "millers-falls-drill-textures/diffuse.png", 1000000, None),
   #("garlic_knight.obj", "", 1000000, 0.5),
+  ("private_detective.obj", "", 2000000, 1024),
 
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
@@ -289,12 +298,6 @@ experiments = {
     ],
   ],
   "hokusai": [ run("plane.obj", "hokusai_plane.ply", "-d data/hokusai.jpg --target-tri-ratio 0.3") ],
-  "watercolor_cake": [
-    run(
-      "watercolor_cake.fbx", "watercolor_cake.ply",
-      "-d data/watercolor_cake.tif --target-tri-ratio 0.1", False
-    ),
-  ],
   "vase": [
     run("vase.fbx", "vase.ply", "-d data/vase_2k.png", False),
   ],
@@ -348,92 +351,64 @@ experiments = {
     ],
   ],
 
-  # testing different ways to weigh distance versus color
-  "tutte-param-ogre": [
-    #run("ogre.obj", "ogre.ply", "-d data/ogre.png --target-tri-ratio 0.02 --sample-kind direct"),
-    #runnable_cmds([
-    #  "cp data/ogre.obj ablations/ogre_small_tex.obj",
-    #  "cp data/ogre.mtl ablations/ogre.mtl",
-    #  "convert data/ogre.png -resize 1024x1024 ablations/ogre.png",
-    #]),
-    *[
-      run(
-        "../ablations/ogre.ply",
-        f"ogre_{label}.obj",
-        f"--weighting {w} --pos-color-norm {norm} --bake-texture ogre_{label}.png \
-          --uv-svg ablations/ogre_{label}.svg --iters 500000 --color-weight {cw} \
-          --bake-res 1024",
-        bin=tutte_bin, eval=False,
-      )
-      for (w, norm, cw, label) in [
-        #("uniform", "add", 0., "uniform"),
+  "tutte-param": [
+    cmd
+    for (model, ratio, sample_kind, triangulate, img_frac, bake_res) in [
+      ("scroll.obj", 0.05, "approx", True, 0.5, 1024),
+      ("jar_with_dragon_design_boundary.obj", 0.05, "approx", True, 1., 1024),
+      ("ogre.obj", 0.02, "direct", False, 1., 1024),
+    ]
+    for cmd in [
+      #run(
+      #  model, model[:-4] + ".ply",
+      #  f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
+      #  {'--triangulate' if triangulate else ''} --no-incremental-qem \
+      #  --image-size-frac {img_frac}",
+      #  missing_only=True,
+      #),
+      *[
+        run(
+          f"../ablations/{model[:-4]}.ply",
+          f"{model[:-4]}_{label}.obj",
+          f"--weighting {w} --pos-color-norm {norm} \
+            --uv-svg ablations/{model[:-4]}_{label}.svg --bake-texture \
+            {model[:-4]}_{label}.png --iters 100000 --color-weight {cw} \
+            --bake-res {bake_res}",
+          bin=tutte_bin, eval=False, missing_only=True,
+        )
+        for (w, norm, cw, label) in [
+          ("uniform", "add", 0., "uniform"),
 
-        #("length", "add", 0, "len_pos_only"),
-        #("length", "add", 0.1, "len_add_0_1"),
-        #("length", "add", 1, "len_add_1"),
-        #("length", "add", 10., "len_add_10"),
+          ("laplacian", "add", 0., "lpl_pos_only_approx"),
+          ("laplacian", "concat", 3e-3, "lpl_concat_3e-3"),
+          ("laplacian", "max", 3e-3, "lpl_max_3e-3"),
+          ("laplacian", "add", 3e-3, "lpl_add_3e-3"),
 
-        #("length", "concat", 0.05, "len_concat_0_05"),
-        #("length", "concat", 1., "len_concat_1"),
-        #("length", "concat", 10., "len_concat_10"),
-
-        #("length", "max", 0.1, "len_max_0_01"),
-        #("length", "max", 1, "len_max_1"),
-
-        ("laplacian", "add", 0., "lpl_pos_only"),
-        #("laplacian", "color-only", 0., "lpl_color_only"),
-
-        #("laplacian", "max", 0.05, "lpl_max_0_05"),
-        #("laplacian", "max", 0.1, "lpl_max_0_1"),
-        #("laplacian", "max", 1., "lpl_max_1"),
-
-        #("laplacian", "concat", 0.01, "lpl_concat_0_01"),
-        #("laplacian", "concat", 0.05, "lpl_concat_0_05"),
-        #("laplacian", "concat", 0.1, "lpl_concat_0_1"),
-        #("laplacian", "concat", 1, "lpl_concat_1"),
-        #("laplacian", "concat", 10, "lpl_concat_10"),
-
-        #("laplacian", "add", 0.1, "lpl_add_0_1"),
-        #("laplacian", "add", 1, "lpl_add_1"),
-        #("laplacian", "add", 10, "lpl_add_10"),
-      ]
-    ],
+          # experiment
+          #("laplacian", "add", 10, "lpl_add_10"),
+        ]
+      ],
+    ]
   ],
-  "tutte-param-dragon-jar": [
-    #run(
-    #  "jar_with_dragon_design_boundary.obj", "jar_with_dragon_design_bd.ply",
-    #  "--target-tri-ratio 0.05 --sample-kind approx --triangulate"
-    #),
-    *[
-      run(
-        "../ablations/jar_with_dragon_design_bd.ply",
-        f"jar_with_dragon_design_bd_{label}.obj",
-        f"--weighting {w} --pos-color-norm {norm} \
-          --uv-svg ablations/jar_with_dragon_design_bd_{label}.svg --bake-texture \
-          jar_with_dragon_design_bd_{label}.png --iters 100000 --color-weight {cw} \
-          --bake-res 1024",
-        bin=tutte_bin, eval=False,
-      )
-      for (w, norm, cw, label) in [
-        ("uniform", "add", 0., "uniform"),
-        ("length", "add", 0., "len_pos_only"),
-        #("length", "add", 0.1, "len_add_0_1"),
-
-        ("laplacian", "add", 0., "lpl_pos_only"),
-        #("laplacian", "color-only", 0., "lpl_color_only"),
-
-        #("laplacian", "max", 0.05, "lpl_max_0_05"),
-        #("laplacian", "max", 0.1, "lpl_max_0_1"),
-        #("laplacian", "max", 1., "lpl_max_1"),
-
-        #("laplacian", "concat", 0.01, "lpl_concat_0_01"),
-        #("laplacian", "concat", 0.05, "lpl_concat_0_05"),
-
-        ("laplacian", "add", 1e-2, "lpl_add_1e-2"),
-        #("laplacian", "add", 1, "lpl_add_1"),
-        #("laplacian", "add", 10, "lpl_add_10"),
-      ]
-    ],
+  "tutte-param-rebake-ablation": [
+    cmd
+    for (model, bake_res) in [("scroll.obj", 1024)]
+    for cmd in [
+      *[
+        run(
+          f"../ablations/{model[:-4]}.ply",
+          f"{model[:-4]}_{label}.obj",
+          f"--weighting {w} --pos-color-norm {norm} --bake-texture \
+            {model[:-4]}_{label}.png --iters 100000 --color-weight 0 \
+            --bake-res {bake_res} {'--approx-rebake' if approx_bake else ''}",
+          bin=tutte_bin, eval=False,
+        )
+        for (w, norm, approx_bake, label) in [
+          ("laplacian", "add", True, "rebake_approx"),
+          ("laplacian", "add", False, "rebake_exact"),
+        ]
+      ],
+    ]
   ],
 
   "japanese_toro": [
@@ -583,14 +558,40 @@ experiments = {
     run(
       "../outputs/watercolor_cake_approx.ply",
       "watercolor_cake_dithering.ply",
-      "--weighting length",
+      "--weighting length --color-weight 1e-2",
+      bin=dithering_bin, is_abl=False, eval=False
+    ),
+    #render(
+    #  "data/watercolor_cake.obj",
+    #  8, 24, 5, 0, fy=0.2, cx=-2,lx=-2,rz=-90,
+    #  out="outputs/watercolor_cake_input.png",
+    #  extras="--light-z 80 --light-x 40",
+    #),
+    render(
+      "outputs/watercolor_cake_dithering.ply",
+      8, 24, 5, 0, fy=0.2, cx=-2,lx=-2,rz=-90,
+      out="outputs/watercolor_cake_dithering.png",
+      extras="--light-z 80 --light-x 40",
+    ),
+  ],
+  "private-detective-dithering": [
+    run(
+      "../outputs/private_detective_approx.ply",
+      "private_detective_dithering.ply",
+      "--weighting laplacian --color-weight 0",
       bin=dithering_bin, is_abl=False, eval=False
     ),
     render(
-      "outputs/watercolor_cake_dithering.ply",
-      8, -24, 5, 0, fy=0.2, cx=0.5,lx=0.5,
-      out="outputs/watercolor_cake_dithering.png",
-      extras="--flip-light --light-z 200",
+      "data/private_detective.obj",
+      10.1, -5.25, 10.1, 0, fy=-100., cx=0,lx=0, rz=0,
+      out="outputs/private_detective_input.png",
+      extras="--light-z -80 --light-x -20",
+    ),
+    render(
+      "outputs/private_detective_dithering.ply",
+      10.1, -5.25, 10.1, 0, fy=-100., cx=0,lx=0, rz=0,
+      out="outputs/private_detective_dithering.png",
+      extras="--light-z -80 --light-x -20",
     ),
   ],
 
@@ -612,7 +613,7 @@ experiments = {
         model, model[:-4] + "_approx.ply",
         f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
           --no-incremental-qem --sample-kind approx \
-          {'' if img_size_frac is None else f'--image-size-frac {img_size_frac}'}",
+          {'' if img_size_frac is None else (f'--image-size-frac {img_size_frac}' if type(img_size_frac) == float else f'--image-size-px {img_size_frac}')}",
         is_abl=False,
       )
       for (model, texture, tri_num, img_size_frac) in dataset
@@ -654,6 +655,10 @@ def arguments():
   a.add_argument(
     "--no-eval", action="store_true",
     help="Do not evaluate similarity of input and output mesh",
+  )
+  a.add_argument(
+    "--force", action="store_true",
+    help="Force run all meshes, even if missing_only = True was specified",
   )
   return a.parse_args()
 

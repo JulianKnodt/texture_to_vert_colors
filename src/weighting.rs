@@ -71,11 +71,13 @@ impl WeightingKind {
                 .collect::<Vec<_>>(),
         };
 
-        const EPS: F = 1e-5;
+        //const EPS: F = 1e-5;
+        const EPS: F = 1e-6;
         let mut per_edge_weights = BTreeMap::new();
         if matches!(self, WeightingKind::Laplacian) {
             for f in &mesh.f {
                 let dist_fn = |a, b| {
+                    //dist(mesh.v[a], mesh.v[b])
                     let d = dist(mesh.v[a], mesh.v[b]);
                     if mesh.vert_colors.is_empty() {
                         return d;
@@ -92,7 +94,6 @@ impl WeightingKind {
                     let v = a * a + b * b - c * c;
                     let cot_c = v / (4. * area + EPS);
                     assert!(cot_c.is_finite(), "{cot_c:?} {area:?} {v:?}");
-                    //assert!(cot_c < 1000., "{cot_c}");
                     let ew = per_edge_weights
                         .entry(std::cmp::minmax(pi, ni))
                         .or_insert(0.);
@@ -119,18 +120,6 @@ impl WeightingKind {
                     for &vi in f.as_slice() {
                         vw[vi] += area;
                     }
-                    /*
-                    let other = [
-                      [0, 0, 1, 2, 2],
-                      [1, 2, 2, 0, 1],
-                      [2, 0, 2, 1, 1],
-                    ];
-                    let cots = per_face_info[fi];
-                    for [vi, e0, o0, e1, o1] in other {
-                      let w = es[e0] * es[e0] * cots[o0] + es[e1] * es[e1] * cots[o1];
-                      vw[vi] += w / 8.;
-                    }
-                    */
                 }
                 vw
             }
@@ -184,8 +173,7 @@ impl WeightingKind {
                 let voronoi = per_vert_weights[v0];
                 let l = per_edge_weights[&std::cmp::minmax(v0, v1)];
                 assert!(l.is_finite());
-                softplus(l / (2. * voronoi + EPS))
-                //l / (2. * voronoi + EPS)
+                softplus(l) / (2. * voronoi + EPS)
             }
         });
         Ok(va)

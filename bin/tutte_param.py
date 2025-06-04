@@ -36,9 +36,9 @@ def main():
   for vis in mesh.faces:
     vi,vj,vk = [mesh.vertices[idx] for idx in vis]
     vci,vcj,vck = [mesh.visual.vertex_colors[idx][:-1]/255. for idx in vis]
-    a = dist_fn(vi,vci, vj,vcj, args.color_weight)
-    b = dist_fn(vj,vcj, vk,vck, args.color_weight)
-    c = dist_fn(vi,vci, vk,vck, args.color_weight)
+    a = dist_fn(vi,vci, vj,vcj, 0.)#args.color_weight)
+    b = dist_fn(vj,vcj, vk,vck, 0.)#args.color_weight)
+    c = dist_fn(vi,vci, vk,vck, 0.)#args.color_weight)
     area = herons(a,b,c) / 3
     for vi in vis:
       M[vi] += area
@@ -59,7 +59,7 @@ def main():
 
     for ijk in edges:
       vi,vj,vk = [mesh.vertices[idx] for idx in ijk]
-      vci,vcj,vck = [mesh.visual.vertex_colors[idx] for idx in ijk]
+      vci,vcj,vck = [mesh.visual.vertex_colors[idx][:-1]/255. for idx in ijk]
       a = dist_fn(vi,vci, vj,vcj, args.color_weight)
       b = dist_fn(vj,vcj, vk,vck, args.color_weight)
       c = dist_fn(vi,vci, vk,vck, args.color_weight)
@@ -106,10 +106,10 @@ def main():
   mesh.export(args.output)
 
 def dist_fn(va,vca, vb, vcb, color_weight=1e-4):
-  return np.linalg.norm(
-    np.concatenate([va, color_weight * vca]) - \
-    np.concatenate([vb, color_weight * vcb])
-  )
+  #return np.linalg.norm(
+  #  np.concatenate([va, color_weight * vca]) - \
+  #  np.concatenate([vb, color_weight * vcb])
+  #)
   #geom = np.linalg.norm(va - vb)
   #color = np.linalg.norm(vca - vcb)
   #return geom + color_weight * color

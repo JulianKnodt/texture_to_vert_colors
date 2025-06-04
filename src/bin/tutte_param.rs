@@ -40,6 +40,10 @@ pub struct Args {
     #[arg(long, default_value_t = String::new())]
     bake_texture: String,
 
+    /// Use the more exact form of rebaking.
+    #[arg(long)]
+    approx_rebake: bool,
+
     /// Resolution of baked texture
     #[arg(long, default_value_t = 1024)]
     bake_res: u32,
@@ -53,7 +57,7 @@ pub struct Args {
     iters: usize,
 
     /// How much to weigh color compared to geometry
-    #[arg(long, default_value_t = 1.)]
+    #[arg(long, default_value_t = 0.)]
     color_weight: F,
 
     /// How much to clamp the maximum weight of each influence
@@ -110,12 +114,22 @@ fn main() {
 
     if !args.bake_texture.is_empty() {
         let m0 = &scene.meshes[0];
-        let mut img = pars3d::coloring::bake_vertex_colors_to_texture(
-            [args.bake_res, args.bake_res],
-            &m0.uv[args.target_uv],
-            &m0.f,
-            &m0.vert_colors,
-        );
+        let mut img = if args.approx_rebake {
+            pars3d::coloring::bake_vertex_colors_to_texture(
+                [args.bake_res, args.bake_res],
+                &m0.uv[args.target_uv],
+                &m0.f,
+                &m0.vert_colors,
+            )
+        } else {
+            pars3d::coloring::bake_vertex_colors_to_texture_exact(
+                [args.bake_res, args.bake_res],
+                &m0.v,
+                &m0.uv[args.target_uv],
+                &m0.f,
+                &m0.vert_colors,
+            )
+        };
         pars3d::image::imageops::flip_vertical_in_place(&mut img);
         let nf = m0.f.len();
         let new_texture = pars3d::mesh::Texture {

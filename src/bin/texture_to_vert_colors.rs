@@ -121,9 +121,17 @@ pub struct Args {
     #[arg(long, short, default_value_t = 1.)]
     image_size_frac: F,
 
+    /// How many pixels to resize the image to. 0 indicates no resize.
+    #[arg(long, default_value_t = 0)]
+    image_size_px: u32,
+
     /// Triangulate the output mesh
     #[arg(long)]
     triangulate: bool,
+
+    /// Triangulate the input mesh
+    #[arg(long)]
+    triangulate_input: bool,
 }
 
 pub fn main() {
@@ -186,10 +194,15 @@ pub fn main() {
                 continue;
             };
             *txt = txt.flipv();
-            if args.image_size_frac != 1. {
+            if args.image_size_frac != 1. || args.image_size_px != 0 {
                 let (w, h) = txt.dimensions();
-                let nw = (w as F * args.image_size_frac).ceil() as u32;
-                let nh = (h as F * args.image_size_frac).ceil() as u32;
+                let [nw, nh] = if args.image_size_px != 0 {
+                    [args.image_size_px; 2]
+                } else {
+                    let nw = (w as F * args.image_size_frac).ceil() as u32;
+                    let nh = (h as F * args.image_size_frac).ceil() as u32;
+                    [nw, nh]
+                };
                 *txt = txt.resize(nw, nh, image::imageops::FilterType::Triangle);
                 let (nw, nh) = txt.dimensions();
                 println!(
@@ -209,9 +222,13 @@ pub fn main() {
         } else {
             mesh.normalize()
         };
-        let num_split = mesh.split_non_planar_faces(1e-2);
-        if num_split > 0 {
-            println!("[WARN]: Split {num_split} non-planar polygonal faces");
+        if args.triangulate_input {
+            mesh.triangulate();
+        } else {
+            let num_split = mesh.split_non_planar_faces(1e-2);
+            if num_split > 0 {
+                println!("[WARN]: Split {num_split} non-planar polygonal faces");
+            }
         }
         assert!(!mesh.uv[0].is_empty());
         assert_eq!(mesh.uv[0].len(), mesh.v.len());
@@ -221,9 +238,10 @@ pub fn main() {
                 if let Some(diff_img) = diff_img.as_ref() {
                     return diff_img;
                 }
-                let mi = mesh
-                    .mat_for_face(fi)
-                    .expect(&format!("No material found in {:?}", mesh.face_mat_idx));
+                let mi = mesh.mat_for_face(fi).expect(&format!(
+                    "No material found in {:?} for {fi}",
+                    mesh.face_mat_idx
+                ));
                 let &ti = scene.materials[mi]
                     .textures
                     .iter()
@@ -521,7 +539,7 @@ pub fn texture_to_vert_colors<'a>(
 
         assert!(
             swapped ^ correct,
-            "TODO colinear polygonal (more than 4 verts) faces {swapped} {correct} \
+            "TODO colinear polygonal (more than 4 verts) input faces {swapped} {correct} \
             {:?} {f0} {face_verts:?} \n\
             {e0:?} {e1:?} \n {:?}",
             mesh.f[f0],
@@ -948,7 +966,7 @@ pub fn texture_to_vert_colors<'a>(
             &mut qem_buf,
         );
         if !args.triangulate {
-          mesh_stats!("After QEM");
+            mesh_stats!("After QEM");
         }
     }
 

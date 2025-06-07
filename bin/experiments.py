@@ -48,12 +48,14 @@ def run(src, dst, flags, is_abl=True, src_dir="data", bin=bin_file, eval=True, m
 
 def render(
   i, cy,cz, ly,lz,out, w=1024, h=1024, cx=0, fy=0, lx=0, rz=45,
-  extras=""
+  extras="",
+  missing_only = False
 ):
   out = os.path.join(os.getcwd(), out)
   def cb():
     if "render" not in args.stages: return []
     if args.match_output is not None and args.match_output not in out: return []
+    if (not args.force) and missing_only and os.path.exists(out): return []
 
     cmd = f"{sys.executable} bin/render.py \
       --mesh {i} \
@@ -107,7 +109,11 @@ dataset = [
   #("flowers_in_vase.obj", "flowers_in_vase.jpg", 2000000, None),
   #("millers-falls-drill.fbx", "millers-falls-drill-textures/diffuse.png", 1000000, None),
   #("garlic_knight.obj", "", 1000000, 0.5),
-  ("private_detective.obj", "", 2000000, 1024),
+  #("private_detective.obj", "", 2000000, 1024),
+  #("deku_mask.obj", "", 1000000, 0.75),
+  #("umbrella_gold.obj", "", 1000000, 0.5),
+  #("inari_mask.obj", "", 300000, 0.5),
+  #("longevity_buns.obj", "", 1000000, 0.5),
 
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
@@ -119,7 +125,7 @@ dataset_direct = [
   #("musk_melon.obj", "", 2000000),
   #("oshima_cherry.obj", "", 2000000),
   #("mango.obj", "", 1000000),
-  ("nishiki_utsugi.obj", "", 1000000),
+  #("nishiki_utsugi.obj", "", 1000000),
 ]
 
 experiments = {
@@ -534,6 +540,45 @@ experiments = {
     ),
   ],
 
+  "inari-mask-vector-field": [
+
+    run(
+      "../outputs/inari_mask_approx.ply",
+      "inari_mask_max_curvature_field.ply",
+      f"--dist-thresh 6e-3 --color-thresh 0.0 --dir max-curvature --width 1e-3 --length 0.03",
+      bin=hatching_bin, is_abl=False,
+      eval=False,
+    ),
+
+    run(
+      "../outputs/inari_mask_approx.ply",
+      "inari_mask_color_grad_field.ply",
+      f"--dist-thresh 1e-5 --color-thresh 0.0 --dir max-curvature --width 1e-3 --length 0.03 \
+        --face-hatching",
+      bin=hatching_bin, is_abl=False,
+      eval=False,
+    ),
+    render(
+      "data/inari_mask.obj",
+      6, -28, 0, 0, fy=-8, rz=0, w=800,
+      out="outputs/inari_mask_input.png",
+      extras="--light-z -155 --light-x 1",
+      missing_only=True,
+    ),
+    render(
+      "outputs/inari_mask_max_curvature_field.ply",
+      6, -28, 0, 0, fy=-8, rz=0, w=800,
+      out="outputs/inari_mask_max_curv_field.png",
+      extras="--light-z -155 --light-x 1",
+    ),
+    render(
+      "outputs/inari_mask_color_grad_field.ply",
+      6, -28, 0, 0, fy=-8, rz=0, w=800,
+      out="outputs/inari_mask_color_grad_field.png",
+      extras="--light-z -155 --light-x 1",
+    ),
+  ],
+
   "officebot-dithering": [
     #run(
     #  "../outputs/officebot_approx.ply",
@@ -572,6 +617,14 @@ experiments = {
       8, 24, 5, 0, fy=0.2, cx=-2,lx=-2,rz=-90,
       out="outputs/watercolor_cake_dithering.png",
       extras="--light-z 80 --light-x 40",
+    ),
+  ],
+  "watercolor-girl-dithering": [
+    run(
+      "../outputs/watercolor_girl_approx.ply",
+      "watercolor_girl_dithering.ply",
+      "--weighting laplacian --color-weight 1e-2",
+      bin=dithering_bin, is_abl=False, eval=False
     ),
   ],
   "private-detective-dithering": [

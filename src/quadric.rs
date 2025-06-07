@@ -210,8 +210,8 @@ pub struct Quadric<const N: usize = N_ATTRIB> {
     pub b: [F; 3],
     c: F,
 
-    g: [[F; 3]; N],
-    d: [F; N],
+    pub g: [[F; 3]; N],
+    pub d: [F; N],
 
     pub area: F,
 

@@ -1,11 +1,14 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
-#![allow(unused)]
 use clap::Parser;
-use texture_to_vert_colors::quadric::Quadric;
+use texture_to_vert_colors::quadric::{AttrWeights, Quadric};
 use texture_to_vert_colors::{F, add, dist, dot, kmul, length, normalize, sub};
 
+use pars3d::FaceKind;
 use pars3d::adjacency::VertexAdj;
-use std::collections::HashMap;
+use pars3d::func::ScalarFn;
+use pars3d::tracing::{Curve, trace_curve, trace_curve_from_mid};
 
 #[derive(Debug, Clone, PartialEq, Parser)]
 pub struct Args {
@@ -24,6 +27,10 @@ pub struct Args {
     /// How wide to trace curves
     #[arg(long, default_value_t = 8e-4)]
     width: F,
+
+    /// Instead of tracing curves per edge, trace luma gradient on each face.
+    #[arg(long)]
+    face_hatching: bool,
 
     /// How long to trace each curve on the surface.
     /// Likely needs to be tuned per model.
@@ -64,15 +71,16 @@ fn main() {
 
     let vv_adj = m.vertex_vertex_adj();
 
-    let mut new_mesh = if !args.grayscale {
+    let mut new_mesh = if args.face_hatching {
+        face_hatching(&m, &args)
+    } else if !args.grayscale {
         edge_hatching(&vv_adj, &m, &m.vert_colors, &args)
     } else {
-        let lum_chan = [0.2126, 0.7152, 0.0722];
-        //let lum_chan = [0.299, 0.587, 0.114];
-        let mut vert_grayscale = m
+        let vert_grayscale = m
             .vert_colors
             .iter()
-            .map(|&rgb| dot(rgb, lum_chan))
+            .copied()
+            .map(luma)
             .map(|l| [l; 3])
             .collect::<Vec<_>>();
         edge_hatching(&vv_adj, &m, &vert_grayscale, &args)
@@ -98,8 +106,6 @@ pub fn edge_hatching(
     let v = &m.v;
     let edge_adj = m.edge_kinds();
 
-    use pars3d::func::ScalarFn;
-    use pars3d::tracing::{Curve, trace_curve_from_mid};
     let mut out = pars3d::Mesh::default();
     let ne = vv_adj.all_pairs_ord().count();
     let prog = indicatif::ProgressBar::new(ne as u64);
@@ -144,7 +150,7 @@ pub fn edge_hatching(
         let start = f.map_kind(|vi| v[vi]).barycentric(midpoint);
 
         let tri = start.tri(f);
-        let (d, dir) = match args.dir {
+        let (_w, dir) = match args.dir {
             DirKind::Edge => (el, normalize(sub(v1, v0))),
             DirKind::MaxCurvature => (k0, curv0),
             DirKind::MinCurvature => (k1, curv1),
@@ -179,8 +185,139 @@ pub fn edge_hatching(
     out
 }
 
+fn face_hatching(m: &pars3d::Mesh, args: &Args) -> pars3d::Mesh {
+    let edge_adj = m.edge_kinds();
+    let mut out = pars3d::Mesh::default();
+    let attr_ws = AttrWeights { ws: [1.] };
+    for (fi, f) in m.f.iter().enumerate() {
+        let area = f.area(&m.v);
+        if area < args.dist_thresh {
+            continue;
+        }
+        let n = f.normal(&m.v);
+        macro_rules! q_n_attribs(
+          ($vis: expr) => {{
+            Quadric::n_attribs(
+                n,
+                $vis.map(|vi| m.v[vi]),
+                $vis.map(|vi| [luma(m.vert_colors[vi])]),
+                attr_ws,
+            )
+          }}
+        );
+
+        // add attributes as well
+        let q_attr = match f {
+            FaceKind::Tri(vis) => q_n_attribs!(vis),
+            FaceKind::Quad(vis) => q_n_attribs!(vis),
+            FaceKind::Poly(p) => Quadric::dyn_attribs(
+                n,
+                p.len(),
+                |vi| m.v[vi],
+                |vi| [luma(m.vert_colors[vi])],
+                attr_ws,
+            ),
+        };
+
+        let grad = q_attr.g[0];
+        let grad = kmul(area, grad);
+        if length(grad) < 2e-4 {
+            continue;
+        }
+
+        /*
+        */
+        let attr_ws = AttrWeights { ws: [1.; 3] };
+        macro_rules! q_n_attribs(
+          ($vis: expr) => {{
+            Quadric::n_attribs(
+                n,
+                $vis.map(|vi| m.v[vi]),
+                $vis.map(|vi| m.vert_colors[vi]),
+                attr_ws,
+            )
+          }}
+        );
+        let q_attr_rgb = match f {
+            FaceKind::Tri(vis) => q_n_attribs!(vis),
+            FaceKind::Quad(vis) => q_n_attribs!(vis),
+            FaceKind::Poly(p) => {
+                Quadric::dyn_attribs(n, p.len(), |vi| m.v[vi], |vi| m.vert_colors[vi], attr_ws)
+            }
+        };
+        let mean_color = q_attr_rgb.d;
+        /*
+        let mean_color = kmul(
+            (f.len() as F).recip(),
+            f.as_slice()
+                .iter()
+                .map(|&vi| m.vert_colors[vi])
+                .fold([0.; 3], add),
+        );
+        */
+
+        let centroid = f.as_slice().iter().map(|&vi| m.v[vi]).fold([0.; 3], add);
+        let start = f
+            .map_kind(|vi| m.v[vi])
+            .barycentric(kmul((f.len() as F).recip(), centroid));
+
+        let mean_color = if args.grayscale {
+            [luma(mean_color); 3]
+        } else {
+            mean_color
+        };
+
+        let tri = start.tri(f);
+        let direction = pars3d::dir_to_barycentric(grad, tri.map(|vi| m.v[vi]));
+
+        //let len = len_along_dir(grad, centroid, f.as_slice().iter().map(|&vi| m.v[vi]));
+
+        // draw multiple curves which are evenly spaced
+        let curve = Curve {
+            start,
+            start_face: fi,
+            direction,
+            width: ScalarFn::Linear([args.width], [0.25 * args.width]),
+
+            length: args.length,
+
+            bend_amt: args.bend_amt,
+
+            color: ScalarFn::Constant(mean_color),
+        };
+
+        let (wv, wvc, wf) = trace_curve(
+            &m.v,
+            &m.f,
+            |[e0, e1]| edge_adj[&std::cmp::minmax(e0, e1)].as_slice(),
+            curve,
+        );
+        let mut wf = pars3d::visualization::wireframe_to_mesh((wv, wvc, wf));
+        out.append(&mut wf);
+    }
+    out
+}
+
 fn luma([r, g, b]: [F; 3]) -> F {
     0.299 * r + 0.587 * g + 0.114 * b
+}
+
+#[allow(unused)]
+fn len_along_dir(dir: [F; 3], center: [F; 3], pts: impl Iterator<Item = [F; 3]>) -> F {
+    let dir = normalize(dir);
+    let mut min = F::INFINITY;
+    let mut max = F::NEG_INFINITY;
+    for p in pts {
+        let p = sub(p, center);
+        let len = dot(p, dir);
+        let len = len.abs().sqrt().copysign(len);
+        assert!(len.is_finite());
+        min = min.min(len);
+        max = max.max(len);
+    }
+    assert!(max.is_finite());
+    assert!(min.is_finite());
+    max - min
 }
 
 macro_rules! impl_display {

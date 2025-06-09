@@ -77,7 +77,7 @@ dataset = [
   #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 1000000, None),
   #("cabbage.obj", "cabbage_diffuse.jpg", 300000, None),
   #("shiba.obj", "shiba_texture.png", 1000000, None),
-  #("watercolor_girl.fbx", "watercolor-girl-albedo.jpg", 1000000, None),
+  #("watercolor_girl.obj", "", 4000000, None),
   #("watercolor_cake.obj", "watercolor_cake.jpg", 1000000, None),
   #("silent_ash.obj", "silent_ash_texture.png", 10000000, None),
   #("scan_vase.obj", "scan_vase_texture.jpg", 500000, None),
@@ -115,9 +115,12 @@ dataset = [
   #("inari_mask.obj", "", 300000, 0.5),
   #("longevity_buns.obj", "", 1000000, 0.5),
 
+  # very expensive
+  #("wanderers.obj", "", 4000000, 3072),
+
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
-  #("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 2000000),
+  ("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 3000000, 0.5),
 ]
 
 dataset_direct = [
@@ -188,6 +191,32 @@ experiments = {
         --sample-kind {k} --no-incremental-qem",
       ) for k in ["direct", "exact"]
     ]
+  ],
+
+  "teaser": [
+    render(
+      "data/wanderers.obj",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="outputs/wanderers_input.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+      missing_only=True,
+    ),
+    render(
+      "outputs/wanderers_approx.ply",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="outputs/wanderers_remesh.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+      missing_only=True,
+    ),
+
+    run(
+      "../outputs/wanderers_approx.ply",
+      "wanderers_constant_colors.ply",
+      f"-t 1000 --eigenvalue zero --cluster-vis ablations/wanderers_clusters.ply \
+      --eigen-eps 10 --color-eps 0 --eigen-vis ablations/wanderers_eigen.ply \
+      --shape-metric angle-deviation ",
+      bin=clustering_bin, eval=False,
+    ),
   ],
 
   "spot_clustering": [
@@ -360,9 +389,10 @@ experiments = {
   "tutte-param": [
     cmd
     for (model, ratio, sample_kind, triangulate, img_frac, bake_res) in [
-      ("scroll.obj", 0.05, "approx", True, 0.5, 1024),
-      ("jar_with_dragon_design_boundary.obj", 0.05, "approx", True, 1., 1024),
-      ("ogre.obj", 0.02, "direct", False, 1., 1024),
+      #("scroll.obj", 0.05, "approx", True, 0.5, 1024),
+      #("jar_with_dragon_design_boundary.obj", 0.05, "approx", True, 1., 1024),
+      #("ogre.obj", 0.02, "direct", False, 1., 1024),
+      ("longevity_buns.obj", 0.2, "approx", True, 0.5, 1024),
     ]
     for cmd in [
       run(
@@ -379,7 +409,7 @@ experiments = {
           f"--weighting {w} --pos-color-norm {norm} \
             --uv-svg ablations/{model[:-4]}_{label}.svg --bake-texture \
             {model[:-4]}_{label}.png --iters 250000 --color-weight {cw} \
-            --bake-res {bake_res}",
+            --bake-res {bake_res} --use-longest-loop",
           bin=tutte_bin, eval=False, missing_only=True,
         )
         for (w, norm, cw, label) in [
@@ -620,12 +650,41 @@ experiments = {
     ),
   ],
   "watercolor-girl-dithering": [
+    runnable_cmds([
+      "cp data/watercolor_girl.obj outputs/watercolor_girl_dithered.obj",
+      "cp data/watercolor_girl.mtl outputs",
+      "cargo run --release --example dither_texture -- -i data/watercolor-girl-albedo.jpg \
+        -o outputs/watercolor-girl-albedo.jpg"
+    ]),
     run(
       "../outputs/watercolor_girl_approx.ply",
       "watercolor_girl_dithering.ply",
-      "--weighting laplacian --color-weight 1e-2",
+      "--weighting laplacian --color-weight 1.",
       bin=dithering_bin, is_abl=False, eval=False
     ),
+    render(
+      "data/watercolor_girl.obj",
+      6.5, -13, 6.5, 0, fy=0, cx=0,lx=0,rz=0, w=720,
+      out="outputs/watercolor_girl_input.png",
+      extras="--light-z 80 --roughness 1 --light-strength 8",
+      missing_only=True,
+    ),
+    render(
+      "outputs/watercolor_girl_dithering.ply",
+      6.5, -13, 6.5, 0, fy=0, cx=0,lx=0,rz=0, w=720,
+      out="outputs/watercolor_girl_dithered.png",
+      extras="--light-z 80 --roughness 1 --light-strength 8",
+    ),
+    render(
+      "outputs/watercolor_girl_dithered.obj",
+      6.5, -13, 6.5, 0, fy=0, cx=0,lx=0,rz=0, w=720,
+      out="outputs/watercolor_girl_texture_dither.png",
+      extras="--light-z 80 --roughness 1 --light-strength 8",
+    ),
+    runnable_cmds([
+      "cargo run --release --example dither_texture -- -i outputs/watercolor_girl_input.png \
+        -o outputs/watercolor_girl_output_dither.png"
+    ]),
   ],
   "private-detective-dithering": [
     run(

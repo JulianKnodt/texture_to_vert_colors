@@ -58,6 +58,9 @@ def arguments():
   a.add_argument("--ball-z-offset", default=0, type=float, help="Offset for balls on z-axis")
   a.add_argument("--debug-blend", default=None, type=str, help="If set, save to a temporary blend file")
   a.add_argument("--mesh-collider", action="store_true", help="Use a mesh collider for the input mesh")
+  a.add_argument("--transparent", action="store_true", help="Set this mesh to be transparent")
+  a.add_argument("--roughness", default=0.3, type=float, help="Roughness of the mesh")
+  a.add_argument("--ambient-light", type=float, default=0, help="Amount of ambient lighting to use")
 
   return a.parse_args()
 
@@ -127,16 +130,18 @@ def add_vertex_colors(m):
 
     tree.links.new(color_attrib.outputs["Color"], pbsdf.inputs["Base Color"])
 
-def set_transparent(m):
+def set_mat(m, transparent:bool=False, roughness:float=0.3):
   for mat in m.data.materials:
     mat.blend_method = "BLEND"
 
     mat.use_nodes = True
     tree = mat.node_tree
     pbsdf = tree.nodes["Principled BSDF"]
-    pbsdf.inputs['Transmission Weight'].default_value = 0.6
-    pbsdf.inputs["Alpha"].default_value = 0.9
-    pbsdf.inputs["Roughness"].default_value = 0.3
+    if transparent:
+      pbsdf.inputs['Transmission Weight'].default_value = 0.6
+      pbsdf.inputs["Alpha"].default_value = 0.9
+    pbsdf.inputs["Roughness"].default_value = roughness
+    pbsdf.inputs["Metallic"].default_value = 0.
 
 def center(o, origin=None):
   me = o.data
@@ -250,8 +255,8 @@ def main():
   if is_ply:
     for o in new_mesh_obs: add_vertex_colors(o)
 
-  #for o in mesh_obs: set_transparent(o) # TEMPORARY LINE
-  for o in new_mesh_obs: set_transparent(o)
+  #for o in mesh_obs: set_mat(o) # TEMPORARY LINE
+  for o in new_mesh_obs: set_mat(o, args.transparent, args.roughness)
 
   for o in new_mesh_obs: add_wireframe(o, args.wireframe_thickness)
 
@@ -268,6 +273,8 @@ def main():
   strength = args.light_strength
   shadowSoftness = 0.3
   sun = bt.setLight_sun(lightAngle, strength, shadowSoftness)
+  if args.ambient_light != 0:
+    bt.setLight_ambient([args.ambient_light] * 4)
 
 
   if args.rigid_body:

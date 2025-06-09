@@ -197,7 +197,7 @@ pub fn main() {
             if args.image_size_frac != 1. || args.image_size_px != 0 {
                 let (w, h) = txt.dimensions();
                 let [nw, nh] = if args.image_size_px != 0 {
-                    [args.image_size_px; 2]
+                    [args.image_size_px.min(w), args.image_size_px.min(h)]
                 } else {
                     let nw = (w as F * args.image_size_frac).ceil() as u32;
                     let nh = (h as F * args.image_size_frac).ceil() as u32;
@@ -1769,9 +1769,21 @@ pub fn sample_approx(
             .into_iter()
             .any(|cd| pixel_map.contains_key(&cd));
         let any_diag = diags(*uv).into_iter().any(|cd| pixel_map.contains_key(&cd));
-        assert!(
-            any_nbr || any_diag,
-            "TODO handle this case (possibly just call sample_exact)"
+        if any_diag || any_nbr {
+            continue;
+        }
+        truncate!();
+        return sample_exact(
+            mesh,
+            f,
+            fi,
+            src,
+            out,
+            corner_map,
+            edge_map,
+            labels,
+            face_labels,
+            args,
         );
     }
 
@@ -2082,9 +2094,9 @@ pub fn sample_direct(
         }
         let [u, v] = mesh.uv[CHAN][og_vi];
 
+        src.push_to_mesh(out, u, v);
         let new_vi = out.v.len();
         out.v.push(og_pos);
-        src.push_to_mesh(out, u, v);
 
         fv.push((fi, new_vi));
         new_vi

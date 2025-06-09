@@ -226,7 +226,7 @@ fn face_hatching(m: &pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         }
 
         /*
-        */
+         */
         let attr_ws = AttrWeights { ws: [1.; 3] };
         macro_rules! q_n_attribs(
           ($vis: expr) => {{

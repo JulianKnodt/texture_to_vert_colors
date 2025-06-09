@@ -107,7 +107,7 @@ pub fn main() -> std::io::Result<()> {
         eprintln!("[WARN]: Output will not be colored if output format is not PLY");
     }
 
-    let scene = pars3d::load(&args.input)?;
+    let scene = pars3d::load(&args.input).expect(&format!("Failed to load input {}", &args.input));
     let mut mesh = scene.into_flattened_mesh();
     let (s, t) = mesh.normalize();
     let (cs, ct) = mesh.normalize_colors();

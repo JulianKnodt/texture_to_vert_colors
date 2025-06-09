@@ -164,6 +164,16 @@ impl AABB<i32, 2> {
         let [hx, hy] = self.max;
         (ly..hy).flat_map(move |y| (lx..hx).map(move |x| [x, y]))
     }
+    pub fn iter_height(&self) -> impl Iterator<Item = i32> + '_ {
+        let [_, ly] = self.min;
+        let [_, hy] = self.max;
+        ly..hy
+    }
+    pub fn iter_width(&self) -> impl Iterator<Item = i32> + '_ {
+        let [lx, _] = self.min;
+        let [hx, _] = self.max;
+        lx..hx
+    }
     pub fn expand_by(&mut self, v: i32) {
         self.min = self.min.map(|val| val - v);
         self.max = self.max.map(|val| val + v);

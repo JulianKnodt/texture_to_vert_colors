@@ -63,6 +63,10 @@ pub struct Args {
     /// How much to clamp the maximum weight of each influence
     #[arg(long, default_value_t = F::INFINITY)]
     max_w: F,
+
+    /// Use the longest loop of the mesh, even if there are multiple
+    #[arg(long)]
+    use_longest_loop: bool,
 }
 
 fn main() {
@@ -174,10 +178,18 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
     }
     let vert_adj = vert_adj;
     let (num_loops, bd_loops) = vert_adj.boundary_loops(&mesh);
-    assert_eq!(num_loops, 1, "{bd_loops:?}");
 
     let mut bd = vec![];
-    let (&first, &[last, mut next]) = bd_loops.first_key_value().unwrap();
+    let (first, [last, mut next]) = if num_loops == 1 {
+        let (&v, &adj) = bd_loops.first_key_value().unwrap();
+        (v, adj)
+    } else if args.use_longest_loop {
+        let v =
+            pars3d::adjacency::longest_loop(&bd_loops, |i, j| dist(mesh.v[i], mesh.v[j])).unwrap();
+        (v, bd_loops[&v])
+    } else {
+        panic!("Expected 1 boundary loop, or specify --use-longest");
+    };
     let mut prev = first;
     bd.push((prev, 0.));
     let mut curr_len = 0.;

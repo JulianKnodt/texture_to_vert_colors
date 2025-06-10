@@ -15,4 +15,5 @@ dependencies = [
     "bpy>=4.0.0",
     "blendertoolbox>=0.0.5",
     "libigl>=2.6.1",
+    "open3d>=0.19.0",
 ]

@@ -75,8 +75,9 @@ def main():
   print(f"chamfer(original to new) = {og_to_new.mean()}")
   print(f"chamfer = {chamfer}")
   print()
+  if args.stats is None: return;
   stats = {}
-  if args.stats is not None and os.path.exists(args.stats):
+  if os.path.exists(args.stats):
     with open(args.stats, "r") as f:
       try:
         stats = json.load(f)
@@ -91,9 +92,8 @@ def main():
   stats["chamfer_new_to_original"] = new_to_og.mean()
   stats["chamfer_original_to_new"] = og_to_new.mean()
 
-  if args.stats is not None:
-    with open(args.stats, "w") as f:
-      json.dump(stats, f, indent=2)
+  with open(args.stats, "w") as f:
+    json.dump(stats, f, indent=2)
 
 
 if __name__ == "__main__":

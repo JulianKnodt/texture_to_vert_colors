@@ -83,6 +83,10 @@ pub struct Args {
     /// a separate mesh for each cluster
     #[arg(long, default_value_t = String::new())]
     xatlas_output: String,
+
+    /// First convert the mesh to a geometry only representation, stripping off colors and UVs
+    #[arg(long)]
+    geometry_only: bool,
 }
 
 impl From<Args> for ClusterArgs {
@@ -111,6 +115,9 @@ pub fn main() -> std::io::Result<()> {
     let mut mesh = scene.into_flattened_mesh();
     let (s, t) = mesh.normalize();
     let (cs, ct) = mesh.normalize_colors();
+    if args.geometry_only {
+        mesh.geometry_only();
+    }
 
     let start = std::time::Instant::now();
     /*

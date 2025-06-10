@@ -9,5 +9,6 @@ experiment_log.json
 *.png
 *.svg
 *.mtl
+*.pdf
 profile.json.gz
 __pycache__/

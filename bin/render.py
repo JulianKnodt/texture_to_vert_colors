@@ -26,10 +26,9 @@ def arguments():
   a.add_argument("--width", default=1024, type=int, help="")
   a.add_argument("--height", default=1024, type=int, help="")
   a.add_argument("--final-render", action="store_true")
-  a.add_argument("--hide-new", action="store_true")
-  a.add_argument("--hide-original", action="store_true")
   a.add_argument("--flip-horizontal", action="store_true")
   a.add_argument("--samples", default=1024, type=int, help="Number of samples for rendering")
+  a.add_argument("--wireframe", default=None, help="Mesh to use as wireframe")
 
   a.add_argument("--cam-x", default=0, type=float, help="X of camera")
   a.add_argument("--cam-y", default=2, type=float, help="Y of camera")
@@ -61,6 +60,7 @@ def arguments():
   a.add_argument("--transparent", action="store_true", help="Set this mesh to be transparent")
   a.add_argument("--roughness", default=0.3, type=float, help="Roughness of the mesh")
   a.add_argument("--ambient-light", type=float, default=0, help="Amount of ambient lighting to use")
+  a.add_argument("--shade-flat", action="store_true", help="Use flat shading instead of smooth")
 
   return a.parse_args()
 
@@ -140,6 +140,9 @@ def set_mat(m, transparent:bool=False, roughness:float=0.3):
     if transparent:
       pbsdf.inputs['Transmission Weight'].default_value = 0.6
       pbsdf.inputs["Alpha"].default_value = 0.9
+    else:
+      pbsdf.inputs['Transmission Weight'].default_value = 0
+      pbsdf.inputs["Alpha"].default_value = 1
     pbsdf.inputs["Roughness"].default_value = roughness
     pbsdf.inputs["Metallic"].default_value = 0.
 
@@ -250,7 +253,11 @@ def main():
   )
   bpy.context.view_layer.update()
 
-  for o in new_mesh_obs: o.hide_render=args.hide_new
+  if args.shade_flat:
+    bpy.ops.object.shade_flat()
+  else:
+    #bpy.ops.object.shade_smooth() # Option1: Gouraud shading
+    bpy.ops.object.shade_flat()
 
   if is_ply:
     for o in new_mesh_obs: add_vertex_colors(o)
@@ -259,6 +266,26 @@ def main():
   for o in new_mesh_obs: set_mat(o, args.transparent, args.roughness)
 
   for o in new_mesh_obs: add_wireframe(o, args.wireframe_thickness)
+
+  if args.wireframe is not None and len(args.wireframe) > 0:
+    assert(os.path.exists(args.wireframe)), args.wireframe
+    is_ply = False
+    if ".obj" in args.wireframe:
+      bpy.ops.wm.obj_import(filepath=args.wireframe, use_split_groups=False)
+    elif ".ply" in args.wireframe:
+      bpy.ops.wm.ply_import(filepath=args.wireframe, up_axis="Y", forward_axis="Z")
+      is_ply = True
+    else: assert(False)
+
+    wireframe_obs = [o for o in bpy.context.scene.objects if o.type == "MESH" if o not in new_mesh_obs]
+    rescale(
+      wireframe_obs, ms, flip_h = args.flip_horizontal, swap_xy=args.swap_xy,
+      N=args.scale, rot_z=args.rot_z,
+    )
+    bpy.context.view_layer.update()
+
+    if is_ply:
+      for o in wireframe_obs: add_vertex_colors(o)
 
   ## set invisible plane (shadow catcher)
   invisibleGround(location=(0,0,args.floor_y), shadowBrightness=0.03)
@@ -322,7 +349,6 @@ def main():
   ## set gray shadow to completely white with a threshold (optional but recommended)
   bt.shadowThreshold(alphaThreshold = 0.01, interpolationMode = 'CARDINAL')
 
-  bpy.ops.object.shade_smooth() # Option1: Gouraud shading
 
   if args.debug_blend is not None:
     bpy.ops.wm.save_mainfile(filepath=args.debug_blend)

@@ -174,9 +174,14 @@ pub fn main() {
 
         let (w, h) = img.dimensions();
         println!("[INFO]: Diffuse W = {w}, H = {h}");
-        let img = if args.image_size_frac != 1. {
-            let nw = (w as F * args.image_size_frac).ceil() as u32;
-            let nh = (h as F * args.image_size_frac).ceil() as u32;
+        let img = if args.image_size_frac != 1. || args.image_size_px != 0 {
+            let [nw, nh] = if args.image_size_px != 0 {
+                [args.image_size_px.min(w), args.image_size_px.min(h)]
+            } else {
+                let nw = (w as F * args.image_size_frac).ceil() as u32;
+                let nh = (h as F * args.image_size_frac).ceil() as u32;
+                [nw, nh]
+            };
             let img = img.resize(nw, nh, image::imageops::FilterType::Triangle);
             let (nw, nh) = img.dimensions();
             println!(

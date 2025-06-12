@@ -4,7 +4,7 @@ use ordered_float::NotNan;
 use texture_to_vert_colors::weighting::{PosColorNorm, WeightingKind};
 use texture_to_vert_colors::{F, add, dist, dot, kmul, sub};
 
-use pars3d::adjacency::VertexAdj;
+use pars3d::adjacency::Adj;
 use priority_queue::PriorityQueue;
 
 #[derive(Debug, Clone, PartialEq, Parser)]
@@ -28,22 +28,25 @@ pub struct Args {
     #[arg(long, default_value_t = OrderKind::Nearest)]
     order: OrderKind,
 
-    // use a different palette
-    /// Use RGB instead of grayscale.
-    #[arg(long)]
-    rgb: bool,
-
     /// Use a different palette for dithering (Default = [0., 1.])
     #[arg(long, short)]
     palette: Vec<F>,
 
     /// Color weight for distances
-    #[arg(long)]
+    #[arg(long, default_value_t = 0.)]
     color_weight: F,
 
     /// Unused
-    #[arg(long)]
+    #[arg(long, default_value_t = String::new())]
     stats: String,
+
+    /// Instead of performing dithering per vertex, perform dithering per face.
+    #[arg(long)]
+    face_dithering: bool,
+
+    /// Maximum number of iterations to perform before stopping
+    #[arg(long, default_value_t = 10000000)]
+    max_iters: usize,
 }
 
 fn main() {
@@ -59,48 +62,78 @@ fn main() {
     let mut m = scene.into_flattened_mesh();
     assert_eq!(m.vert_colors.len(), m.v.len());
     let og_f = m.f.clone();
-    m.triangulate();
+    if !args.face_dithering {
+        m.triangulate();
+    }
     let (s, t) = m.normalize();
 
-    let vv_adj = args
-        .weighting
-        .vertex_weights(&m, args.pos_color_norm, args.color_weight)
-        .expect("Failed to construct weighting");
-
-    if args.rgb {
-        for c in 0..3 {
-            let mut color_chan = m.vert_colors.iter().map(|rgb| rgb[c]).collect::<Vec<_>>();
-            dither(&vv_adj, &mut color_chan, &args.palette, &args);
-
-            for (i, &g) in color_chan.iter().enumerate() {
-                m.vert_colors[i][c] = g;
-            }
-        }
+    let mut target_chan = if args.face_dithering {
+        m.f.iter()
+            .map(|f| {
+                let sum = f
+                    .as_slice()
+                    .iter()
+                    .map(|&vi| m.vert_colors[vi])
+                    .fold([0.; 3], add);
+                luma(kmul((f.len() as F).recip(), sum))
+            })
+            .collect::<Vec<_>>()
     } else {
-        let lum_chan = [0.2126, 0.7152, 0.0722];
-        //let lum_chan = [0.299, 0.587, 0.114];
-        let mut vert_grayscale = m
-            .vert_colors
+        m.vert_colors
             .iter()
-            .map(|&rgb| dot(rgb, lum_chan))
-            .collect::<Vec<_>>();
+            .map(|&rgb| luma(rgb))
+            .collect::<Vec<_>>()
+    };
 
-        dither(&vv_adj, &mut vert_grayscale, &args.palette, &args);
+    let adj = if args.face_dithering {
+        let ff_adj = m.face_face_adj();
+        ff_adj.map(|_, f0, f1, ()| {
+            let edge_len = m.f[f0]
+                .shared_edges(&m.f[f1])
+                .map(|[e0, e1]| dist(m.v[e0], m.v[e1]))
+                .sum::<F>();
+            edge_len + args.color_weight * (target_chan[f0] - target_chan[f1]).abs()
+        })
+    } else {
+        args.weighting
+            .vertex_weights(&m, args.pos_color_norm, args.color_weight)
+            .expect("Failed to construct weighting")
+    };
 
-        for (i, &g) in vert_grayscale.iter().enumerate() {
+    let mut elem_weights = if args.face_dithering {
+        m.f.iter().map(|f| f.area(&m.v) + 1e-8).collect::<Vec<_>>()
+    } else {
+        let mut bary_areas = vec![];
+        pars3d::geom_processing::barycentric_areas(&m.f, &m.v, &mut bary_areas);
+        bary_areas
+    };
+
+    for ew in elem_weights.iter_mut() {
+        *ew += 1e-8;
+    }
+
+    dither(&adj, &elem_weights, &mut target_chan, &args.palette, &args);
+
+    if args.face_dithering {
+        let face_colors = target_chan.into_iter().map(|l| [l; 3]).collect::<Vec<_>>();
+        m = m.with_face_coloring(&face_colors);
+    } else {
+        for (i, &g) in target_chan.iter().enumerate() {
             assert!((0.0..=1.0).contains(&g), "{g}");
             m.vert_colors[i] = [g; 3];
         }
     }
 
     m.denormalize(s, t);
-    m.f = og_f;
+    if !args.face_dithering {
+        m.f = og_f;
+    }
     let s = m.into_scene();
     pars3d::save(&args.output, &s).expect("Failed to save output");
     println!("[INFO]: Took {:?} for visualization", start.elapsed());
 }
 
-pub fn dither(vv_adj: &VertexAdj<F>, channel: &mut [F], palette: &[F], args: &Args) {
+pub fn dither(adj: &Adj<F>, elem_weights: &[F], channel: &mut [F], palette: &[F], args: &Args) {
     // enqueue each vertex into a queue, and take the vertex which has the least difference with
     // quantized result and convert it to quantized value
     let mut pq: PriorityQueue<usize, _> = PriorityQueue::new();
@@ -117,27 +150,32 @@ pub fn dither(vv_adj: &VertexAdj<F>, channel: &mut [F], palette: &[F], args: &Ar
         }};
     }
 
-    for (vi, &vc) in channel.iter().enumerate() {
-        let (_, dist) = nearest_palette_and_cost!(vc);
+    for (i, &c) in channel.iter().enumerate() {
+        let (_, dist) = nearest_palette_and_cost!(c);
 
         let p = match args.order {
-            OrderKind::Nearest => NotNan::new(-dist).unwrap(),
-            OrderKind::Random => NotNan::new(0.).unwrap(),
-            OrderKind::Farthest => NotNan::new(dist).unwrap(),
-        };
-        pq.push(vi, p);
+            OrderKind::Nearest => NotNan::new(-dist),
+            OrderKind::Random => NotNan::new(0.),
+            OrderKind::Farthest => NotNan::new(dist),
+            OrderKind::Index => NotNan::new(-(i as F)),
+        }
+        .unwrap();
+        pq.push(i, p);
     }
 
+    let mut curr_iter = 0;
     while let Some((vi, _)) = pq.pop() {
         let curr_color = channel[vi];
         let nearest = nearest_palette_and_cost!(curr_color).0;
 
         // RGB error to be diffused to other vertices
-        let err = nearest - curr_color;
+        let err = (nearest - curr_color) * elem_weights[vi];
         channel[vi] = nearest;
 
+        curr_iter += 1;
+
         let mut total_w = 0.;
-        for (adj_vi, w) in vv_adj.adj_data(vi) {
+        for (adj_vi, w) in adj.adj_data(vi) {
             let adj_vi = adj_vi as usize;
             // do not push errors on to vertices which have already been quantized (?)
             // maybe there is some version where this can be recursively applied
@@ -151,24 +189,31 @@ pub fn dither(vv_adj: &VertexAdj<F>, channel: &mut [F], palette: &[F], args: &Ar
         if total_w <= 0. {
             continue;
         }
-        for (adj_vi, w) in vv_adj.adj_data(vi) {
+        for (adj_vi, w) in adj.adj_data(vi) {
             let adj_vi = adj_vi as usize;
             if palette.contains(&channel[adj_vi]) {
                 continue;
             }
             // uniform for now
             let frac = w / total_w;
-            channel[adj_vi] -= frac * err;
+            channel[adj_vi] -= frac * err / elem_weights[vi];
             let (_, dist) = nearest_palette_and_cost!(channel[adj_vi]);
             let p = match args.order {
-                OrderKind::Nearest => NotNan::new(-dist).unwrap(),
-                OrderKind::Random => NotNan::new(0.).unwrap(),
-                OrderKind::Farthest => NotNan::new(dist).unwrap(),
-            };
-            let prev = pq.change_priority(&adj_vi, p);
-            assert_ne!(prev, None);
+                OrderKind::Nearest => NotNan::new(-dist),
+                OrderKind::Random => NotNan::new(0.),
+                OrderKind::Farthest => NotNan::new(dist),
+                OrderKind::Index => NotNan::new(-((curr_iter + channel.len()) as F)),
+            }
+            .unwrap();
+            pq.push(adj_vi, p);
         }
     }
+}
+
+fn luma(rgb: [F; 3]) -> F {
+    // let lum_chan = [0.2126, 0.7152, 0.0722];
+    let lum_chan = [0.299, 0.587, 0.114];
+    dot(lum_chan, rgb)
 }
 
 macro_rules! impl_display {
@@ -190,6 +235,7 @@ pub enum OrderKind {
     Nearest,
     Random,
     Farthest,
+    Index,
 }
 
 impl_display!(
@@ -197,4 +243,6 @@ impl_display!(
   Random => "random",
   Nearest => "nearest",
   Farthest => "farthest",
+  Index => "index",
+  //Snaking => "snaking"
 );

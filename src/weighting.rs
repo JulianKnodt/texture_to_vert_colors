@@ -1,5 +1,5 @@
 use crate::{F, dist};
-use pars3d::adjacency::VertexAdj;
+use pars3d::adjacency::Adj;
 use std::collections::BTreeMap;
 
 // NOTE USEFUL:
@@ -30,7 +30,7 @@ impl WeightingKind {
         mesh: &pars3d::Mesh,
         pos_color_norm: PosColorNorm,
         color_weight: F,
-    ) -> Result<VertexAdj<F>, Error> {
+    ) -> Result<Adj<F>, Error> {
         let cw = color_weight;
         let mut edge_face_adj = BTreeMap::new();
         if matches!(self, WeightingKind::MeanValue) {

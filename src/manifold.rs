@@ -150,7 +150,7 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
             .any(|&dst| self.vertices.find(dst as usize) == v1)
     }
 
-    pub fn merged_vertices(&mut self, v: usize) -> impl Iterator<Item = usize> + Clone + '_ {
+    pub fn merged_vertices(&self, v: usize) -> impl Iterator<Item = usize> + Clone + '_ {
         self.inv_map.merged(v).map(|v| v as usize)
     }
 

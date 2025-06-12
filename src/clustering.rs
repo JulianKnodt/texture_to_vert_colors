@@ -81,10 +81,7 @@ pub fn face_clustering<'a, 'b>(
         } else {
             1.
         };
-        let f = f.as_slice();
-        for i in 0..f.len() {
-            let n = (i + 1) % f.len();
-            let e = minmax(f[i], f[n]);
+        for e in f.edges_ord() {
             edge_face_adj
                 .entry(e)
                 .and_modify(|old| {
@@ -142,7 +139,7 @@ pub fn face_clustering<'a, 'b>(
     // for each chart pair (ordered minmax)
     // store edges between these charts
     // update this on every iteration before merging
-    let mut shared_chart_edges: HashMap<[usize; 2], Vec<[usize; 2]>> = HashMap::new();
+    let mut shared_chart_edges: HashMap<[usize; 2], EdgeSet> = HashMap::new();
     for (fi, _) in m.vertices() {
         let f0 = &fs[fi];
         for f_adj in m.vertex_adj(fi) {
@@ -154,13 +151,21 @@ pub fn face_clustering<'a, 'b>(
 
             assert!(fi < f_adj);
             let shared_e = shared_chart_edges.entry([fi, f_adj]).or_default();
-            assert!(shared_e.is_empty());
+            assert!(shared_e.vert_sets.is_empty());
             shared_e.extend(f0.shared_edges(&adj_f));
         }
     }
 
-    let mut barycentric_area = vec![];
-    pars3d::geom_processing::barycentric_areas(fs, vs, &mut barycentric_area);
+    let mut chart_boundary_edges: HashMap<usize, Vec<[usize; 2]>> = HashMap::new();
+    for (fi, _) in m.vertices() {
+        let f = &fs[fi];
+        for e @ [e0, e1] in f.edges() {
+            if !edge_face_adj[&minmax(e0, e1)].is_boundary() {
+                continue;
+            }
+            chart_boundary_edges.entry(fi).or_default().push(e);
+        }
+    }
 
     macro_rules! straightness_deviation {
         ($pi: expr, $ci: expr, $ni: expr) => {{
@@ -246,14 +251,68 @@ pub fn face_clustering<'a, 'b>(
               // metrics.
               _ if args.eigen_eps <= 0. || args.color_eps <= 0. => 0.,
               ShapeMetric::None => 0.,
-              ShapeMetric::BoundaryLength => {
+              ShapeMetric::Area => -new_area,
+              ShapeMetric::SharedBoundaryLength => {
                 // Tested here: dividing by new area seems to make it prefer rounder charts,
                 // whereas just plain seems to be ok with skinny charts.
                 // Maybe that's fine?
                 shared_chart_edges[&[e0, e1]]
-                    .iter()
-                    .map(|&[e0, e1]| dist(vs[e0], vs[e1]))
+                    .edges()
+                    .map(|[e0, e1]| dist(vs[e0], vs[e1]))
                     .sum::<F>()
+              }
+              ShapeMetric::BoundaryLength => {
+                let mut sum = 0.;
+                for c in [e0, e1] {
+                  for adj_c in m.vertex_adj(c) {
+                    if adj_c == e0 || adj_c == e1 {
+                      continue;
+                    }
+                    for [e0, e1] in shared_chart_edges[&minmax(c, adj_c)].edges() {
+                      sum += dist(vs[e0], vs[e1]);
+                    }
+                  }
+                  /*
+                  for fi in m.merged_vertices(c) {
+                    for e in fs[fi].edges_ord() {
+                      let is_bd = match &edge_face_adj[&e] {
+                        EdgeKind::Boundary(..) => true,
+                        &EdgeKind::Manifold([this,o] | [o,this]) if this == fi => {
+                          let o_chart = m.get_new_vertex(o);
+                          o_chart != e0 && o_chart != e1
+                        },
+                        EdgeKind::Manifold(_) => unreachable!(),
+                        EdgeKind::NonManifold(fs) => {
+                          fs.iter().any(|&ofi| {
+                            let o_chart = m.get_new_vertex(ofi);
+                            o_chart != e0 && o_chart != e1
+                          })
+                        },
+                      };
+                      if !is_bd {
+                        continue;
+                      }
+                      let [e0, e1] = e;
+                      sum += dist(vs[e0], vs[e1]);
+                    }
+                  }
+                  */
+                }
+                -sum
+              }
+              ShapeMetric::Convexity =>  {
+                let mut sum = 0.;
+                for adj in m.vertex_adj(e0) {
+                  if adj == e1 || !m.is_adj(e1, adj) {
+                    continue;
+                  }
+                  let sce0 = &shared_chart_edges[&minmax(adj, e0)];
+                  let sce1 = &shared_chart_edges[&minmax(adj, e1)];
+                  for [pi, vi, ni] in sce0.shared_incident_edges(sce1) {
+                    sum += straightness_deviation!(pi, vi, ni);
+                  }
+                }
+                -sum
               }
               ShapeMetric::AngleDeviation => {
                 assert!(e1 < incident_angles.len());
@@ -313,6 +372,7 @@ pub fn face_clustering<'a, 'b>(
 
                             let new = opns.iter().map(|&[pi, ni]| straightness_deviation!(pi, vi, ni)).sum::<F>();
 
+                            //Some(new)
                             Some(new - (e0_angle_dev + e1_angle_dev))
                           },
                         }
@@ -396,8 +456,14 @@ pub fn face_clustering<'a, 'b>(
                     let c = minmax(adj, e0);
                     let mut sce = shared_chart_edges.remove(&c).unwrap();
                     let nc = minmax(adj, e1);
-                    // should not have any dupes
                     shared_chart_edges.entry(nc).or_default().append(&mut sce);
+                }
+
+                if let Some(mut e0_bds) = chart_boundary_edges.remove(&e0) {
+                    chart_boundary_edges
+                        .entry(e1)
+                        .or_default()
+                        .append(&mut e0_bds);
                 }
 
                 for (c, pns) in std::mem::take(&mut incident_angles[e0]) {
@@ -610,19 +676,182 @@ impl_display!(
 /// What metric to use to evaluate the quality of output cluster shapes.
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum ShapeMetric {
-    /// The total boundary length of each cluster
-    BoundaryLength,
+    /// Just the boundary that is lost between each cluster
+    SharedBoundaryLength,
+
     /// The angle at each boundary point in the cluster's deviation from 180 degrees.
     /// (Prefer straight edges)
     AngleDeviation,
 
+    /// The total boundary length of each cluster.
+    BoundaryLength,
+
+    /// Measures convexity of a shape by the amount of left turn of each edge.
+    Convexity,
+
+    Area,
+
     None,
+}
+
+#[derive(Debug, Clone, Default)]
+struct EdgeSet {
+    vert_sets: Vec<Vec<usize>>,
+}
+
+impl EdgeSet {
+    pub fn edges(&self) -> impl Iterator<Item = [usize; 2]> + '_ {
+        self.vert_sets
+            .iter()
+            .flat_map(|vs| vs.array_windows::<2>().copied())
+    }
+    /*
+    pub fn is_split(&self) -> bool {
+        self.vert_sets.len() > 1
+    }
+    */
+    /// Returns the vertices that are shared between these two edge sets
+    pub fn shared_incident_edges<'a: 'c, 'b: 'c, 'c>(
+        &'a self,
+        o: &'b Self,
+    ) -> impl Iterator<Item = [usize; 3]> + 'c {
+        self.vert_sets.iter().flat_map(|vs| {
+            assert!(!vs.is_empty());
+            let vs0 = vs[0];
+            let vsl = *vs.last().unwrap();
+            let vs2l = vs[vs.len() - 2];
+            o.vert_sets.iter().filter_map(move |ovs| {
+                let ovsl = *ovs.last().unwrap();
+                let triple = if vs0 == ovs[0] {
+                    [vs[1], vs0, ovs[1]]
+                } else if vs0 == ovsl {
+                    [vs[1], vs0, ovs[ovs.len() - 2]]
+                } else if vsl == ovs[0] {
+                    [vs2l, vsl, ovs[1]]
+                } else if vsl == ovsl {
+                    [vs2l, vs0, ovs[ovs.len() - 2]]
+                } else {
+                    return None;
+                };
+                Some(triple)
+            })
+        })
+    }
+    pub fn append(&mut self, o: &mut Self) {
+        if self.vert_sets.is_empty() {
+            self.vert_sets.append(&mut o.vert_sets);
+            return;
+        }
+        if o.vert_sets.is_empty() {
+            return;
+        }
+
+        for ovs in o.vert_sets.drain(..) {
+            let dst_i = self.vert_sets.iter().position(|vs| {
+                let vs0 = *vs.first().unwrap();
+                let vsl = *vs.last().unwrap();
+
+                let ovs0 = *ovs.first().unwrap();
+                let ovsl = *ovs.last().unwrap();
+                vs0 == ovs0 || vs0 == ovsl || vsl == ovs0 || vsl == ovsl
+            });
+            let Some(dst_i) = dst_i else {
+                self.vert_sets.push(ovs);
+                continue;
+            };
+
+            let verts = &mut self.vert_sets[dst_i];
+
+            let first_vert = *verts.first().unwrap();
+            let o_last = *ovs.last().unwrap();
+            if first_vert == ovs[0] || first_vert == o_last {
+                verts.reverse();
+            }
+            let last_vert = *verts.last().unwrap();
+            assert!(
+                last_vert == ovs[0] || last_vert == o_last,
+                /*
+                "{:?} {:?} {:?} {:?} {:?} {:?}",
+                self.verts.first(), self.verts.last(),
+                o.verts.first(), o.verts.last(),
+                self.verts, o.verts,
+                */
+            );
+            if last_vert == ovs[0] {
+                verts.extend_from_slice(&ovs[1..]);
+            } else {
+                verts.extend(ovs.iter().rev().skip(1).copied());
+            }
+        }
+        self.consolidate();
+    }
+    pub fn extend(&mut self, es: impl Iterator<Item = [usize; 2]>) {
+        for [e0, e1] in es {
+            let dst_i = self.vert_sets.iter().position(|vs| {
+                let vs0 = *vs.first().unwrap();
+                let vsl = *vs.last().unwrap();
+
+                vs0 == e0 || vs0 == e1 || vsl == e0 || vsl == e1
+            });
+            let Some(dst_i) = dst_i else {
+                self.vert_sets.push(vec![e0, e1]);
+                continue;
+            };
+
+            let verts = &mut self.vert_sets[dst_i];
+
+            if verts[0] == e0 || verts[0] == e1 {
+                verts.reverse();
+            }
+            let last_vert = *verts.last().unwrap();
+            assert!(last_vert == e0 || last_vert == e1);
+            verts.push(if last_vert == e0 { e1 } else { e0 });
+        }
+    }
+    fn consolidate(&mut self) {
+        let mut i = 0;
+        while i < self.vert_sets.len() {
+            let mut j = i + 1;
+            assert!(!self.vert_sets[i].is_empty());
+
+            while j < self.vert_sets.len() {
+                let vsi = &self.vert_sets[i];
+                let vsil = *vsi.last().unwrap();
+
+                let vsj = &self.vert_sets[j];
+                assert!(!vsj.is_empty());
+                let vsjl = *vsj.last().unwrap();
+                let first_match = vsi[0] == vsj[0] || vsi[0] == vsjl;
+                let last_match = vsil == vsj[0] || vsil == vsjl;
+                if !(first_match || last_match) {
+                    j += 1;
+                    continue;
+                }
+                if first_match {
+                    self.vert_sets[i].reverse();
+                }
+                let vsj = self.vert_sets.swap_remove(j);
+                let vsi = &mut self.vert_sets[i];
+                let vsil = *vsi.last().unwrap();
+                assert!(vsil == vsj[0] || vsil == *vsj.last().unwrap());
+                if vsil == vsj[0] {
+                    vsi.extend_from_slice(&vsj[1..]);
+                } else {
+                    vsi.extend(vsj.iter().rev().skip(1).copied());
+                }
+            }
+            i += 1;
+        }
+    }
 }
 
 impl_display!(
   ShapeMetric,
   BoundaryLength => "boundary-length",
+  SharedBoundaryLength => "shared-boundary-length",
   AngleDeviation => "angle-deviation",
+  Convexity => "convexity",
+  Area => "area",
   None => "none",
 );
 

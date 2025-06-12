@@ -24,6 +24,8 @@ def main():
 
   data["stretch"] = stretch
   data["num_charts"] = num_charts
+  print("Stretch =", stretch)
+  print("Num Charts =", num_charts)
 
   with open(args.stats, "w") as f:
     json.dump(data, f, indent=2)

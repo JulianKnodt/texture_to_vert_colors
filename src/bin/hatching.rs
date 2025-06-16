@@ -6,7 +6,7 @@ use texture_to_vert_colors::quadric::{AttrWeights, Quadric};
 use texture_to_vert_colors::{F, add, dist, dot, kmul, length, normalize, sub};
 
 use pars3d::FaceKind;
-use pars3d::adjacency::VertexAdj;
+use pars3d::adjacency::Adj;
 use pars3d::func::ScalarFn;
 use pars3d::tracing::{Curve, trace_curve, trace_curve_from_mid};
 
@@ -98,7 +98,7 @@ fn main() {
 }
 
 pub fn edge_hatching(
-    vv_adj: &VertexAdj<()>,
+    vv_adj: &Adj<()>,
     m: &pars3d::Mesh,
     vc: &[[F; 3]],
     args: &Args,
@@ -226,7 +226,6 @@ fn face_hatching(m: &pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         }
 
         /*
-         */
         let attr_ws = AttrWeights { ws: [1.; 3] };
         macro_rules! q_n_attribs(
           ($vis: expr) => {{
@@ -246,7 +245,7 @@ fn face_hatching(m: &pars3d::Mesh, args: &Args) -> pars3d::Mesh {
             }
         };
         let mean_color = q_attr_rgb.d;
-        /*
+        */
         let mean_color = kmul(
             (f.len() as F).recip(),
             f.as_slice()
@@ -254,7 +253,6 @@ fn face_hatching(m: &pars3d::Mesh, args: &Args) -> pars3d::Mesh {
                 .map(|&vi| m.vert_colors[vi])
                 .fold([0.; 3], add),
         );
-        */
 
         let centroid = f.as_slice().iter().map(|&vi| m.v[vi]).fold([0.; 3], add);
         let start = f

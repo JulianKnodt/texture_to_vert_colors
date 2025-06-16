@@ -94,7 +94,7 @@ pub struct Args {
 
     /// Perform QEM incrementally, on top of a single QEM at the end (ABLATION)
     #[arg(long)]
-    no_incremental_qem: bool,
+    incremental_qem: bool,
 
     /// Do not perform QEM at the end (ABLATION)
     #[arg(long)]
@@ -376,7 +376,7 @@ pub fn texture_to_vert_colors<'a>(
         };
     }
 
-    let target_tri_ratio = if args.no_final_qem ^ args.no_incremental_qem {
+    let target_tri_ratio = if args.no_final_qem ^ (!args.incremental_qem) {
         args.target_tri_ratio
     } else {
         args.target_tri_ratio.sqrt()
@@ -452,7 +452,7 @@ pub fn texture_to_vert_colors<'a>(
         }
         // Then perform edge reduction here of just edges which are internal to the this
         // triangle.
-        if !args.no_incremental_qem {
+        if args.incremental_qem {
             let qem_args = if args.target_tri_num != 0 {
                 let frac_area = mesh.f[fi].area(&mesh.v) / surface_area;
                 let target_tri_num = (args.target_tri_num as F * frac_area).ceil() as usize;
@@ -1040,6 +1040,7 @@ pub fn sample_exact(
     } else {
         None
     };
+
     // face normal for projecting bary
     let f_n = normalize(v_f.normal());
     if length(f_n) < 1e-3 {
@@ -1539,6 +1540,7 @@ pub fn sample_approx(
     for uv in f_slice.iter().map(|&vi| mesh.uv[CHAN][vi]) {
         aabb.add_point(uv);
     }
+
     let (w, h) = src.diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
     let iaabb = aabb.round_to_i32();
@@ -1912,13 +1914,17 @@ pub fn sample_approx(
                 .iter_mut()
                 .find(|v| **v == usize::MAX || **v == b);
             let Some(adj) = adj else {
-                triagram!();
-                todo!("{:?}", vert_adj[&a]);
+                return false;
+                //triagram!();
+                //todo!("{:?} {a} -> {b}", vert_adj[&a]);
             };
             *adj = b;
+            true
         };
-        ins(ef0, ef1);
-        ins(ef1, ef0);
+        if !ins(ef0, ef1) || !ins(ef1, ef0) {
+            truncate!();
+            return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        };
     }
     let check = vert_adj
         .values()

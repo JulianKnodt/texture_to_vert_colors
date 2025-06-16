@@ -42,11 +42,15 @@ pub struct Args {
 
     /// Instead of performing dithering per vertex, perform dithering per face.
     #[arg(long)]
-    face_dithering: bool,
+    face: bool,
 
     /// Maximum number of iterations to perform before stopping
     #[arg(long, default_value_t = 10000000)]
     max_iters: usize,
+
+    /// How to diffuse errors to adjacent faces
+    #[arg(long, default_value_t = ErrorDiffusionKind::Exact)]
+    diffusion: ErrorDiffusionKind,
 }
 
 fn main() {
@@ -62,12 +66,12 @@ fn main() {
     let mut m = scene.into_flattened_mesh();
     assert_eq!(m.vert_colors.len(), m.v.len());
     let og_f = m.f.clone();
-    if !args.face_dithering {
+    if !args.face {
         m.triangulate();
     }
     let (s, t) = m.normalize();
 
-    let mut target_chan = if args.face_dithering {
+    let mut target_chan = if args.face {
         m.f.iter()
             .map(|f| {
                 let sum = f
@@ -85,7 +89,7 @@ fn main() {
             .collect::<Vec<_>>()
     };
 
-    let adj = if args.face_dithering {
+    let adj = if args.face {
         let ff_adj = m.face_face_adj();
         ff_adj.map(|_, f0, f1, ()| {
             let edge_len = m.f[f0]
@@ -100,7 +104,7 @@ fn main() {
             .expect("Failed to construct weighting")
     };
 
-    let mut elem_weights = if args.face_dithering {
+    let mut elem_weights = if args.face {
         m.f.iter().map(|f| f.area(&m.v) + 1e-8).collect::<Vec<_>>()
     } else {
         let mut bary_areas = vec![];
@@ -109,12 +113,12 @@ fn main() {
     };
 
     for ew in elem_weights.iter_mut() {
-        *ew += 1e-8;
+        *ew += 1e-12;
     }
 
     dither(&adj, &elem_weights, &mut target_chan, &args.palette, &args);
 
-    if args.face_dithering {
+    if args.face {
         let face_colors = target_chan.into_iter().map(|l| [l; 3]).collect::<Vec<_>>();
         m = m.with_face_coloring(&face_colors);
     } else {
@@ -125,7 +129,7 @@ fn main() {
     }
 
     m.denormalize(s, t);
-    if !args.face_dithering {
+    if !args.face {
         m.f = og_f;
     }
     let s = m.into_scene();
@@ -164,6 +168,7 @@ pub fn dither(adj: &Adj<F>, elem_weights: &[F], channel: &mut [F], palette: &[F]
     }
 
     let mut curr_iter = 0;
+    let mut all_ws = vec![];
     while let Some((vi, _)) = pq.pop() {
         let curr_color = channel[vi];
         let nearest = nearest_palette_and_cost!(curr_color).0;
@@ -175,6 +180,7 @@ pub fn dither(adj: &Adj<F>, elem_weights: &[F], channel: &mut [F], palette: &[F]
         curr_iter += 1;
 
         let mut total_w = 0.;
+        all_ws.clear();
         for (adj_vi, w) in adj.adj_data(vi) {
             let adj_vi = adj_vi as usize;
             // do not push errors on to vertices which have already been quantized (?)
@@ -185,17 +191,26 @@ pub fn dither(adj: &Adj<F>, elem_weights: &[F], channel: &mut [F], palette: &[F]
 
             // uniform for now
             total_w += w;
+            all_ws.push(w);
         }
         if total_w <= 0. {
             continue;
         }
+        all_ws.sort_unstable_by(F::total_cmp);
+
         for (adj_vi, w) in adj.adj_data(vi) {
             let adj_vi = adj_vi as usize;
             if palette.contains(&channel[adj_vi]) {
                 continue;
             }
             // uniform for now
-            let frac = w / total_w;
+            let frac = match args.diffusion {
+                ErrorDiffusionKind::Exact => w / total_w,
+                ErrorDiffusionKind::Uniform => 1. / all_ws.len() as F,
+                ErrorDiffusionKind::LUT => {
+                    lut(all_ws.len(), all_ws.iter().position(|&ow| ow == w).unwrap())
+                }
+            };
             channel[adj_vi] -= frac * err / elem_weights[vi];
             let (_, dist) = nearest_palette_and_cost!(channel[adj_vi]);
             let p = match args.order {
@@ -230,6 +245,24 @@ macro_rules! impl_display {
   }
 }
 
+pub fn lut(num_adj: usize, ord: usize) -> F {
+    const TAB2: [u32; 2] = [3, 1];
+    const TAB3: [u32; 3] = [4, 1, 3];
+    const TAB4: [u32; 4] = [7, 1, 5, 3];
+    const TAB5: [u32; 5] = [15, 2, 7, 3, 5];
+    match num_adj {
+        0 => 0.,
+        1 => 1.,
+        2 => TAB2[ord] as F / 4.,
+        3 => TAB3[ord] as F / 8.,
+        4 => TAB4[ord] as F / 16.,
+        5 => TAB5[ord] as F / 32.,
+        _ => 1. / num_adj as F,
+        _ => todo!("{num_adj}"),
+    }
+}
+
+/// The order to take for iteration
 #[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
 pub enum OrderKind {
     Nearest,
@@ -245,4 +278,19 @@ impl_display!(
   Farthest => "farthest",
   Index => "index",
   //Snaking => "snaking"
+);
+
+/// How to diffuse errors to neighboring element
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
+pub enum ErrorDiffusionKind {
+    Exact,
+    LUT,
+    Uniform,
+}
+
+impl_display!(
+  ErrorDiffusionKind,
+  Exact => "exact",
+  LUT => "lut",
+  Uniform => "uniform",
 );

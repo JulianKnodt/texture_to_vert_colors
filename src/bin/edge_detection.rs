@@ -4,13 +4,10 @@
 #![feature(let_chains)]
 #![feature(more_float_constants)]
 
-use std::collections::BTreeSet;
-
 use clap::Parser;
 use pars3d::{self, FaceKind, Mesh};
 
 use texture_to_vert_colors::quadric::{AttrWeights, Quadric};
-use texture_to_vert_colors::weighting::{PosColorNorm, WeightingKind};
 use texture_to_vert_colors::{F, add, dist, dot, kmul, length, normalize, sub};
 
 const FRAC_1_SQRT_2_PI: F = std::f64::consts::FRAC_1_SQRT_2PI as F;
@@ -24,10 +21,6 @@ pub struct Args {
     /// Output mesh path.
     #[arg(long, short)]
     output: String,
-
-    /// How the weight between vertices is computed
-    #[arg(long, short, default_value_t = WeightingKind::Laplacian)]
-    weighting: WeightingKind,
 
     /// The sigma for the gaussian smoothing step
     #[arg(long, short, default_value_t = 0.1)]
@@ -61,6 +54,18 @@ pub struct Args {
     /// Maximum value to use for canny edge detection gradient
     #[arg(long, short = 'l', default_value_t = 3e-4)]
     max_val: F,
+
+    /// Cone to consider when measuring if there is a color gradient (in degrees)
+    #[arg(long, default_value_t = 30.)]
+    cone_angle_degrees: F,
+
+    /// Apply a uniform normalization step as preprocessing.
+    #[arg(long)]
+    no_normalize_colors: bool,
+
+    /// Perform edge detection on faces instead of on vertices.
+    #[arg(long)]
+    face: bool,
 }
 
 fn main() {
@@ -71,19 +76,19 @@ fn main() {
     let start = std::time::Instant::now();
     for m in scene.meshes.iter_mut() {
         // if the input mesh is not triangular, copy the input faces then reapply them later
-        let og_faces = if m.f.len() != m.num_tris() {
+        let og_faces = if m.f.len() != m.num_tris() && !args.face {
             Some(m.f.clone())
         } else {
             None
         };
-        let mut new_edges = BTreeSet::new();
-        m.triangulate_with_new_edges(|[e0, e1]| {
-            new_edges.insert(std::cmp::minmax(e0, e1));
-        });
+        m.triangulate();
         let (s, t) = m.normalize();
-        //m.normalize_colors();
+        if !args.no_normalize_colors {
+            m.normalize_colors();
+        }
+        //println!("{:?}", pars3d::aabb::AABB::from_slice(&m.vert_colors));
 
-        edge_detection(m, new_edges, &args);
+        edge_detection(m, &args);
 
         m.denormalize(s, t);
         if let Some(og_faces) = og_faces {
@@ -99,26 +104,8 @@ fn main() {
     println!("[INFO]: Saved to {}", args.output);
 }
 
-pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) {
-    let mut vert_adj = args
-        .weighting
-        .vertex_weights(&mesh, PosColorNorm::Add, 0.) /*args.pos_color_norm, args.color_weight)*/
-        .expect("Failed to construct vertex adjacency");
-    // remove influence of introduced edges with length or uniform weighting
-    if matches!(
-        args.weighting,
-        WeightingKind::Length | WeightingKind::Uniform
-    ) {
-        for vi in 0..mesh.v.len() {
-            let (adj_vs, adj_ds) = vert_adj.adj_data_mut(vi);
-            for i in 0..adj_vs.len() {
-                let e = std::cmp::minmax(vi, adj_vs[i] as usize);
-                if new_edges.contains(&e) {
-                    adj_ds[i] = 0.;
-                }
-            }
-        }
-    }
+pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
+    let vert_adj = mesh.vertex_vertex_adj();
 
     // compute gaussian smoothing
     for _ in 0..args.smoothing_iters {
@@ -129,7 +116,7 @@ pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &A
             .map(|(vi, vc)| {
                 let mut total_w = FRAC_1_SQRT_2_PI / args.gaussian_sigma; //dist is 0 here
                 let mut new_color = kmul(total_w, *vc);
-                for (adj, _w) in vert_adj.adj_data(vi) {
+                for &adj in vert_adj.adj(vi) {
                     let adj = adj as usize;
                     let d = dist(mesh.v[vi], mesh.v[adj]);
                     let w = gaussian_dist(d, args.gaussian_sigma);
@@ -147,12 +134,25 @@ pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &A
         return;
     }
 
-    let luminance = mesh
-        .vert_colors
-        .iter()
-        .copied()
-        .map(luma)
-        .collect::<Vec<_>>();
+    let adj = if args.face {
+        mesh.face_face_adj()
+    } else {
+        vert_adj
+    };
+
+    let luminance = if args.face {
+        mesh.f
+            .iter()
+            .map(|f| f.centroid(&mesh.vert_colors))
+            .map(luma)
+            .collect::<Vec<_>>()
+    } else {
+        mesh.vert_colors
+            .iter()
+            .copied()
+            .map(luma)
+            .collect::<Vec<_>>()
+    };
 
     // gradient determination
     let mut face_gradients = vec![[0.; 3]; mesh.f.len()];
@@ -164,15 +164,15 @@ pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &A
         }
         let n = f.normal(&mesh.v);
         macro_rules! q_n_attribs(
-          ($vis: expr) => {{
-            Quadric::n_attribs(
-                n,
-                $vis.map(|vi| mesh.v[vi]),
-                $vis.map(|vi| [luminance[vi]]),
-                AttrWeights { ws: [1.] },
-            )
-          }}
-        );
+            ($vis: expr) => {{
+              Quadric::n_attribs(
+                  n,
+                  $vis.map(|vi| mesh.v[vi]),
+                  $vis.map(|vi| [luminance[vi]]),
+                  AttrWeights { ws: [1.] },
+              )
+            }}
+          );
 
         // add attributes as well
         let q_attr = match f {
@@ -193,34 +193,53 @@ pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &A
         //face_gradients[fi] = q_attr.g[0];
     }
 
-    let mut vertex_gradients = vec![[0.; 3]; mesh.v.len()];
-    for (fi, f) in mesh.f.iter().enumerate() {
-        for &vi in f.as_slice() {
-            vertex_gradients[vi] = add(vertex_gradients[vi], face_gradients[fi]);
+    let gradients = if args.face {
+        face_gradients
+    } else {
+        let mut vertex_gradients = vec![[0.; 3]; mesh.v.len()];
+        for (fi, f) in mesh.f.iter().enumerate() {
+            for &vi in f.as_slice() {
+                vertex_gradients[vi] = add(vertex_gradients[vi], face_gradients[fi]);
+            }
         }
-    }
+        vertex_gradients
+    };
 
+    let cone_angle = args.cone_angle_degrees.to_radians().cos();
+    let get_src = |i: usize| {
+        if args.face {
+            mesh.f[i].centroid(&mesh.v)
+        } else {
+            mesh.v[i]
+        }
+    };
+
+    let src_len = if args.face {
+        mesh.f.len()
+    } else {
+        mesh.v.len()
+    };
     // gradient suppresion
-    let mut is_edge = vec![true; mesh.v.len()];
-    for (vi, &v) in mesh.v.iter().enumerate() {
+    let mut is_edge = vec![true; src_len];
+    for i in 0..src_len {
         let mut max_w = 0.;
         let mut max_dir = [0.; 3];
         let mut min_w = 0.;
         let mut min_dir = [0.; 3];
 
-        let g = normalize(vertex_gradients[vi]);
-        let strength = length(vertex_gradients[vi]);
+        let src_p = get_src(i);
 
-        let cos45deg = std::f64::consts::SQRT_2 as F / 2.;
+        let g = normalize(gradients[i]);
+        let strength = length(gradients[i]);
 
-        for &adj in vert_adj.adj(vi) {
+        for &adj in adj.adj(i) {
             let adj = adj as usize;
-            let align = dot(normalize(sub(mesh.v[adj], v)), g);
+            let align = dot(normalize(sub(get_src(adj), src_p)), g);
             let w = align.abs();
-            if w < cos45deg {
+            if w < cone_angle {
                 continue;
             }
-            let w_grad = kmul(w, vertex_gradients[adj]);
+            let w_grad = kmul(w, gradients[adj]);
             if align.is_sign_positive() {
                 max_w += w;
                 max_dir = add(max_dir, w_grad);
@@ -230,11 +249,11 @@ pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &A
             }
         }
         // is the gradient at this vertex greater than its two neighbors
-        is_edge[vi] = (max_w <= 1e-12 || strength >= length(max_dir) / max_w)
+        is_edge[i] = (max_w <= 1e-12 || strength >= length(max_dir) / max_w)
             && (min_w <= 1e-12 || strength >= length(min_dir) / min_w);
     }
 
-    let range = vertex_gradients
+    let range = gradients
         .iter()
         .copied()
         .map(length)
@@ -244,8 +263,8 @@ pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &A
     println!("Range of vertex gradients is {range:?}");
 
     // double thresholding
-    let mut is_strong = vec![false; mesh.v.len()];
-    for (vi, &vg) in vertex_gradients.iter().enumerate() {
+    let mut is_strong = vec![false; src_len];
+    for (vi, &vg) in gradients.iter().enumerate() {
         if !is_edge[vi] {
             continue;
         }
@@ -257,23 +276,42 @@ pub fn edge_detection(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &A
         is_strong[vi] = strength > args.max_val;
     }
 
-    let mut strong_verts = (0..mesh.v.len())
-        .filter(|&vi| is_strong[vi])
+    let mut weaks = (0..src_len)
+        .filter(|&vi| is_edge[vi] && !is_strong[vi])
         .collect::<Vec<_>>();
-    while let Some(n) = strong_verts.pop() {
-        for &adj in vert_adj.adj(n) {
+    while let Some(n) = weaks.pop() {
+        if !is_edge[n] || is_strong[n] {
+            continue;
+        }
+        let mut num_strong = 0;
+        for &adj in adj.adj(n) {
             let adj = adj as usize;
-            let is_weak = is_edge[adj] && !is_strong[adj];
-            if !is_weak {
+            if !is_strong[adj] {
                 continue;
             }
-            is_strong[adj] = true;
-            strong_verts.push(adj);
+            //let d2 = texture_to_vert_colors::dist_sq(mesh.v[n], mesh.v[adj]);
+            //num_strong += 1./ d2;
+            num_strong += 1;
+        }
+        //if num_strong > 1 {
+        if num_strong == 2 {
+            is_strong[n] = true;
+            for &adj in adj.adj(n) {
+                weaks.push(adj as usize);
+            }
         }
     }
 
-    for (vi, vc) in mesh.vert_colors.iter_mut().enumerate() {
-        *vc = if is_strong[vi] { [1.; 3] } else { [0.; 3] };
+    if args.face {
+        let new_face_colors = is_strong
+            .iter()
+            .map(|&s| [if s { 1. } else { 0. }; 3])
+            .collect::<Vec<_>>();
+        *mesh = mesh.with_face_coloring(&new_face_colors);
+    } else {
+        for (vi, vc) in mesh.vert_colors.iter_mut().enumerate() {
+            *vc = if is_strong[vi] { [1.; 3] } else { [0.; 3] };
+        }
     }
 }
 

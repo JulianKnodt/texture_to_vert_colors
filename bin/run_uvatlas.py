@@ -13,7 +13,7 @@ def arguments():
 def main():
   args = arguments()
   mesh = o3d.t.io.read_triangle_mesh(args.input)
-  stretch, num_charts, _partitions = mesh.compute_uvatlas(size=args.size, max_stretch=1.)
+  stretch, num_charts, _partitions = mesh.compute_uvatlas(size=args.size)
   o3d.t.io.write_triangle_mesh(args.output, mesh)
 
   if args.stats is None: return

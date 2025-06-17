@@ -12,3 +12,4 @@ experiment_log.json
 *.pdf
 profile.json.gz
 __pycache__/
+tmp/

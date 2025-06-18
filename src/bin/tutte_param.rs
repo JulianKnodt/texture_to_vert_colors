@@ -111,7 +111,7 @@ fn main() {
             args.uv_svg
         );
         let m0 = &scene.meshes[0];
-        if let Err(e) = pars3d::svg::save_uv(args.uv_svg, &m0.uv[args.target_uv], &m0.f, 0.4) {
+        if let Err(e) = pars3d::svg::save_uv(args.uv_svg, &m0.uv[args.target_uv], &m0.f, 0.1) {
             eprintln!("Failed to save SVG due to {e:?}");
         }
     }

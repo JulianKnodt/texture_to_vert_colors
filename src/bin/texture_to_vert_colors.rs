@@ -1076,7 +1076,7 @@ pub fn sample_exact(
         src.get_value(u, v)
     });
     let first_col = color_iter.next().unwrap();
-    if color_iter.all(|v| v == first_col) {
+    if color_iter.all(|v| dist(v, first_col) < 1e-8) {
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1612,6 +1612,16 @@ pub fn sample_approx(
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
+    let mut color_iter = iaabb.iter_coords().map(|c| {
+        let [u, v] = c.map(|v| v as F + 0.5);
+        let [u, v] = [u / w as F, v / h as F];
+        src.get_value(u, v)
+    });
+    let first_col = color_iter.next().unwrap();
+    if color_iter.all(|v| v == first_col) {
+        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+    }
+
     let start = out.v.len();
     let start_f = out.f.len();
     for c in iaabb.iter_coords() {
@@ -1700,6 +1710,18 @@ pub fn sample_approx(
     // Fall back to using direct sampling
     let num_verts = out.v.len() - start;
     if num_verts < 3 || num_verts < f.len() {
+        truncate!();
+        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+    }
+
+    // Can be represented as direct.
+    let first_color = out.vert_colors[start];
+    let all_same_color = out
+        .vert_colors
+        .iter()
+        .skip(start + 1)
+        .all(|&vc| dist(first_color, vc) < 1e-8);
+    if all_same_color {
         truncate!();
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }

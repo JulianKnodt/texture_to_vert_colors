@@ -230,9 +230,13 @@ pub fn main() {
         if args.triangulate_input {
             mesh.triangulate();
         } else {
-            let num_split = mesh.split_non_planar_faces(1e-2);
+            let num_split = mesh.split_non_planar_faces(3e-3);
             if num_split > 0 {
                 println!("[WARN]: Split {num_split} non-planar polygonal faces");
+            }
+            let num_split = mesh.split_self_intersecting_uv_poly(CHAN);
+            if num_split > 0 {
+                println!("[WARN]: Split {num_split} self-intersecting UV polygons");
             }
         }
         assert!(!mesh.uv[0].is_empty());
@@ -544,10 +548,16 @@ pub fn texture_to_vert_colors<'a>(
 
         assert!(
             swapped ^ correct,
-            "TODO colinear polygonal (more than 4 verts) input faces {swapped} {correct} \
-            {:?} {f0} {face_verts:?} \n\
-            {e0:?} {e1:?} \n {:?}",
+            "TODO colinear polygon (more than 3 verts) input faces {swapped} {correct} \
+            face = {:?} \n\
+            face index = {f0} \n\
+            verts in face = {face_verts:?} \n\
+            edge 0 = {e0:?} \n\
+            edge 1 = {e1:?} \n\
+            area = {:?} \n\
+            face positions = {:?}",
             mesh.f[f0],
+            mesh.f[f0].area(&mesh.v),
             mesh.f[f0].map_kind(|vi| mesh.v[vi]),
         );
         let [e0_key, e1_key] = if !swapped {
@@ -1033,7 +1043,7 @@ pub fn sample_exact(
     let (w, h) = src.diff_img.dimensions();
     aabb.scale_by(w as F, h as F);
     let iaabb = aabb.round_to_i32();
-    let uv_f = f.map_kind(|vi| mesh.uv[0][vi]);
+    let uv_f = f.map_kind(|vi| mesh.uv[CHAN][vi]);
     let v_f = f.map_kind(|vi| mesh.v[vi]);
     let n_f = if !mesh.n.is_empty() {
         Some(f.map_kind(|vi| mesh.n[vi]))
@@ -1094,7 +1104,8 @@ pub fn sample_exact(
             continue;
         }
 
-        let bary = uv_f.barycentric([(u + 0.5) / w as F, (v + 0.5) / h as F]);
+        let center_uv = [(u + 0.5) / w as F, (v + 0.5) / h as F];
+        let bary = uv_f.barycentric(center_uv);
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         assert!(tex_u.is_finite() && tex_v.is_finite(), "{bary:?} {uv_f:?}");
 
@@ -1338,10 +1349,10 @@ pub fn sample_exact(
     let mut edge_face_adj: BTreeMap<[usize; 2], EdgeKind> = BTreeMap::new();
     // compute adjacent boundary edges and trace from the corners
     for (fi, f) in out.f.iter().enumerate().skip(start_f) {
-        for [e0, e1] in f.edges() {
+        for [e0, e1] in f.edges_ord() {
             assert_ne!(e0, e1);
             edge_face_adj
-                .entry(minmax(e0, e1))
+                .entry([e0, e1])
                 .and_modify(|v| {
                     let did_ins = v.insert(fi);
                     assert!(did_ins);
@@ -1413,21 +1424,59 @@ pub fn sample_exact(
         }
         assert_ne!(best_dist, F::INFINITY);
 
-        let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
-        assert!(!fv.iter().any(|fv| fv.0 == fi));
         // check that each corner vert corresponds to a single original vertex
         let check = corner_verts_s.iter().all(|&(_, new_vi)| new_vi != nearest);
         assert!(check);
 
-        fv.push((fi, nearest));
         corner_verts_s[ci] = (og_vi, nearest);
+    }
+
+    // --- cleaning up winding order
+
+    let (&start, adjs) = vert_adj.first_key_value().unwrap();
+    let mut prev: usize = start;
+    let mut curr: usize = adjs[0];
+    let mut og_order = vec![];
+    if let Some(&(og_vi, _)) = corner_verts_s.iter().find(|c| c.1 == curr) {
+        og_order.push(og_vi);
+    }
+    while curr != start {
+        let next = *vert_adj[&curr].iter().find(|&&n| n != prev).unwrap();
+        if let Some(&(og_vi, _)) = corner_verts_s.iter().find(|c| c.1 == next) {
+            og_order.push(og_vi);
+        }
+        prev = curr;
+        curr = next;
+    }
+
+    assert_eq!(og_order.len(), f.len());
+    while og_order[0] != f_slice[0] {
+        og_order.rotate_left(1);
+    }
+
+    if f_slice != og_order {
+        for (fi, f) in out.f.iter_mut().enumerate().skip(start_f) {
+            if face_labels[fi] != FaceLabel::Pixel {
+                continue;
+            }
+            f.as_mut_slice().reverse();
+        }
+    }
+
+    // --- End clean up winding order section
+
+    for &(og_vi, new_vi) in corner_verts.as_slice() {
+        let og_pos = mesh.v[og_vi];
+        let fv = corner_map.entry(og_pos.map(F::to_bits)).or_default();
+        assert!(!fv.iter().any(|fv| fv.0 == fi));
+        fv.push((fi, new_vi));
 
         // Pull to a corner to make it tight (larger T is tighter)
         let t = args.vertex_pull;
-        out.v[nearest] = add(kmul(t, mesh.v[og_vi]), kmul(1. - t, out.v[nearest]));
+        out.v[new_vi] = add(kmul(t, mesh.v[og_vi]), kmul(1. - t, out.v[new_vi]));
 
         if args.debug_colors {
-            out.vert_colors[nearest] = [1.; 3];
+            out.vert_colors[new_vi] = [1.; 3];
         }
     }
 
@@ -1871,10 +1920,10 @@ pub fn sample_approx(
     let mut edge_face_adj: BTreeMap<[usize; 2], EdgeKind> = BTreeMap::new();
     // compute adjacent boundary edges and trace from the corners
     for (fi, f) in out.f.iter().enumerate().skip(start_f) {
-        for [e0, e1] in f.edges() {
+        for [e0, e1] in f.edges_ord() {
             assert_ne!(e0, e1);
             edge_face_adj
-                .entry(minmax(e0, e1))
+                .entry([e0, e1])
                 .and_modify(|v| {
                     let did_ins = v.insert(fi);
                     assert!(did_ins);
@@ -1902,7 +1951,6 @@ pub fn sample_approx(
     let mut vert_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
     for (&[ef0, ef1], ek) in edge_face_adj.iter() {
         assert_ne!(ef0, ef1);
-        assert!(!ek.is_non_manifold());
         if !ek.is_boundary() {
             continue;
         }
@@ -1912,11 +1960,9 @@ pub fn sample_approx(
                 .entry(a)
                 .or_insert([usize::MAX; 2])
                 .iter_mut()
-                .find(|v| **v == usize::MAX || **v == b);
+                .find(|v| **v == usize::MAX);
             let Some(adj) = adj else {
                 return false;
-                //triagram!();
-                //todo!("{:?} {a} -> {b}", vert_adj[&a]);
             };
             *adj = b;
             true
@@ -1926,6 +1972,7 @@ pub fn sample_approx(
             return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
         };
     }
+
     let check = vert_adj
         .values()
         .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
@@ -1991,17 +2038,65 @@ pub fn sample_approx(
         }
         assert_ne!(best_dist, F::INFINITY);
 
-        let fv = corner_map.entry(vert_pos.map(F::to_bits)).or_default();
-        debug_assert!(!fv.iter().any(|fv| fv.0 == fi));
         // check that each corner vert corresponds to a single original vertex
         let check = corner_verts_s.iter().any(|&(_, new_vi)| new_vi == nearest);
         assert!(!check);
 
-        fv.push((fi, nearest));
         corner_verts_s[ci] = (og_vi, nearest);
     }
 
-    // The following is identical to sample_exact, and they can be used interchangeably
+    // --- fix up winding order of corner verts (FIXME)
+    /*
+    let (&start, adjs) = vert_adj.first_key_value().unwrap();
+    let mut prev: usize = start;
+    let mut curr: usize = adjs[0];
+    let mut og_order = vec![];
+    if let Some(&(og_vi, _)) = corner_verts_s.iter().find(|c| c.1 == curr) {
+        og_order.push(og_vi);
+    }
+    while curr != start {
+        let next = *vert_adj[&curr].iter().find(|&&n| n != prev).unwrap();
+        //assert_eq!(next, vert_adj[&curr][1]);
+        if let Some(&(og_vi, _)) = corner_verts_s.iter().find(|c| c.1 == next) {
+            og_order.push(og_vi);
+        }
+        prev = curr;
+        curr = next;
+    }
+
+    assert_eq!(og_order.len(), f.len());
+    while og_order[0] != f_slice[0] {
+        og_order.rotate_left(1);
+    }
+
+
+    if f_slice != og_order {
+        println!("{og_order:?} {f_slice:?}");
+        og_order.reverse();
+        og_order.rotate_right(1);
+        if f_slice == og_order {
+            for f in &mut out.f[start_f..] {
+                f.as_mut_slice().reverse();
+            }
+            for v in vert_adj.values_mut() {
+                v.reverse();
+            }
+        }
+    }
+    */
+
+    for &(og_vi, new_vi) in corner_verts.as_slice() {
+        let og_pos = mesh.v[og_vi];
+        let fv = corner_map.entry(og_pos.map(F::to_bits)).or_default();
+        assert!(!fv.iter().any(|fv| fv.0 == fi));
+        fv.push((fi, new_vi));
+
+        if args.debug_colors {
+            out.vert_colors[new_vi] = [1.; 3];
+        }
+    }
+
+    // The following is identical to sample_exact, no modifications were made.
 
     if args.no_gap_fill {
         return true;

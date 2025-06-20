@@ -441,7 +441,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "least_sq"
 version = "0.1.0"
-source = "git+https://github.com/JulianKnodt/qr_lst_sq.git#ccc499c9b3ab0fd68994a71b37d53d8fe480399e"
+source = "git+https://github.com/JulianKnodt/qr_lst_sq.git#b7966339cb8d96df7f4078acbe210dd4c60ccbb1"
 
 [[package]]
 name = "lebe"

@@ -262,8 +262,8 @@ pub fn gaussian(x: F) -> F {
 }
 
 pub fn color_dist(a: [F; 3], b: [F; 3]) -> F {
-    dist(a, b)
+    //dist(a, b)
     //super::sub(a, b).map(F::abs).into_iter().sum()
-    //let s = [0.299, 0.587, 0.114];
-    //(super::dot(s,a) - super::dot(s,b)).abs()
+    let luma = [0.299, 0.587, 0.114];
+    (super::dot(luma, a) - super::dot(luma, b)).abs()
 }

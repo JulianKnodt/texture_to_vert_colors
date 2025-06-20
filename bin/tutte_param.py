@@ -8,7 +8,7 @@ def arguments():
   a.add_argument("-i", "--input", required=True, help="Input mesh")
   a.add_argument("-o", "--output", required=True, help="Output mesh")
   a.add_argument("--uniform", action="store_true", help="Use uniform weighting instead")
-  a.add_argument("--color-kind", choices=["max", "concat", "add"], default="add")
+  a.add_argument("--color-kind", choices=["max", "concat", "add", "color-only"], default="add")
   a.add_argument("--color-weight", default=1e-4, type=float, help="How much to weigh color")
   return a.parse_args()
 
@@ -73,7 +73,7 @@ def main():
       ]
       for r, c, val in vals:
         if r in bd_verts: continue
-        val = val / (2. * M[r] + EPS)
+        val /= (2. * M[r] + EPS)
         totals[r] += val
         rows.append(r)
         cols.append(c)
@@ -90,6 +90,7 @@ def main():
     data.append(1.)
 
   csr = sp.csr_matrix((data, (rows, cols)), shape=(V, V))
+
   u = np.array([0.] * V)
   v = np.array([0.] * V)
   for i, b in enumerate(bd_verts):
@@ -104,24 +105,24 @@ def main():
   mesh.vertices[:,0] = new_u
   mesh.vertices[:,1] = new_v
   mesh.vertices[:,2] = 0
-  mesh.export(args.output)
+  mesh.export(args.output, encoding="ascii")
 
 def dist_fn(va,vca, vb, vcb, color_weight=1e-4, kind="add"):
-  #return np.linalg.norm(
-  #  np.concatenate([va, color_weight * vca]) - \
-  #  np.concatenate([vb, color_weight * vcb])
-  #)
   geom = np.linalg.norm(va - vb)
+  if color_weight == 0.: return geom
   color = np.linalg.norm(vca - vcb)
   if kind == "add":
     return geom + color_weight * color
   elif kind == "max":
-    return geom.maximum(color_weight * color)
+    return np.maximum(geom, color_weight * color)
   elif kind == "concat":
-    return (geom.square() + color_weight * color.square()).sqrt()
-  else:
-    raise NotImplementedError(kind)
-  #return max(geom, color_weight * color)
+    return np.linalg.norm(
+      np.concatenate([va, color_weight * vca]) - \
+      np.concatenate([vb, color_weight * vcb])
+    )
+  elif kind == "color-only":
+    return color
+  else: raise NotImplementedError(kind)
 
 def herons(e0, e1, e2):
   s = (e0 + e1 + e2) / 2

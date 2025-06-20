@@ -31,8 +31,8 @@ pub struct Args {
     smoothing_iters: u32,
 
     /// Return immediately after smoothing (DEBUGGING)
-    #[arg(long)]
-    return_smoothed: bool,
+    #[arg(long, default_value_t = ReturnKind::None)]
+    return_kind: ReturnKind,
 
     /*
     /// How to combine position and color when computing norms.
@@ -130,7 +130,7 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
         mesh.vert_colors = smoothed_vert_colors;
     }
 
-    if args.return_smoothed {
+    if args.return_kind == ReturnKind::Smoothed {
         return;
     }
 
@@ -187,10 +187,7 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
             ),
         };
 
-        // Should this be area weighted?
-        face_gradients[fi] = kmul(area, q_attr.g[0]);
-        //face_gradients[fi] = kmul(area.sqrt(), q_attr.g[0]);
-        //face_gradients[fi] = q_attr.g[0];
+        face_gradients[fi] = q_attr.g[0];
     }
 
     let gradients = if args.face {
@@ -204,6 +201,38 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
         }
         vertex_gradients
     };
+
+    if args.return_kind == ReturnKind::Grad {
+        let mut colors = gradients
+            .into_iter()
+            .map(length)
+            .map(|l| [l; 3])
+            .collect::<Vec<_>>();
+        /*
+        let max_len = colors
+            .iter()
+            .copied()
+            .map(|l| l[0])
+            .max_by(F::total_cmp)
+            .unwrap();
+        */
+        let l = colors.len();
+        let (_, &mut median_len,_) = colors.select_nth_unstable_by(
+          (3 * l) / 4,
+          |a,b| a[0].total_cmp(&b[0]),
+        );
+        println!("{median_len:?}");
+        let ml_recip = median_len[0].recip();
+        for vc in colors.iter_mut() {
+            *vc = kmul(ml_recip, *vc);
+        }
+        if args.face {
+            *mesh = mesh.with_face_coloring(&colors);
+        } else {
+            mesh.vert_colors = colors;
+        }
+        return;
+    }
 
     let cone_angle = args.cone_angle_degrees.to_radians().cos();
     let get_src = |i: usize| {
@@ -324,3 +353,27 @@ fn luma(rgb: [F; 3]) -> F {
     let lum_chan = [0.299, 0.587, 0.114];
     dot(lum_chan, rgb)
 }
+
+macro_rules! impl_display {
+  ($name: ident, $($kind: ident => $disp: expr),+$(,)?) => {
+    impl std::fmt::Display for $name {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use $name::*;
+            let s = match self {
+                $($kind => $disp,)+
+            };
+            write!(f, "{s}")
+        }
+    }
+  }
+}
+
+/// How to sample the input mesh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ReturnKind {
+    None,
+    Smoothed,
+    Grad,
+}
+
+impl_display!(ReturnKind, None => "none", Smoothed => "smoothed", Grad => "grad");

@@ -45,6 +45,7 @@ def arguments():
   a.add_argument("--light-strength", default=4, type=float, help="Strength of light")
   a.add_argument("--flip-light", action="store_true", help="Flip light direction")
   a.add_argument("--light-z", type=float, help="Light z value", default=155)
+  a.add_argument("--light-y", type=float, help="Light y value", default=-30)
   a.add_argument("--light-x", type=float, help="Light x value", default=6)
 
   # rigid body arguments
@@ -236,6 +237,8 @@ def main():
   elif ".ply" in args.mesh:
     bpy.ops.wm.ply_import(filepath=args.mesh, up_axis="Y", forward_axis="Z")
     is_ply = True
+  elif ".fbx" in args.mesh:
+    bpy.ops.import_scene.fbx(filepath=args.mesh)
   else: assert(False), args.mesh
 
   if args.rigid_body:
@@ -296,7 +299,7 @@ def main():
   focalLength = 45
   cam = bt.setCamera(camLocation, lookAtLocation, focalLength)
 
-  lightAngle = (args.light_x, -30, args.light_z if args.flip_light else -args.light_z)
+  lightAngle = (args.light_x, args.light_y, args.light_z if args.flip_light else -args.light_z)
   strength = args.light_strength
   shadowSoftness = 0.3
   sun = bt.setLight_sun(lightAngle, strength, shadowSoftness)

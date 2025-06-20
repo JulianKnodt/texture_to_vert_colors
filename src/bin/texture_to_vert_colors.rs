@@ -1096,11 +1096,11 @@ pub fn sample_exact(
 
         let barys = cfs.map(|cf| uv_f.barycentric(cf));
 
-        let outside_all = uv_f.as_triangle_fan().all(|uv_t| {
+        let all_outside = uv_f.as_triangle_fan().all(|uv_t| {
             let t_bary = cfs.map(|cf| pars3d::barycentric_2d(cf, uv_t));
             (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0.) || t_bary.iter().all(|b| b[i] > 1.))
         });
-        if outside_all {
+        if all_outside {
             continue;
         }
 
@@ -1127,7 +1127,9 @@ pub fn sample_exact(
             // NOTE have to be very careful here to not make the triangle non-convex
             let new_pos = nearest_point_on_tri(tri, pos);
 
-            let new_bary = v_f.barycentric(new_pos);
+            let bary_coord = pars3d::barycentric_3d(new_pos, tri);
+
+            let new_bary = pars3d::face::Barycentric::new(&v_f, ti, bary_coord);
             let [tu, tv] = uv_f.from_barycentric(new_bary);
             let rgb = src.get_value(tu, tv);
 

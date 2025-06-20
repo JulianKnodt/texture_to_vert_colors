@@ -10,6 +10,18 @@ except Exception as e:
 
 """)
   exit()
+try:
+  import blendertoolbox as bt
+except Exception as e:
+  print(f"Could not import blendertoolbox, due to {e}")
+  print("""To fix, try:
+
+  \tpip install blendertoolbox \
+  OR
+  \tuv add blendertoolbox
+
+  """)
+  exit()
 
 from mathutils import Vector, Matrix
 import math
@@ -100,7 +112,6 @@ def invisibleGround(location = (0,0,0), groundSize = 100, shadowBrightness = 0.7
 
 def add_wireframe(m, wireframe_thickness=0.01, target="Metallic"):
   if wireframe_thickness <= 0.: return
-
   if len(m.data.materials) == 0:
     mat = bpy.data.materials.new("MeshMaterial")
     m.data.materials.append(mat)
@@ -113,9 +124,17 @@ def add_wireframe(m, wireframe_thickness=0.01, target="Metallic"):
     wire = tree.nodes.new(type="ShaderNodeWireframe")
     wire.inputs[0].default_value = wireframe_thickness
 
-    neg = tree.nodes.new("ShaderNodeInvert")
-    tree.links.new(wire.outputs["Fac"], neg.inputs[1])
-    tree.links.new(neg.outputs[0], pbsdf.inputs[target])
+    tree.nodes.new('ShaderNodeMixShader')
+    mix_shader = tree.nodes[-1]
+
+    tree.links.new(wire.outputs[0], mix_shader.inputs[0])
+    tree.links.new(pbsdf.outputs["BSDF"], mix_shader.inputs[1])
+    tree.links.new(mix_shader.outputs["Shader"], tree.nodes['Material Output']\
+      .inputs['Surface'])
+
+    #neg = tree.nodes.new("ShaderNodeInvert")
+    #tree.links.new(wire.outputs["Fac"], neg.inputs[1])
+    #tree.links.new(neg.outputs[0], pbsdf.inputs[target])
 
 def add_vertex_colors(m):
   if len(m.data.materials) == 0:
@@ -207,18 +226,6 @@ def main():
     bpy.context.scene.rigidbody_world.point_cache.frame_start = 0
     bpy.context.scene.rigidbody_world.point_cache.frame_end = 1000
 
-  try:
-    import blendertoolbox as bt
-  except Exception as e:
-    print(f"Could not import blendertoolbox, due to {e}")
-    print("""To fix, try:
-
-    \tpip install blendertoolbox \
-    OR
-    \tuv add blendertoolbox
-
-    """)
-    return;
 
   exposure = 1.5
   use_gpu = True

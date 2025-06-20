@@ -8,6 +8,7 @@ def arguments():
   a.add_argument("-i", "--input", required=True, help="Input mesh")
   a.add_argument("-o", "--output", required=True, help="Output mesh")
   a.add_argument("--uniform", action="store_true", help="Use uniform weighting instead")
+  a.add_argument("--color-kind", choices=["max", "concat", "add"], default="add")
   a.add_argument("--color-weight", default=1e-4, type=float, help="How much to weigh color")
   return a.parse_args()
 
@@ -36,9 +37,9 @@ def main():
   for vis in mesh.faces:
     vi,vj,vk = [mesh.vertices[idx] for idx in vis]
     vci,vcj,vck = [mesh.visual.vertex_colors[idx][:-1]/255. for idx in vis]
-    a = dist_fn(vi,vci, vj,vcj, 0.)#args.color_weight)
-    b = dist_fn(vj,vcj, vk,vck, 0.)#args.color_weight)
-    c = dist_fn(vi,vci, vk,vck, 0.)#args.color_weight)
+    a = dist_fn(vi,vci, vj,vcj, args.color_weight, args.color_kind)
+    b = dist_fn(vj,vcj, vk,vck, args.color_weight, args.color_kind)
+    c = dist_fn(vi,vci, vk,vck, args.color_weight, args.color_kind)
     area = herons(a,b,c) / 3
     for vi in vis:
       M[vi] += area
@@ -60,9 +61,9 @@ def main():
     for ijk in edges:
       vi,vj,vk = [mesh.vertices[idx] for idx in ijk]
       vci,vcj,vck = [mesh.visual.vertex_colors[idx][:-1]/255. for idx in ijk]
-      a = dist_fn(vi,vci, vj,vcj, args.color_weight)
-      b = dist_fn(vj,vcj, vk,vck, args.color_weight)
-      c = dist_fn(vi,vci, vk,vck, args.color_weight)
+      a = dist_fn(vi,vci, vj,vcj, args.color_weight, args.color_kind)
+      b = dist_fn(vj,vcj, vk,vck, args.color_weight, args.color_kind)
+      c = dist_fn(vi,vci, vk,vck, args.color_weight, args.color_kind)
       area = herons(a,b,c)
       v = a * a + b * b - c * c
       cot_c = v / (4 * area + EPS)
@@ -105,14 +106,21 @@ def main():
   mesh.vertices[:,2] = 0
   mesh.export(args.output)
 
-def dist_fn(va,vca, vb, vcb, color_weight=1e-4):
+def dist_fn(va,vca, vb, vcb, color_weight=1e-4, kind="add"):
   #return np.linalg.norm(
   #  np.concatenate([va, color_weight * vca]) - \
   #  np.concatenate([vb, color_weight * vcb])
   #)
   geom = np.linalg.norm(va - vb)
   color = np.linalg.norm(vca - vcb)
-  return geom + color_weight * color
+  if kind == "add":
+    return geom + color_weight * color
+  elif kind == "max":
+    return geom.maximum(color_weight * color)
+  elif kind == "concat":
+    return (geom.square() + color_weight * color.square()).sqrt()
+  else:
+    raise NotImplementedError(kind)
   #return max(geom, color_weight * color)
 
 def herons(e0, e1, e2):

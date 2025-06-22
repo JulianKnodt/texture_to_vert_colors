@@ -217,10 +217,8 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
             .unwrap();
         */
         let l = colors.len();
-        let (_, &mut median_len,_) = colors.select_nth_unstable_by(
-          (3 * l) / 4,
-          |a,b| a[0].total_cmp(&b[0]),
-        );
+        let (_, &mut median_len, _) =
+            colors.select_nth_unstable_by((3 * l) / 4, |a, b| a[0].total_cmp(&b[0]));
         println!("{median_len:?}");
         let ml_recip = median_len[0].recip();
         for vc in colors.iter_mut() {

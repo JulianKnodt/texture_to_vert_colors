@@ -12,6 +12,11 @@ clustering_bin = "target/release/clustering"
 
 hatching_bin = "target/release/hatching"
 dithering_bin = "target/release/dithering"
+edge_detection_bin = "target/release/edge_detection"
+
+bake_tex_to_vert_colors_bin = "target/release/examples/bake_textures_to_vertex_colors"
+bake_vert_colors_to_tex = "target/release/examples/bake_vertex_colors_to_textures"
+copy_mesh_to_uv = "target/release/examples/copy_mesh_to_uv"
 
 args = None
 
@@ -66,12 +71,27 @@ def render(
     return [cmd]
   return cb
 
-def runnable_cmds(cmds, stage_kind="run"):
+def runnable_cmds(cmds, output_name="", stage_kind="run", missing_only=False):
   def cb():
+    nonlocal missing_only
     if stage_kind not in args.stages: return []
+    if args.match_output is not None and args.match_output not in output_name: return []
+    if missing_only:
+      assert(output_name != ""), "Specify output name for runnable cmd to skip missing"
+      if os.path.exists(output_name):
+        print(f"Skipping cmds -> {output_name}, destination already exists")
+        return []
+    print(output_name)
     missing_only = "" if not args.missing_only else " --missing-only "
     return [ c + missing_only for c in cmds ]
   return cb
+
+def tutte(lapl_kind, norm, w):
+  if norm == "color-only":
+    return (lapl_kind, norm, w, "color_only")
+  if w == 0.:
+    return (lapl_kind, norm, w, "pos_only")
+  return (lapl_kind, norm, w, f"{norm}_{w:0.0e}")
 
 dataset = [
   #("vietnam_lantern.fbx", "vietnam_lantern_small.jpeg", 1000000, None),
@@ -94,13 +114,13 @@ dataset = [
   #("musk_melon.obj", "", 4000000, 0.27555/2),
   #("fire_bellied_newt.obj", "fire_bellied_newt_diffuse.jpg", 1000000, 0.2733/2.),
   #("lychee.obj", "lychee_textures/lychee.jpg", 500000, 0.25),
-  #("officebot.obj", "officebot_textures/diffuse.png", 500000, 0.5),
+  #("officebot.obj", "officebot_textures/diffuse.png", 1000000, 0.5),
+  #("spot_triangulated.obj", "spot_texture.png", 1000000, None),
 
   #("building_front.obj", "building_front.jpg", 2000000, None),
   #("japanese_toro.obj", "japanese_toro_textures/japanese_toro_small.png", 900000, None),
   #("breakfast_still_life.obj", "", 1000000, 0.5),
   #("ibis.obj", "", 1000000, 0.5),
-
 
   # need to rerun this one and see what the problem is
   #("watermelon.obj", "watermelon.jpg", 2000000, 0.5),
@@ -115,12 +135,21 @@ dataset = [
   #("inari_mask.obj", "", 300000, 0.5),
   #("longevity_buns.obj", "", 1000000, 0.5),
 
+  #("half_life_crate.obj", "", 1000000, 1.),
+  #("tiger_butterfly.obj", "tiger_butterfly_diffuse.jpg", 2000000, 2048),
   # very expensive
   #("wanderers.obj", "", 4000000, 3072),
 
+  #("origami_crane.obj", "", 2000000, 0.75),
+  #("hot_air_balloon.obj", "", 1000000, 0.5),
+  #("dish_with_maple_leaves.obj", "", 2000000, 0.25),
+
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
-  ("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 3000000, 0.5),
+  #("apothecary_syrup_vessel.obj", "apothecary_syrup_vessel_diffuse.png", 3000000, 0.5),
+
+  # keeps panicking
+  #("green_lamp.obj", "", 2000000, 1.),
 ]
 
 dataset_direct = [
@@ -140,6 +169,37 @@ experiments = {
       extras="--flip-light",
     ),
   ],
+
+  "tri-example": [
+    render(
+      "data/basic_tri.obj",
+      22, -0.01, 0, 0, rz=0, fy=-1000,
+      out="ablations/basic_tri_input.png",
+      #missing_only=True,
+    ),
+    *[
+      run("basic_tri.obj", f"basic_tri_{k}.ply", f"-r 1. --sample-kind {k}")
+      for k in ["exact", "approx", "direct"]
+    ],
+    *[
+      runnable_cmds([
+        f"../pars3d/target/release/examples/wireframe \
+          ablations/basic_tri_{k}.ply ablations/basic_tri_{k}_wireframe.ply --width 3e-3"
+      ])
+      for k in ["exact", "approx", "direct"]
+    ],
+    *[
+      render(
+        f"ablations/basic_tri_{k}.ply",
+        22, -0.01, 0, 0, rz=0, fy=-1000,
+        out=f"ablations/basic_tri_{k}.png",
+        extras=f"--wireframe ablations/basic_tri_{k}_wireframe.ply",
+        #missing_only=True,
+      )
+      for k in ["exact", "approx", "direct"]
+    ],
+  ],
+
   # basic test of a cube
   "basic-cube": [
     *[
@@ -157,7 +217,7 @@ experiments = {
   "non-manifold": [
     run(
       "non_manifold.obj", "non_manifold.ply",
-      "-d data/uv_grid.png --target-tri-ratio 0.5 --sample-kind exact --no-incremental-qem",
+      "-d data/uv_grid.png --target-tri-ratio 0.5 --sample-kind exact",
       is_abl=True
     ),
   ],
@@ -188,7 +248,7 @@ experiments = {
       run(
         "spot_triangulated.obj", f"spot_{k}.ply",
         f"-d data/spot_texture.png --target-tri-ratio 1. \
-        --sample-kind {k} --no-incremental-qem",
+        --sample-kind {k}",
       ) for k in ["direct", "exact"]
     ]
   ],
@@ -212,14 +272,94 @@ experiments = {
     run(
       "../outputs/wanderers_approx.ply",
       "wanderers_constant_colors.ply",
-      f"-t 1000 --eigenvalue zero --cluster-vis ablations/wanderers_clusters.ply \
-      --eigen-eps 10 --color-eps 0 --eigen-vis ablations/wanderers_eigen.ply \
-      --shape-metric angle-deviation ",
+      f"-t 2000 --eigenvalue zero --cluster-vis ablations/wanderers_clusters.ply \
+      --eigen-eps 100000 --color-eps 1e-6 --eigen-vis ablations/wanderers_eigen.ply \
+      --shape-metric boundary-length",
       bin=clustering_bin, eval=False,
+    ),
+
+    *[
+      render(
+        f"ablations/wanderers_{k}.ply",
+        1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+        out=f"ablations/wanderers_{k}.png",
+        extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+      ) for k in ["constant_colors", "clusters", "eigen"]
+    ],
+
+    run(
+      "space_suit.obj", "space_suit.ply",
+      "-d data/space_suit.png --target-tri-num 500000 \
+      --sample-kind approx --triangulate --image-size-frac 1",
+      missing_only=True,
+    ),
+
+    run(
+      "../ablations/space_suit.ply",
+      f"space_suit_tutte.obj",
+      f"--weighting laplacian --bake-texture space_suit_tutte_texture.png \
+        --uv-svg ablations/space_suit_tutte.svg --iters 500000 \
+        --pos-color-norm add --color-weight 3e-3 --bake-res 2048",
+      bin=tutte_bin, eval=False,
+    ),
+
+    render(
+      f"ablations/space_suit_tutte.obj",
+      1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+      out=f"ablations/space_suit.png",
+      extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+
+    runnable_cmds([
+      "inkscape ablations/space_suit_tutte.svg --export-pdf=ablations/space_suit_tutte.pdf",
+      "convert ablations/space_suit_tutte.pdf -resize 1024x1024 ablations/space_suit_tutte.png",
+    ], output_name="space_suit_tutte"),
+
+    run(
+      "../outputs/wanderers_approx.ply",
+      "wanderers_dither.ply",
+      "--weighting laplacian --color-weight 0.5 --order nearest --face",
+      bin=dithering_bin, eval=False,
+      #missing_only=True,
+    ),
+
+    render(
+      "ablations/wanderers_dither.ply",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="ablations/wanderers_dither.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+
+    run(
+      "../outputs/wanderers_approx.ply",
+      "wanderers_edges.ply",
+      "--smoothing-iters 0 --min-val 9e-4 --max-val 1e-3 --cone-angle-degrees 30",
+      bin=edge_detection_bin, eval=False,
+    ),
+
+    render(
+      "ablations/wanderers_edges.ply",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="ablations/wanderers_edges.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+
+    run(
+      "../outputs/wanderers_approx.ply",
+      "wanderers_vector_field.ply",
+      f"--dist-thresh 1e-6 --color-thresh 0.0 --width 5e-4 --length 0.02 --face-hatching",
+      bin=hatching_bin, is_abl=True, eval=False,
+    ),
+
+    render(
+      "ablations/wanderers_vector_field.ply",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="ablations/wanderers_vector_field.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
     ),
   ],
 
-  "spot_clustering": [
+  "spot-clustering": [
     #run(
     #  "spot_triangulated.obj",
     #  "spot.ply",
@@ -251,29 +391,52 @@ experiments = {
     #run(
     #  "angelfish.obj",
     #  "angelfish.ply",
-    #  f"-d data/angelfish_texture.jpg --target-tri-num 200000 --no-incremental-qem \
-    #  --sample-kind direct",
+    #  f"-d data/angelfish_texture.jpg --target-tri-num 1000000 --no-incremental-qem \
+    #  --image-size-px 2048 --sample-kind approx",
+    #  missing_only=True,
     #),
+    run(
+      "angelfish.obj",
+      "angelfish.ply",
+      f"-d data/angelfish_texture.jpg --target-tri-num 600000 \
+      --sample-kind direct",
+      missing_only=True,
+    ),
     run(
       "../ablations/angelfish.ply",
       "angelfish_colors.ply",
       f"-t 250 --eigenvalue zero --cluster-vis ablations/angelfish_clusters.ply \
-      --eigen-eps 1e-4 --color-eps 1e-5 --eigen-vis ablations/angelfish_eigen.ply",
+      --eigen-eps 5e-4 --color-eps 1e-6 --eigen-vis ablations/angelfish_eigen.ply",
       bin=clustering_bin, eval=False,
     ),
+    render(
+      "data/angelfish.obj",
+      0, -26, 0, 0, fy=-9.9, rz=0,cx=1.5,lx=1.5, h=640,
+      out="ablations/angelfish_input.png",
+      extras="--light-z -80",
+      missing_only=True,
+    ),
+    *[
+      render(
+        f"ablations/angelfish_{l}.ply",
+        0, -26, 0, 0, fy=-9.9, rz=0,cx=1.5,lx=1.5, h=640,
+        out=f"ablations/angelfish_{l}.png",
+        extras="--light-z -80 --roughness 1",
+        #missing_only=True,
+      ) for l in ["colors", "clusters", "eigen"]
+    ],
   ],
   "nanchan_clustering": [
     run(
-      "nanchan.obj",
-      "nanchan.ply",
-      f"-d data/nanchan_textures/diffuse.png --target-tri-num 800000 --sample-kind exact \
-      --no-incremental-qem",
+      "nanchan.obj", "nanchan.ply",
+      f"-d data/nanchan_textures/diffuse.png --target-tri-num 800000 --sample-kind exact",
+      missing_only=True,
     ),
     run(
       "../ablations/nanchan.ply",
       "nanchan_colors.ply",
-      f"-t 200 --eigenvalue zero --cluster-vis ablations/nanchan_clusters.ply \
-      --eigen-eps 1e-4 --color-eps 1e-6 --shape-metric angle-deviation \
+      f"-t 200 --eigenvalue one --cluster-vis ablations/nanchan_clusters.ply \
+      --eigen-eps 1e-5 --color-eps 1e-6 --shape-metric boundary-length \
       --eigen-vis ablations/nanchan_eigens.ply",
       bin=clustering_bin, eval=False,
     ),
@@ -284,21 +447,73 @@ experiments = {
     #  --eigen-eps 0. --eigenvalue-vis ablations/nanchan_eigens.ply",
     #  bin=clustering_bin, eval=False,
     #),
-  ],
-  "dense-sphere": [
-    #run("dense_sphere.obj", "dense_sphere.ply", "-d data/hokusai.jpg --no-incremental-qem \
-    #--sample-kind approx -t 500000")
-    run(
-      "../ablations/dense_sphere.ply",
-      "dense_sphere_colors.ply",
-      f"-t 500 --eigenvalue zero --cluster-vis ablations/dense_sphere_clusters.ply \
-      --eigen-eps 1e-4 --color-eps 1e-4 --eigen-vis ablations/dense_sphere_eigen.ply",
-      bin=clustering_bin, eval=False
+    render(
+      "data/nanchan.obj",
+      -3.5, -18, -3.5, 0, fy=-9.9, rz=-15, w=840,
+      out="ablations/nanchan_input.png",
+      extras="--light-z -80",
+      missing_only=True,
     ),
+    *[
+      render(
+        f"ablations/nanchan_{l}.ply",
+        -3.5, -18, -3.5, 0, fy=-9.9, rz=-15, w=840,
+        out=f"ablations/nanchan_{l}.png",
+        extras="--light-z -80",
+      )
+      for l in ["clusters", "eigens", "colors"]
+    ]
+  ],
+  "origami_crane_clustering": [
+    run(
+      "../outputs/origami_crane_approx.ply",
+      "origami_crane_colors.ply",
+      f"-t 250 --eigenvalue zero --cluster-vis ablations/origami_crane_clusters.ply \
+      --eigen-eps 3e-4 --color-eps 0 --shape-metric boundary-length \
+      --eigen-vis ablations/origami_crane_eigens.ply",
+      bin=clustering_bin, eval=False,
+    ),
+    render(
+      "data/origami_crane.obj",
+      8, -19, -4, 4.5, fy=-7, rz=-35, lx=2.5, cx=2.5,
+      out="ablations/origami_crane_input.png",
+      extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+      missing_only=True,
+    ),
+    *[
+      render(
+        f"ablations/origami_crane_{l}.ply",
+        8, -19, -4, 4.5, fy=-7, rz=-35, lx=2.5, cx=2.5,
+        out=f"ablations/origami_crane_{l}.png",
+        extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+      )
+      for l in ["colors", "clusters", "eigens"]
+    ]
+  ],
+  "ablate-clustering": [
+    cmd
+    for (mesh, eigen_eps, color_eps, label) in [
+      ("dish_with_maple_leaves", 1e-10, 10000, "planar"),
+      ("dish_with_maple_leaves", 1000, 0, "color_only"),
+      ("dish_with_maple_leaves", 1e-7, 0, "mixed"),
+    ]
+    for cmd in [
+      run(
+        f"../outputs/{mesh}_approx.ply",
+        f"{mesh}_{label}_colors.ply",
+        f"-t 60 --eigenvalue one \
+        --cluster-vis ablations/{mesh}_{label}_clusters.ply \
+        --eigen-eps {eigen_eps} --color-eps {color_eps} \
+        --shape-metric boundary-length \
+        --eigen-vis ablations/{mesh}_{label}_eigen.ply",
+        bin=clustering_bin, eval=False,
+        missing_only=True,
+      ),
+    ]
   ],
 
   "dense-sphere-smooth-boundaries": [
-    #run("dense_sphere.obj", "dense_sphere.ply", "-d data/hokusai.jpg --no-incremental-qem \
+    #run("dense_sphere.obj", "dense_sphere.ply", "-d data/hokusai.jpg \
     #--sample-kind approx -t 500000")
   ],
 
@@ -388,37 +603,61 @@ experiments = {
 
   "tutte-param": [
     cmd
-    for (model, ratio, sample_kind, triangulate, img_frac, bake_res) in [
+    for (model, ratio, sample_kind, triangulate, img_frac, bake_res, w_mul) in [
       #("scroll.obj", 0.05, "approx", True, 0.5, 1024),
-      #("jar_with_dragon_design_boundary.obj", 0.05, "approx", True, 1., 1024),
+      ("scroll_constant.obj", 0.25, "approx", True, 1, 2048, 1),
+      ("jar_with_dragon_design_boundary.obj", 0.5, "approx", True, 1., 512, 5e-2),
       #("ogre.obj", 0.02, "direct", False, 1., 1024),
-      ("longevity_buns.obj", 0.2, "approx", True, 0.5, 1024),
+      ("longevity_buns.obj", 0.09, "approx", True, 0.5, 1024, 1e-1),
     ]
     for cmd in [
       run(
         model, model[:-4] + ".ply",
         f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
-        {'--triangulate' if triangulate else ''} --no-incremental-qem \
+        {'--triangulate' if triangulate else ''} \
         --image-size-frac {img_frac}",
         missing_only=True,
       ),
       *[
-        run(
-          f"../ablations/{model[:-4]}.ply",
-          f"{model[:-4]}_{label}.obj",
-          f"--weighting {w} --pos-color-norm {norm} \
-            --uv-svg ablations/{model[:-4]}_{label}.svg --bake-texture \
-            {model[:-4]}_{label}.png --iters 250000 --color-weight {cw} \
-            --bake-res {bake_res} --use-longest-loop",
-          bin=tutte_bin, eval=False, missing_only=True,
-        )
+        runnable_cmds([
+          f"uv run bin/tutte_param.py -i ablations/{model[:-4]}.ply \
+            -o ablations/{model[:-4]}_{label}.ply \
+            --color-weight {cw} --color-kind {norm}",
+          f"{copy_mesh_to_uv} -i ablations/{model[:-4]}.ply \
+            -u ablations/{model[:-4]}_{label}.ply \
+            -o ablations/{model[:-4]}_{label}.ply",
+          f"{bake_vert_colors_to_tex} -i ablations/{model[:-4]}_{label}.ply \
+          -o ablations/{model[:-4]}_{label}.obj \
+          --bake-res {bake_res} \
+          --bake-texture {model[:-4]}_{label}.png",
+          f"rm ablations/{model[:-4]}_{label}.ply",
+        ], output_name=f"ablations/{model[:-4]}_{label}.obj", missing_only=True)
+        #run(
+        #  f"../ablations/{model[:-4]}.ply",
+        #  f"{model[:-4]}_{label}.obj",
+        #  f"--weighting {w} --pos-color-norm {norm} \
+        #    --uv-svg ablations/{model[:-4]}_{label}.svg --bake-texture \
+        #    {model[:-4]}_{label}.png --iters 2000000 --color-weight {cw} \
+        #    --bake-res {bake_res} --use-longest-loop",
+        #  bin=tutte_bin, eval=False, missing_only=True,
+        #)
         for (w, norm, cw, label) in [
-          ("uniform", "add", 0., "uniform"),
+          #("uniform", "add", 0., "uniform"),
 
-          ("laplacian", "add", 0., "lpl_pos_only"),
-          ("laplacian", "concat", 3e-3, "lpl_concat_3e-3"),
-          ("laplacian", "max", 3e-3, "lpl_max_3e-3"),
-          ("laplacian", "add", 3e-3, "lpl_add_3e-3"),
+          ("laplacian", "add", 0., "pos_only"),
+          #("laplacian", "color-only", 0., "lpl_color_only"),
+
+          tutte("laplacian", "add", 3e-2 * w_mul),
+          tutte("laplacian", "add", 1e-1 * w_mul),
+          tutte("laplacian", "add", 3e-1 * w_mul),
+
+          tutte("laplacian", "concat", 3e-2 * w_mul),
+          tutte("laplacian", "concat", 1e-1 * w_mul),
+          tutte("laplacian", "concat", 3e-1 * w_mul),
+
+          tutte("laplacian", "max", 3e-2 * w_mul),
+          tutte("laplacian", "max", 1e-1 * w_mul),
+          tutte("laplacian", "max", 3e-1 * w_mul),
 
           # experiment
           #("laplacian", "add", 10, "lpl_add_10"),
@@ -426,31 +665,84 @@ experiments = {
       ],
     ]
   ],
+  "tutte-param-render": [
+    render(
+      "data/scroll.obj",
+      0, -26, 0, 0, fy=-4, rz=0, cx=2,lx=2, h=560,
+      out="ablations/scroll.png",
+      extras="--light-z -80",
+      missing_only=True,
+    ),
+    render(
+      "ablations/scroll_lpl_pos_only.obj",
+      0, -26, 0, 0, fy=-4, rz=0, cx=2,lx=2, h=560,
+      out="ablations/scroll_lpl_pos_only_3d.png",
+      extras="--light-z -80 --roughness 1 --shade-flat",
+    ),
+    render(
+      "ablations/scroll_lpl_add_3e-3.obj",
+      0, -26, 0, 0, fy=-4, rz=0, cx=2,lx=2, h=560,
+      out="ablations/scroll_lpl_add_3e-3_3d.png",
+      extras="--light-z -80 --roughness 1 --shade-flat",
+    ),
+
+    # insets
+    render(
+      "data/scroll.obj",
+      0, -13, 0, 0, fy=-4, rz=0, cx=-2,lx=-2, h=560,
+      out="ablations/scroll_inset.png",
+      extras="--light-z -80",
+      missing_only=True,
+    ),
+    render(
+      "ablations/scroll_lpl_pos_only.obj",
+      0, -13, 0, 0, fy=-4, rz=0, cx=-2,lx=-2, h=560,
+      out="ablations/scroll_lpl_pos_only_3d_inset.png",
+      extras="--light-z -80 --roughness 1 --shade-flat",
+    ),
+    render(
+      "ablations/scroll_lpl_add_3e-3.obj",
+      0, -13, 0, 0, fy=-4, rz=0, cx=-2,lx=-2, h=560,
+      out="ablations/scroll_lpl_add_3e-3_3d_inset.png",
+      extras="--light-z -80 --roughness 1 --shade-flat",
+    ),
+  ],
   "tutte-param-rebake-ablation": [
-    cmd
-    for (model, bake_res) in [("scroll.obj", 1024)]
-    for cmd in [
-      *[
-        run(
-          f"../ablations/{model[:-4]}.ply",
-          f"{model[:-4]}_{label}.obj",
-          f"--weighting {w} --pos-color-norm {norm} --bake-texture \
-            {model[:-4]}_{label}.png --iters 500000 --color-weight 0 \
-            --bake-res {bake_res} {'--approx-rebake' if approx_bake else ''}",
-          bin=tutte_bin, eval=False,
-        )
-        for (w, norm, approx_bake, label) in [
-          ("laplacian", "add", True, "rebake_approx"),
-          ("laplacian", "add", False, "rebake_exact"),
-        ]
-      ],
-    ]
+    *[
+      cmd
+      for (model, bake_res) in [("scroll.obj", 1024)]
+      for cmd in [
+        *[
+          run(
+            f"../ablations/{model[:-4]}.ply",
+            f"{model[:-4]}_{label}.obj",
+            f"--weighting {w} --pos-color-norm {norm} --bake-texture \
+              {model[:-4]}_{label}.png --iters 500000 --color-weight 0 \
+              --bake-res {bake_res} {'--approx-rebake' if approx_bake else ''}",
+            bin=tutte_bin, eval=False,
+          )
+          for (w, norm, approx_bake, label) in [
+            ("laplacian", "add", True, "rebake_approx"),
+            ("laplacian", "add", False, "rebake_exact"),
+          ]
+        ],
+      ]
+    ],
+
+    *[
+      render(
+        f"ablations/scroll_rebake_{k}.obj",
+        0, -13, 0, 0, fy=-4, rz=0, cx=-2,lx=-2, h=560,
+        out=f"ablations/scroll_rebake_{k}_3d.png",
+        extras="--light-z -80 --roughness 1 --shade-flat",
+      ) for k in ["approx", "exact"]
+    ],
   ],
 
   "japanese_toro": [
     run(
       "japanese_toro.obj", "japanese_toro.ply",
-      "-d data/japanese_toro_textures/japanese_toro_small.png --no-incremental-qem \
+      "-d data/japanese_toro_textures/japanese_toro_small.png \
       --target-tri-num 1000000",
     ),
   ],
@@ -521,7 +813,6 @@ experiments = {
       "outputs/breakfast_still_life_line_art.ply",
       15, -25, 0, 0, fy=-20, rz=-5,
       out="outputs/breakfast_still_life_line_art.png",
-
     ),
   ],
   "strawberry-line-art": [
@@ -571,7 +862,6 @@ experiments = {
   ],
 
   "inari-mask-vector-field": [
-
     run(
       "../outputs/inari_mask_approx.ply",
       "inari_mask_max_curvature_field.ply",
@@ -609,6 +899,31 @@ experiments = {
     ),
   ],
 
+  "adaptive-eyeball": [
+    run(
+      "eyeball.fbx", "eyeball_adaptive.ply",
+      f"-d data/eyeball_base_color.png --sample-kind approx --target-tri-num 100000", eval=False,
+    ),
+    render(
+      "ablations/eyeball_adaptive.ply",
+      0, -35, 0, 0, fy=-11, rz=30,
+      out="ablations/eyeball_adaptive_render.png",
+      extras="--light-z -80 --swap-xy --shade-flat --roughness 1",
+    ),
+    runnable_cmds([
+      "../pars3d/target/release/examples/wireframe --width 6e-4 \
+        ablations/eyeball_adaptive.ply ablations/eyeball_wireframe.ply",
+    ], output_name="eyeball_wireframe.ply"),
+
+    render(
+      "ablations/eyeball_adaptive.ply",
+      0, -35, 0, 0, fy=-11, rz=30,
+      out="ablations/eyeball_adaptive_wireframe.png",
+      extras="--light-z -80 --swap-xy --shade-flat \
+        --roughness 1 --wireframe ablations/eyeball_wireframe.ply",
+    ),
+  ],
+
   "officebot-dithering": [
     #run(
     #  "../outputs/officebot_approx.ply",
@@ -627,6 +942,22 @@ experiments = {
       11, -19, 5, 0, fy=0.5, rz=-45,
       out="outputs/officebot_length_dithering.png",
       extras="--flip-light --light-z 200",
+    ),
+  ],
+
+  "flat-dithering": [
+    run(
+      "plane.obj",
+      "hokusai_plane.ply",
+      "-d data/hokusai.jpg --target-tri-ratio 1 --sample-kind approx",
+      missing_only=True,
+    ),
+
+    run(
+      "plane.obj",
+      "hokusai_plane_reduced.ply",
+      "-d data/hokusai.jpg --target-tri-ratio 0.5 --sample-kind approx",
+      missing_only=True,
     ),
   ],
   "watercolor-cake-dithering": [
@@ -659,7 +990,7 @@ experiments = {
     run(
       "../outputs/watercolor_girl_approx.ply",
       "watercolor_girl_dithering.ply",
-      "--weighting laplacian --color-weight 1.",
+      "--weighting laplacian --color-weight 1. --face --order index",
       bin=dithering_bin, is_abl=False, eval=False
     ),
     render(
@@ -707,12 +1038,155 @@ experiments = {
     ),
   ],
 
+  # TODO this was only partially filled in
+  #"geometry-param-comparison": [
+  #  *[
+  #    run(
+  #      "data/ding",
+  #      "wanderers_constant_colors.ply",
+  #      f"-t 2000 --eigenvalue zero --cluster-vis ablations/wanderers_clusters.ply \
+  #      --eigen-eps 100000 --color-eps 1e-6 --eigen-vis ablations/wanderers_eigen.ply \
+  #      --shape-metric angle-deviation",
+  #      bin=clustering_bin, eval=False,
+  #    ),
+  #  ],
+  #],
+
+  "edge-detection": [
+    run(
+      "../outputs/tiger_butterfly_approx.ply",
+      "tiger_butterfly_edges.ply",
+      #"--smoothing-iters 10 --min-val 0 --max-val 0",
+      "--smoothing-iters 4 --min-val 1e-4 --max-val 5e-4 \
+        --cone-angle-degrees 30 --no-normalize-colors",
+      #"--smoothing-iters 4 --min-val 1e-5 --max-val 3e-4 --cone-angle-degrees 30",
+      bin=edge_detection_bin, eval=False,
+    ),
+
+    render(
+      "data/tiger_butterfly.obj",
+      2, -27, 0, 0, fy=-7, rz=0, h=720,
+      out="ablations/tiger_butterfly_input.png",
+      extras="--roughness 0.8 --light-z -50",
+      missing_only=True,
+    ),
+
+    render(
+      "ablations/tiger_butterfly_edges.ply",
+      2, -27, 0, 0, fy=-7, rz=0, h=720,
+      out="ablations/tiger_butterfly_edges.png",
+      extras="--roughness 0.8 --light-z -50",
+    ),
+
+    runnable_cmds([
+      "cp data/tiger_butterfly* tmp/",
+      "uv run bin/canny_edge.py -i tmp/tiger_butterfly_diffuse.jpg \
+        -o tmp/tiger_butterfly_diffuse.jpg --min 50 --max 130"
+    ]),
+
+    render(
+      "tmp/tiger_butterfly.obj",
+      2, -27, 0, 0, fy=-7, rz=0, h=720,
+      out="ablations/tiger_butterfly_uv_space.png",
+      extras="--roughness 0.8 --light-z -50",
+    ),
+
+    runnable_cmds([
+      "uv run bin/canny_edge.py -i ablations/tiger_butterfly_input.png \
+        -o ablations/tiger_butterfly_rendered_edges.png --min 80 --max 180"
+    ]),
+  ],
+
+  "compare-subdiv": [
+    #run(
+    #  "officebot.obj",
+    #  "officebot_subdiv.ply",
+    #  "-s 5 -d data/officebot_textures/diffuse.png",
+    #  bin=bake_tex_to_vert_colors_bin, eval=False,
+    #),
+
+    # KEEP THESE COMMENTED OUT, TOO DENSE TO RENDER
+    #runnable_cmds([
+    #  f"../pars3d/target/release/examples/wireframe \
+    #    data/officebot.obj ablations/officebot_input_wireframe.ply --width 3e-3"
+    #]),
+    #runnable_cmds([
+    #  f"../pars3d/target/release/examples/wireframe \
+    #    ablations/officebot_subdiv.ply \
+    #    ablations/officebot_subdiv_wireframe.ply --width 3e-3"
+    #]),
+
+    #runnable_cmds([
+    #  f"../pars3d/target/release/examples/wireframe \
+    #    outputs/officebot_approx.ply \
+    #    ablations/officebot_approx_wireframe.ply --width 3e-3"
+    #]),
+    #runnable_cmds([
+    #  f"../pars3d/target/release/examples/wireframe \
+    #    outputs/officebot_exact.ply \
+    #    ablations/officebot_exact_wireframe.ply --width 3e-3"
+    #]),
+
+    render(
+      "data/officebot.obj",
+      5.8, -18, 5.8, 0, fy=0.55, rz=-45, w=840,
+      out="ablations/officebot_input.png",
+      extras="--roughness 0.8 --light-z -50 --wireframe-thickness 1e-2",
+      missing_only=True,
+    ),
+    render(
+      "ablations/officebot_subdiv.ply",
+      5.8, -18, 5.8, 0, fy=0.55, rz=-45, w=840,
+      out="ablations/officebot_subdiv.png",
+      extras="--roughness 0.8 --light-z -50 --wireframe-thickness 1e-2",
+    ),
+    render(
+      "outputs/officebot_approx.ply",
+      5.8, -18, 5.8, 0, fy=0.55, rz=-45, w=840,
+      out="ablations/officebot_approx.png",
+      extras="--roughness 0.8 --light-z -50 --wireframe-thickness 1e-2"
+    ),
+    render(
+      "outputs/officebot_exact.ply",
+      5.8, -18, 5.8, 0, fy=0.55, rz=-45, w=840,
+      out="ablations/officebot_exact.png",
+      extras="--roughness 0.8 --light-z -50 --wireframe-thickness 1e-2"
+    ),
+
+    #render(
+    #  "data/officebot.obj",
+    #  8, -8, 8, 0, fy=0.55, rz=-90, w=840, lx=0,cx=0, h=512,
+    #  out="ablations/officebot_input_inset.png",
+    #  extras="--roughness 0.8 --light-z -50",
+    #  missing_only=True,
+    #),
+    #render(
+    #  "ablations/officebot_subdiv.ply",
+    #  8, -8, 8, 0, fy=0.55, rz=-90, w=840, lx=0,cx=0, h=512,
+    #  out="ablations/officebot_subdiv_inset.png",
+    #  extras="--roughness 0.8 --light-z -50",
+    #),
+    #render(
+    #  "outputs/officebot_approx.ply",
+    #  8, -8, 8, 0, fy=0.55, rz=-90, w=840, lx=0,cx=0, h=512,
+    #  out="ablations/officebot_approx_inset.png",
+    #  extras="--roughness 0.8 --light-z -50",
+    #),
+    render(
+      "outputs/officebot_exact.ply",
+      8, -8, 8, 0, fy=0.55, rz=-90, w=840, lx=0,cx=0, h=512,
+      out="ablations/officebot_exact_inset.png",
+      extras="--roughness 0.8 --light-z -50",
+    ),
+
+  ],
+
   "dataset-exact": [
     *[
       run(
         model, model[:-4] + "_exact.ply",
         f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
-          --no-incremental-qem --sample-kind exact \
+          --sample-kind exact \
           {'' if img_size_frac is None else f'--image-size-frac {img_size_frac}'}",
         is_abl=False,
       )
@@ -724,7 +1198,7 @@ experiments = {
       run(
         model, model[:-4] + "_approx.ply",
         f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
-          --no-incremental-qem --sample-kind approx \
+          --sample-kind approx \
           {'' if img_size_frac is None else (f'--image-size-frac {img_size_frac}' if type(img_size_frac) == float else f'--image-size-px {img_size_frac}')}",
         is_abl=False,
       )
@@ -735,8 +1209,7 @@ experiments = {
     *[
       run(
         model, model[:-4] + "_direct.ply",
-        f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
-          --no-incremental-qem --sample-kind direct",
+        f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} --sample-kind direct",
         is_abl=False,
       )
       for (model, texture, tri_num) in dataset_direct
@@ -782,7 +1255,7 @@ experiment_timestamps = {}
 exp_file = "experiment_log.json"
 
 if len(args.experiments) > 0:
-  assert(not os.system("cargo build --release"))
+  assert(not os.system("cargo build --release --bins --examples"))
 
 for exp in args.experiments:
   if args.skip_to is not None:

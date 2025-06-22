@@ -1,4 +1,5 @@
 use std::cmp::minmax;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
@@ -55,7 +56,9 @@ pub fn face_clustering<'a, 'b>(
     args: &Args,
 ) -> (
     Vec<usize>,
-    CollapsibleManifold<(Quadric<0>, [F; 3], F), union_find::AtomicUnionFind>,
+    Vec<(Quadric<0>, [F; 3], F)>,
+    BTreeMap<usize, Vec<usize>>,
+    //CollapsibleManifold<(Quadric<0>, [F; 3], F), union_find::AtomicUnionFind>,
 ) {
     // face normals
     let f_n = (0..nf).map(|fi| fs[fi].normal(&vs)).collect::<Vec<_>>();
@@ -91,20 +94,18 @@ pub fn face_clustering<'a, 'b>(
         }
     }
 
-    //let vert_vert_adj = pars3d::adjacency::VertexAdj::new(fs, vs.len());
+    // normalize_face_areas
+    let total_area = face_area.iter().copied().sum::<F>();
+    let avg_area = total_area / face_area.len() as F;
+    for a in face_area.iter_mut() {
+        *a /= avg_area;
+    }
+    println!("[INFO]: Surface Area is {total_area:02}, Avg is {avg_area:02e}");
 
-    // for each real mesh edge, track which charts it is a part of.
-    // Each edge can be at most part of 2 charts.
-    let mut m = CollapsibleManifold::<(Quadric<0>, [F; 3], F), _>::atomic_new_with(nf, |fi| {
-        let n = f_n[fi];
+    let mut face_colors = vec![[0.; 3]; fs.len()];
+    for (fi, f) in fs.iter().enumerate() {
         let area = face_area[fi];
-        let v0 = vs[fs[fi].as_slice()[0]];
-        let q = Quadric::new_plane(v0, n, 1.);
-
-        let f = &fs[fi];
         let per_vert_weight = area / f.len() as F;
-        assert!(!f.is_empty());
-        assert!(area.is_sign_positive());
         let avg_color = if area == 0. {
             [0.; 3]
         } else {
@@ -118,8 +119,22 @@ pub fn face_clustering<'a, 'b>(
             kmul(area.recip(), sum_color)
         };
         assert!(avg_color.iter().copied().all(F::is_finite));
+        face_colors[fi] = avg_color;
+    }
 
-        (q * area, avg_color, area)
+    //let vert_vert_adj = pars3d::adjacency::VertexAdj::new(fs, vs.len());
+
+    // for each real mesh edge, track which charts it is a part of.
+    // Each edge can be at most part of 2 charts.
+    let mut m = CollapsibleManifold::<(Quadric<0>, [F; 3], F), _>::atomic_new_with(nf, |fi| {
+        let n = f_n[fi];
+        let v0 = vs[fs[fi].as_slice()[0]];
+        let q = Quadric::new_plane(v0, n, 1.);
+        let area = face_area[fi];
+
+        assert!(!fs[fi].is_empty());
+
+        (q * area, face_colors[fi], area)
     });
 
     for e in edge_face_adj.values() {
@@ -221,7 +236,7 @@ pub fn face_clustering<'a, 'b>(
             let q_new = q0 + q1;
 
             // sorted eigenvalues
-            let neigens = q_new.a.eigen_sorted().0;
+            let (neigens, n_evecs) = q_new.a.eigen_sorted();
             let evn = args.eigenvalue.apply(neigens);
 
             let ev0 = prev_eigens[e0];
@@ -252,6 +267,53 @@ pub fn face_clustering<'a, 'b>(
               _ if args.eigen_eps <= 0. || args.color_eps <= 0. => 0.,
               ShapeMetric::None => 0.,
               ShapeMetric::Area => -new_area,
+              ShapeMetric::MaxEuclideanDist => {
+                let mut center = [0.; 3];
+                let mut cnt = 0;
+                for c in [e0, e1] {
+                  for fi in m.merged_vertices(c) {
+                    center = add(center, fs[fi].centroid(vs));
+                    cnt += 1;
+                    /*
+                    for &vi in fs[fi].as_slice() {
+                      center = add(center, vs[vi]);
+                      cnt += 1;
+                    }
+                    */
+                  }
+                }
+                let center = kmul((cnt as F).recip(), center);
+
+                let mut max_dist: F = 0.;
+                for c in [e0,e1] {
+                  for fi in m.merged_vertices(c) {
+                    let ctr = fs[fi].centroid(vs);
+                    max_dist = max_dist.max(dist(ctr, center));
+                  }
+                }
+                -max_dist
+              },
+              ShapeMetric::MaxManhattanDist => {
+                let mut center = [0.; 3];
+                let mut cnt = 0;
+                for c in [e0, e1] {
+                  for fi in m.merged_vertices(c) {
+                    center = add(center, fs[fi].centroid(vs));
+                    cnt += 1;
+                  }
+                }
+                let center = kmul((cnt as F).recip(), center);
+
+                let mut max_dist: F = 0.;
+                for c in [e0,e1] {
+                  for fi in m.merged_vertices(c) {
+                    let local = sub(fs[fi].centroid(vs), center);
+                    let l_d = dot(local, n_evecs[1]).abs() + dot(local, n_evecs[0]).abs();
+                    max_dist = max_dist.max(l_d);
+                  }
+                }
+                -max_dist
+              },
               ShapeMetric::SharedBoundaryLength => {
                 // Tested here: dividing by new area seems to make it prefer rounder charts,
                 // whereas just plain seems to be ok with skinny charts.
@@ -532,8 +594,75 @@ pub fn face_clustering<'a, 'b>(
     }
 
     // for each face which chart is it assigned to?
-    let charts = (0..nf).map(|i| m.get_new_vertex(i)).collect::<Vec<_>>();
-    (charts, m)
+    let mut charts = (0..nf).map(|i| m.get_new_vertex(i)).collect::<Vec<_>>();
+
+    let mut remap = BTreeMap::new();
+    let mut num_charts = 0;
+    for &f in &charts {
+        match remap.entry(f) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(v) => {
+                v.insert(num_charts);
+                num_charts += 1;
+            }
+        }
+    }
+    for f in &mut charts {
+        *f = remap[f];
+    }
+    let mut inv_map = BTreeMap::new();
+    for (&src, &dst) in remap.iter() {
+        inv_map.insert(dst, src);
+    }
+    let /*mut*/ chart_attribs = (0..num_charts)
+        .map(|i| m.data[inv_map[&i]])
+        .collect::<Vec<_>>();
+    let mut adj: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for [c0, c1] in m.edges_post_merge() {
+        adj.entry(remap[&c0]).or_default().push(remap[&c1]);
+        adj.entry(remap[&c1]).or_default().push(remap[&c0]);
+    }
+
+    // also need to store per face quadrics and colors
+
+    // Charts & their attributes
+    /*
+    let mut unique_charts = m.vertices().collect::<BTreeMap<_, _>>();
+
+    macro_rules! swap_cost {
+        // swap fi across edge e to the other cluster
+        ($fi: expr, $e: expr) => {{
+            let e = $e;
+            let EdgeKind::Manifold([a, b]) = edge_face_adj[&e] else {
+                continue;
+            };
+            if charts[a] == charts[b] {
+                continue;
+            }
+
+            let (q_a, avg_color_a, area_a) = &unique_charts[&a];
+            let (q_b, avg_color_b, area_b) = &unique_charts[&b];
+        }};
+    }
+    // Enqueue all edges between charts that would decrease the total energy,
+    // to account for poor choices earlier in the algorithm.
+    // Use same eps as before.
+    let mut pq = PriorityQueue::new();
+    for (fi, f) in fs.iter().enumerate() {
+        for e in f.edges_ord() {
+            let cost = swap_cost!(fi, e);
+            pq.push((fi, e), cost);
+        }
+    }
+
+    while let Some(((fi, e), cost)) = pq.pop() {
+        if cost >= 0. {
+            break;
+        }
+    }
+    */
+
+    (charts, chart_attribs, adj)
 }
 
 pub fn edges(f: &[usize]) -> impl Iterator<Item = [usize; 2]> + '_ {
@@ -690,6 +819,12 @@ pub enum ShapeMetric {
     Convexity,
 
     Area,
+
+    /// Maximum euclidean of any point in this chart
+    MaxEuclideanDist,
+
+    /// Maximum manhattan distance of any point in this chart
+    MaxManhattanDist,
 
     None,
 }
@@ -852,6 +987,8 @@ impl_display!(
   AngleDeviation => "angle-deviation",
   Convexity => "convexity",
   Area => "area",
+  MaxEuclideanDist => "max-euclidean-dist",
+  MaxManhattanDist => "max-manhattan-dist",
   None => "none",
 );
 

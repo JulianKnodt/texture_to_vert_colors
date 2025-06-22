@@ -3,9 +3,6 @@
 #![feature(let_chains)]
 #![feature(generic_arg_infer)]
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-
 use clap::Parser;
 
 use texture_to_vert_colors::F;
@@ -124,27 +121,18 @@ pub fn main() -> std::io::Result<()> {
     let (face_charts, m) =
         face_clustering(&mesh.v, &mesh.vert_colors, &mesh.f, mesh.f.len(), &args);
         */
-    let (face_charts, m) = texture_to_vert_colors::clustering::face_clustering(
-        &mesh.v,
-        &mesh.vert_colors,
-        &mesh.f,
-        mesh.f.len(),
-        &args.clone().into(),
-    );
+    let (face_charts, chart_attribs, chart_adj) =
+        texture_to_vert_colors::clustering::face_clustering(
+            &mesh.v,
+            &mesh.vert_colors,
+            &mesh.f,
+            mesh.f.len(),
+            &args.clone().into(),
+        );
     println!("[INFO]: Took {:?} for clustering", start.elapsed());
 
-    let mut remap = HashMap::new();
-    let mut num_charts = 0;
-    for &f in &face_charts {
-        match remap.entry(f) {
-            Entry::Occupied(_) => {}
-            Entry::Vacant(v) => {
-                v.insert(num_charts);
-                num_charts += 1;
-            }
-        }
-    }
-    eprintln!("[INFO]: Output # Charts = {}", remap.len());
+    let num_charts = chart_attribs.len();
+    eprintln!("[INFO]: Output # Charts = {num_charts}");
 
     let wireframe_parts = pars3d::visualization::face_segmentation_wireframes(
         |fi| mesh.f[fi].as_slice(),
@@ -160,7 +148,7 @@ pub fn main() -> std::io::Result<()> {
         let face_coloring = pars3d::visualization::greedy_face_coloring(
             |i| face_charts[i],
             face_charts.len(),
-            |i, j| m.is_adj(i, j),
+            |i, j| chart_adj[&i].contains(&j),
             &pars3d::coloring::HIGH_CONTRAST,
         );
 
@@ -171,27 +159,27 @@ pub fn main() -> std::io::Result<()> {
         pars3d::save(&args.cluster_vis, &out_scene)?;
     }
 
-    let eigenvalues = m
-        .vertices()
-        .map(|(vi, (q, _, _))| {
+    let eigenvalues = chart_attribs
+        .iter()
+        .map(|(q, _, _)| {
             let eigens = q.a.eigen_sorted().0;
-            (vi, args.eigenvalue.apply(eigens))
+            args.eigenvalue.apply(eigens)
         })
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .collect::<Vec<_>>();
 
     let [min_e, max_e] = eigenvalues
-        .values()
+        .iter()
         .fold([F::INFINITY, F::NEG_INFINITY], |[l, h], &n| {
             [l.min(n), h.max(n)]
         });
     assert!(max_e.is_finite());
     assert!(min_e.is_finite());
     assert!(max_e >= min_e);
-    println!("[INFO] eigenvalues in range [{min_e}, {max_e}]");
+    println!("[INFO] eigenvalues in range [{min_e:e}, {max_e:e}]");
 
     if !args.eigen_vis.is_empty() {
         let mut face_eigens = (0..mesh.f.len())
-            .map(|i| eigenvalues[&face_charts[i]])
+            .map(|i| eigenvalues[face_charts[i]])
             .collect::<Vec<F>>();
         let r = max_e - min_e;
         for e in &mut face_eigens {
@@ -216,7 +204,7 @@ pub fn main() -> std::io::Result<()> {
 
     {
         let face_colors = (0..mesh.f.len())
-            .map(|i| m.get(face_charts[i]).1)
+            .map(|i| chart_attribs[face_charts[i]].1)
             .collect::<Vec<[F; 3]>>();
 
         let mut colored_mesh = mesh.with_face_coloring(&face_colors);
@@ -239,7 +227,7 @@ pub fn main() -> std::io::Result<()> {
                 .f
                 .iter()
                 .enumerate()
-                .filter(|&(fi, _)| remap[&face_charts[fi]] == ci)
+                .filter(|&(fi, _)| face_charts[fi] == ci)
                 .map(|(_, f)| f.clone());
             new_mesh.f.extend(faces_in_chart);
 

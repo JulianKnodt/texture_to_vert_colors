@@ -70,4 +70,8 @@ fn main() {
     scene.materials.push(new_mat);
     scene.meshes[0].face_mat_idx = vec![((0..nf), mi)];
     pars3d::save(&args.output, &scene).expect("Failed to save output");
+    println!(
+        "[INFO]: Baked vertex colors to textures for {}",
+        args.output
+    )
 }

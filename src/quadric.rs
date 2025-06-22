@@ -2,7 +2,7 @@ use super::sym::SymMatrix3;
 use super::{F, add, add_assign, dot, kmul, sub};
 
 use core::array::from_fn;
-use core::ops::{Add, AddAssign, Mul, MulAssign};
+use core::ops::{Add, AddAssign, Mul, MulAssign, Sub};
 
 pub const N_ATTRIB: usize = 3 + 3;
 
@@ -542,6 +542,26 @@ impl<const N: usize> Add for Quadric<N> {
 
             nv: add(self.nv, o.nv),
             dv: self.dv + o.dv,
+        }
+    }
+}
+
+impl<const N: usize> Sub for Quadric<N> {
+    type Output = Self;
+    #[inline]
+    fn sub(self, o: Self) -> Self {
+        Self {
+            a: self.a - o.a,
+            b: sub(self.b, o.b),
+            c: self.c - o.c,
+
+            g: from_fn(|i| sub(self.g[i], o.g[i])),
+            d: sub(self.d, o.d),
+
+            area: self.area - o.area,
+
+            nv: sub(self.nv, o.nv),
+            dv: self.dv - o.dv,
         }
     }
 }

@@ -107,10 +107,14 @@ def main():
   mesh.vertices[:,2] = 0
   mesh.export(args.output, encoding="ascii")
 
+def luma(rgb):
+  return np.sum(np.array([0.299, 0.587, 0.114]) * rgb)
+
 def dist_fn(va,vca, vb, vcb, color_weight=1e-4, kind="add"):
   geom = np.linalg.norm(va - vb)
-  if color_weight == 0.: return geom
-  color = np.linalg.norm(vca - vcb)
+  if color_weight == 0. and kind != "color-only": return geom
+  color = abs(luma(vca) - luma(vcb))
+  #color = np.linalg.norm(vca - vcb)
   if kind == "add":
     return geom + color_weight * color
   elif kind == "max":
@@ -120,8 +124,7 @@ def dist_fn(va,vca, vb, vcb, color_weight=1e-4, kind="add"):
       np.concatenate([va, color_weight * vca]) - \
       np.concatenate([vb, color_weight * vcb])
     )
-  elif kind == "color-only":
-    return color
+  elif kind == "color-only": return color + 1
   else: raise NotImplementedError(kind)
 
 def herons(e0, e1, e2):

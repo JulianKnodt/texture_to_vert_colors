@@ -1,10 +1,12 @@
 import trimesh
-from argparse import ArgumentParser
+import argparse
 import numpy as np
 import scipy.sparse as sp
 
 def arguments():
-  a = ArgumentParser()
+  a = argparse.ArgumentParser(
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+  )
   a.add_argument("-i", "--input", required=True, help="Input mesh")
   a.add_argument("-o", "--output", required=True, help="Output mesh")
   a.add_argument("--uniform", action="store_true", help="Use uniform weighting instead")

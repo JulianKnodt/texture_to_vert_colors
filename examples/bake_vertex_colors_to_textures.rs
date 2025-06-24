@@ -33,7 +33,7 @@ fn main() {
 
     let mut scene =
         pars3d::load(&args.input).expect(&format!("Failed to parse input from {}", args.input));
-    let m = scene.into_flattened_mesh();
+    let mut m = scene.into_flattened_mesh();
 
     assert!(!m.vert_colors.is_empty());
     let uvc = args.uv_channel;
@@ -50,6 +50,8 @@ fn main() {
             &m.vert_colors,
         )
     };
+
+    m.vert_colors.clear();
 
     pars3d::image::imageops::flip_vertical_in_place(&mut img);
     let nf = m.f.len();
@@ -69,6 +71,9 @@ fn main() {
     let mi = scene.materials.len();
     scene.materials.push(new_mat);
     scene.meshes[0].face_mat_idx = vec![((0..nf), mi)];
+    for m in scene.meshes.iter_mut() {
+        m.vert_colors.clear();
+    }
     pars3d::save(&args.output, &scene).expect("Failed to save output");
     println!(
         "[INFO]: Baked vertex colors to textures for {}",

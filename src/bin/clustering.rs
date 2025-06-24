@@ -5,6 +5,8 @@
 
 use clap::Parser;
 
+use std::io::BufRead;
+
 use texture_to_vert_colors::F;
 use texture_to_vert_colors::clustering::{
     Args as ClusterArgs, Eigenvalue, OrderingKind, ShapeMetric,
@@ -14,7 +16,7 @@ use texture_to_vert_colors::clustering::{
 #[clap(group(
   clap::ArgGroup::new("target")
     .required(true)
-    .args(&["target_num_charts", "error_bound"])
+    .args(&["target_num_charts", "error_bound", "match_json"])
 ))]
 pub struct Args {
     /// Input OBJ file.
@@ -59,7 +61,7 @@ pub struct Args {
     #[arg(long, default_value_t = 1e-6)]
     color_eps: F,
 
-    /// Where to output stats (unused currently)
+    /// Output stats to this file
     #[arg(long, default_value_t = String::new())]
     stats: String,
 
@@ -84,6 +86,18 @@ pub struct Args {
     /// First convert the mesh to a geometry only representation, stripping off colors and UVs
     #[arg(long)]
     geometry_only: bool,
+
+    /// Eigen to regularize by when outputing eigenvalues. If not set will use the max.
+    #[arg(long, default_value_t = -1.)]
+    max_eigen: F,
+
+    /// Match the `num_charts` field in this json instead of passing an explicit value
+    #[arg(long, default_value_t = String::new())]
+    match_json: String,
+
+    /// Do not include the wireframe in the output.
+    #[arg(long)]
+    no_wireframe: bool,
 }
 
 impl From<Args> for ClusterArgs {
@@ -103,7 +117,7 @@ impl From<Args> for ClusterArgs {
 }
 
 pub fn main() -> std::io::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
     if !args.output.ends_with(".ply") {
         eprintln!("[WARN]: Output will not be colored if output format is not PLY");
     }
@@ -111,9 +125,28 @@ pub fn main() -> std::io::Result<()> {
     let scene = pars3d::load(&args.input).expect(&format!("Failed to load input {}", &args.input));
     let mut mesh = scene.into_flattened_mesh();
     let (s, t) = mesh.normalize();
-    let (cs, ct) = mesh.normalize_colors();
+    //let (cs, ct) = mesh.normalize_colors();
     if args.geometry_only {
         mesh.geometry_only();
+    }
+
+    if !args.match_json.is_empty() {
+        if !std::fs::exists(&args.match_json)? {
+            eprintln!("No source for {}", args.match_json);
+            return Ok(());
+        }
+        let f = std::fs::File::open(&args.match_json)
+            .expect(&format!("Failed to load match json {}", args.match_json));
+        let r = std::io::BufReader::new(f);
+        for l in r.lines() {
+            let l = l?;
+            if !l.contains("num_charts") {
+                continue;
+            }
+            let num_charts = l.split_whitespace().nth(1).unwrap();
+            println!("[INFO]: Target number of charts is {num_charts}");
+            args.target_num_charts = Some(num_charts.parse::<usize>().unwrap());
+        }
     }
 
     let start = std::time::Instant::now();
@@ -121,7 +154,7 @@ pub fn main() -> std::io::Result<()> {
     let (face_charts, m) =
         face_clustering(&mesh.v, &mesh.vert_colors, &mesh.f, mesh.f.len(), &args);
         */
-    let (face_charts, chart_attribs, chart_adj) =
+    let (face_charts, chart_attribs, _chart_adj) =
         texture_to_vert_colors::clustering::face_clustering(
             &mesh.v,
             &mesh.vert_colors,
@@ -134,21 +167,43 @@ pub fn main() -> std::io::Result<()> {
     let num_charts = chart_attribs.len();
     eprintln!("[INFO]: Output # Charts = {num_charts}");
 
-    let wireframe_parts = pars3d::visualization::face_segmentation_wireframes(
-        |fi| mesh.f[fi].as_slice(),
+    mesh.denormalize(s, t);
+    use texture_to_vert_colors::measure_flat as mf;
+    mf::measure_flat(
+        &mut mesh,
         |fi| face_charts[fi],
-        mesh.f.len(),
-        &mesh.v,
-        3e-4,
-    );
-    let mut wireframe_mesh = pars3d::visualization::wireframe_to_mesh(wireframe_parts);
-    wireframe_mesh.denormalize(s, t);
+        num_charts,
+        &mf::Args {
+            eigen_vis: args.eigen_vis,
+            eigenvalue: args.eigenvalue,
+            no_wireframe: args.no_wireframe,
+            max_eigen: args.max_eigen,
+            stats: args.stats,
+            cluster_vis: args.cluster_vis,
+        },
+    )?;
 
+    let mut wireframe_mesh = if args.no_wireframe {
+        pars3d::Mesh::default()
+    } else {
+        let wireframe_parts = pars3d::visualization::face_segmentation_wireframes(
+            |fi| mesh.f[fi].as_slice(),
+            |fi| face_charts[fi],
+            mesh.f.len(),
+            &mesh.v,
+            3e-4,
+        );
+        let mut wireframe_mesh = pars3d::visualization::wireframe_to_mesh(wireframe_parts);
+        wireframe_mesh.denormalize(s, t);
+        wireframe_mesh
+    };
+
+    /*
     if !args.cluster_vis.is_empty() {
         let face_coloring = pars3d::visualization::greedy_face_coloring(
             |i| face_charts[i],
             face_charts.len(),
-            |i, j| chart_adj[&i].contains(&j),
+            |i, j| chart_adj.get(&i).is_some_and(|adjs| adjs.contains(&j)),
             &pars3d::coloring::HIGH_CONTRAST,
         );
 
@@ -158,6 +213,30 @@ pub fn main() -> std::io::Result<()> {
         let out_scene = colored_mesh.into_scene();
         pars3d::save(&args.cluster_vis, &out_scene)?;
     }
+
+    let max_planarity = chart_attribs
+        .iter()
+        .map(|(q, _, _)| q.a.eigen_sorted().0[1])
+        .max_by(F::total_cmp)
+        .unwrap();
+    let max_developability = chart_attribs
+        .iter()
+        .map(|(q, _, _)| q.a.eigen_sorted().0[0])
+        .max_by(F::total_cmp)
+        .unwrap();
+
+    println!("[INFO]: Max planarity is {max_planarity:e}");
+    println!("[INFO]: Max developability is {max_developability:e}");
+    let avg_planarity = chart_attribs
+        .iter()
+        .map(|(q, _, _)| q.a.eigen_sorted().0[0])
+        .sum::<F>()
+        / chart_attribs.len() as F;
+    let avg_developability = chart_attribs
+        .iter()
+        .map(|(q, _, _)| q.a.eigen_sorted().0[1])
+        .sum::<F>()
+        / chart_attribs.len() as F;
 
     let eigenvalues = chart_attribs
         .iter()
@@ -175,18 +254,26 @@ pub fn main() -> std::io::Result<()> {
     assert!(max_e.is_finite());
     assert!(min_e.is_finite());
     assert!(max_e >= min_e);
-    println!("[INFO] eigenvalues in range [{min_e:e}, {max_e:e}]");
+    println!("[INFO]: Eigenvalues in range [{min_e:e}, {max_e:e}]");
 
     if !args.eigen_vis.is_empty() {
         let mut face_eigens = (0..mesh.f.len())
             .map(|i| eigenvalues[face_charts[i]])
             .collect::<Vec<F>>();
-        let r = max_e - min_e;
+        let low = min_e.max(1e-20).ln();
+        let r = max_e.ln() - low;
+        let div = if args.max_eigen > 0. {
+            args.max_eigen.ln()
+        } else {
+            r
+        };
         for e in &mut face_eigens {
-            *e -= min_e;
-            if r != 0. {
-                *e /= r;
+            *e = e.max(1e-20).ln() - low;
+            if div == 0. {
+                continue;
             }
+            *e = *e / div;
+            *e = e.clamp(0., 1.);
         }
         let face_colors = face_eigens
             .into_iter()
@@ -201,6 +288,7 @@ pub fn main() -> std::io::Result<()> {
         let out_scene = colored_mesh.into_scene();
         pars3d::save(&args.eigen_vis, &out_scene)?;
     }
+    */
 
     {
         let face_colors = (0..mesh.f.len())
@@ -208,8 +296,7 @@ pub fn main() -> std::io::Result<()> {
             .collect::<Vec<[F; 3]>>();
 
         let mut colored_mesh = mesh.with_face_coloring(&face_colors);
-        colored_mesh.denormalize(s, t);
-        colored_mesh.denormalize_colors(cs, ct);
+        //colored_mesh.denormalize_colors(cs, ct);
 
         colored_mesh.append(&mut wireframe_mesh);
 
@@ -240,6 +327,24 @@ pub fn main() -> std::io::Result<()> {
         }
         pars3d::save(&args.xatlas_output, &out_scene)?;
     }
+
+    /*
+    if !args.stats.is_empty() {
+        let f = std::fs::File::create(args.stats)?;
+        let mut f = BufWriter::new(f);
+        writeln!(
+            f,
+            r#"{{
+  "eigenvalue_max": {max_e},
+  "max_planarity": {max_planarity},
+  "avg_planarity": {avg_planarity},
+  "max_developability": {max_developability},
+  "avg_developability": {avg_developability},
+  "num_charts": {num_charts}
+}}"#
+        )?;
+    }
+    */
 
     Ok(())
 }

@@ -11,7 +11,7 @@ use priority_queue::PriorityQueue;
 
 use super::manifold::{CollapsibleManifold, EdgeKind};
 use super::quadric::Quadric;
-use super::{F, add, dist, dot, kmul, l1dist, normalize, poly_area, sub};
+use super::{F, add, dist, dot, kmul, normalize, poly_area, sub};
 
 use indicatif::ProgressBar;
 
@@ -58,7 +58,6 @@ pub fn face_clustering<'a, 'b>(
     Vec<usize>,
     Vec<(Quadric<0>, [F; 3], F)>,
     BTreeMap<usize, Vec<usize>>,
-    //CollapsibleManifold<(Quadric<0>, [F; 3], F), union_find::AtomicUnionFind>,
 ) {
     // face normals
     let f_n = (0..nf).map(|fi| fs[fi].normal(&vs)).collect::<Vec<_>>();
@@ -257,7 +256,8 @@ pub fn face_clustering<'a, 'b>(
 
             // TODO use a different color distance here?
             let clr_diff =
-                area0 * l1dist(new_avg, avg_color0) + area1 * l1dist(new_avg, avg_color1);
+                area0 * luma_dist(new_avg, avg_color0) +
+                area1 * luma_dist(new_avg, avg_color1);
             assert!(clr_diff.is_finite());
             assert!(clr_diff >= 0.);
 
@@ -607,6 +607,7 @@ pub fn face_clustering<'a, 'b>(
             }
         }
     }
+
     for f in &mut charts {
         *f = remap[f];
     }
@@ -618,9 +619,36 @@ pub fn face_clustering<'a, 'b>(
         .map(|i| m.data[inv_map[&i]])
         .collect::<Vec<_>>();
     let mut adj: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+
+    /*
     for [c0, c1] in m.edges_post_merge() {
         adj.entry(remap[&c0]).or_default().push(remap[&c1]);
         adj.entry(remap[&c1]).or_default().push(remap[&c0]);
+    }
+    */
+    let mesh = pars3d::Mesh {
+        v: vs.to_vec(),
+        f: fs.to_vec(),
+        ..Default::default()
+    };
+    fn push_uniq(dst: &mut Vec<usize>, v: usize) {
+        if !dst.contains(&v) {
+            dst.push(v);
+        }
+    }
+
+    for ek in mesh.edge_pos_kinds().values() {
+        for &fi in ek.as_slice() {
+            let ci = charts[fi];
+            for &fj in ek.as_slice() {
+                let cj = charts[fj];
+                if ci == cj {
+                    continue;
+                }
+                push_uniq(adj.entry(ci).or_default(), cj);
+                push_uniq(adj.entry(cj).or_default(), ci);
+            }
+        }
     }
 
     // also need to store per face quadrics and colors
@@ -997,4 +1025,12 @@ pub fn approx_eq(a: F, b: F, eps: F) -> bool {
         return true;
     }
     (a - b).abs() < eps
+}
+
+pub fn luma(rgb: [F; 3]) -> F {
+    dot([0.299, 0.587, 0.114], rgb)
+}
+
+pub fn luma_dist(rgb_a: [F; 3], rgb_b: [F; 3]) -> F {
+    (luma(rgb_a) - luma(rgb_b)).abs()
 }

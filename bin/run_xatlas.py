@@ -22,7 +22,7 @@ def main():
   # TODO here need to add more parameters
   co = xatlas.ChartOptions()
   co.fix_winding = True
-  co.use_input_mesh_uvs = True
+  co.use_input_mesh_uvs = False
   #co.texture_seam_weight = 10.
   #co.max_cost = 200.
   #co.normal_deviation_weight = 0.

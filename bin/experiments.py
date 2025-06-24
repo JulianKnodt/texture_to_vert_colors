@@ -17,27 +17,29 @@ edge_detection_bin = "target/release/edge_detection"
 bake_tex_to_vert_colors_bin = "target/release/examples/bake_textures_to_vertex_colors"
 bake_vert_colors_to_tex = "target/release/examples/bake_vertex_colors_to_textures"
 copy_mesh_to_uv = "target/release/examples/copy_mesh_to_uv"
+measure_flat = "target/release/examples/measure_flat"
 
 args = None
 
-out_dir = lambda is_ablation=False: "ablations" if is_ablation else "outputs"
+abl_dir = "ablations"
+cl_dir = "cluster_outputs"
 
-def run(src, dst, flags, is_abl=True, src_dir="data", bin=bin_file, eval=True, missing_only=False):
+def run(src, dst, flags, out_dir=abl_dir, src_dir="data", bin=bin_file, eval=True, missing_only=False):
   def cb():
     nonlocal missing_only
     if "run" not in args.stages: return []
     if args.match_output is not None and args.match_output not in dst: return []
     if args.force: missing_only=False
-    out_json = f"{out_dir(is_abl)}/{dst[:-4]}.json"
-    if missing_only and os.path.exists(out_json):
+    out_json = f"{out_dir}/{dst[:-4]}.json"
+    if missing_only and os.path.exists(out_json) and not args.force:
       print(f"Skipping {src} -> {dst}, destination results {out_json} already exists")
       return []
-    out_file = f"{out_dir(is_abl)}/{dst}"
+    out_file = f"{out_dir}/{dst}"
     if missing_only and (not eval) and os.path.exists(out_file):
       print(f"Skipping {src} -> {out_file}, destination already exists")
       return []
     cmds = [
-      f"{bin} -i {src_dir}/{src} -o {out_dir(is_abl)}/{dst} {flags} --stats {out_json}",
+      f"{bin} -i {src_dir}/{src} -o {out_dir}/{dst} {flags} --stats {out_json}",
     ]
     print(cmds[0])
     if (not args.no_eval) and eval:
@@ -76,7 +78,7 @@ def runnable_cmds(cmds, output_name="", stage_kind="run", missing_only=False):
     nonlocal missing_only
     if stage_kind not in args.stages: return []
     if args.match_output is not None and args.match_output not in output_name: return []
-    if missing_only:
+    if missing_only and not args.force:
       assert(output_name != ""), "Specify output name for runnable cmd to skip missing"
       if os.path.exists(output_name):
         print(f"Skipping cmds -> {output_name}, destination already exists")
@@ -143,6 +145,7 @@ dataset = [
   #("origami_crane.obj", "", 2000000, 0.75),
   #("hot_air_balloon.obj", "", 1000000, 0.5),
   #("dish_with_maple_leaves.obj", "", 2000000, 0.25),
+  #("milk_carton.obj", "", 1000000, None),
 
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
@@ -218,7 +221,6 @@ experiments = {
     run(
       "non_manifold.obj", "non_manifold.ply",
       "-d data/uv_grid.png --target-tri-ratio 0.5 --sample-kind exact",
-      is_abl=True
     ),
   ],
 
@@ -228,7 +230,6 @@ experiments = {
       run(
         "thin_tri.obj", f"thin_tri_{k}.ply",
         f"-d data/uv_grid.png --target-tri-ratio 1. --sample-kind {k}",
-        is_abl=True
       ) for k in ["approx", "exact"]
     ]
   ],
@@ -348,7 +349,7 @@ experiments = {
       "../outputs/wanderers_approx.ply",
       "wanderers_vector_field.ply",
       f"--dist-thresh 1e-6 --color-thresh 0.0 --width 5e-4 --length 0.02 --face-hatching",
-      bin=hatching_bin, is_abl=True, eval=False,
+      bin=hatching_bin, eval=False,
     ),
 
     render(
@@ -426,7 +427,7 @@ experiments = {
       ) for l in ["colors", "clusters", "eigen"]
     ],
   ],
-  "nanchan_clustering": [
+  "nanchan-clustering": [
     run(
       "nanchan.obj", "nanchan.ply",
       f"-d data/nanchan_textures/diffuse.png --target-tri-num 800000 --sample-kind exact",
@@ -435,8 +436,8 @@ experiments = {
     run(
       "../ablations/nanchan.ply",
       "nanchan_colors.ply",
-      f"-t 200 --eigenvalue one --cluster-vis ablations/nanchan_clusters.ply \
-      --eigen-eps 1e-5 --color-eps 1e-6 --shape-metric boundary-length \
+      f"-t 250 --eigenvalue one --cluster-vis ablations/nanchan_clusters.ply \
+      --eigen-eps 1e-4 --color-eps 1e-6 --shape-metric convexity \
       --eigen-vis ablations/nanchan_eigens.ply",
       bin=clustering_bin, eval=False,
     ),
@@ -464,7 +465,7 @@ experiments = {
       for l in ["clusters", "eigens", "colors"]
     ]
   ],
-  "origami_crane_clustering": [
+  "origami-crane-clustering": [
     run(
       "../outputs/origami_crane_approx.ply",
       "origami_crane_colors.ply",
@@ -491,24 +492,50 @@ experiments = {
     ]
   ],
   "ablate-clustering": [
-    cmd
-    for (mesh, eigen_eps, color_eps, label) in [
-      ("dish_with_maple_leaves", 1e-10, 10000, "planar"),
-      ("dish_with_maple_leaves", 1000, 0, "color_only"),
-      ("dish_with_maple_leaves", 1e-7, 0, "mixed"),
-    ]
-    for cmd in [
-      run(
-        f"../outputs/{mesh}_approx.ply",
-        f"{mesh}_{label}_colors.ply",
-        f"-t 60 --eigenvalue one \
-        --cluster-vis ablations/{mesh}_{label}_clusters.ply \
-        --eigen-eps {eigen_eps} --color-eps {color_eps} \
-        --shape-metric boundary-length \
-        --eigen-vis ablations/{mesh}_{label}_eigen.ply",
-        bin=clustering_bin, eval=False,
-        missing_only=True,
-      ),
+    *[
+      cmd
+      for (mesh, clusters, eigen_eps, color_eps, label, e_max) in [
+        #("dish_with_maple_leaves", 75, 1e-10, 10000, "planar"),
+        #("dish_with_maple_leaves", 75, 1000, 0, "color_only"),
+        #("dish_with_maple_leaves", 75, 1e-7, 0, "mixed"),
+
+        ("milk_carton", 22, 1e-8, 10000, "planar", 5),
+        ("milk_carton", 22, 1000, 0, "color_only", 5),
+        ("milk_carton", 22, 1e-4, 0, "mixed", 5),
+      ]
+      for cmd in [
+        run(
+          f"../outputs/{mesh}_approx.ply",
+          f"{mesh}_{label}_colors.ply",
+          f"-t {clusters} --eigenvalue one \
+          --cluster-vis ablations/{mesh}_{label}_clusters.ply \
+          --eigen-eps {eigen_eps} --color-eps {color_eps} \
+          --shape-metric boundary-length \
+          --eigen-vis ablations/{mesh}_{label}_eigen.ply \
+          --max-eigen {e_max}",
+          bin=clustering_bin, eval=False,
+          missing_only=True,
+        ),
+      ]
+    ],
+    render(
+      "data/milk_carton.obj",
+      8, -18, 6, 0, fy=0, rz=45, w=640,
+      out=f"ablations/milk_carton_input.png",
+      extras="--light-z -80 --light-x 20",
+      missing_only=True,
+    ),
+    *[
+      cmd
+      for vis in ["colors", "clusters", "eigen"]
+      for cmd in [
+        render(
+          f"ablations/milk_carton_{k}_{vis}.ply",
+          8, -18, 6, 0, fy=0, rz=45, w=640,
+          out=f"ablations/milk_carton_{k}_{vis}.png",
+          extras="--light-z -80 --light-x 20",
+        ) for k in ["planar", "color_only", "mixed"]
+      ]
     ]
   ],
 
@@ -605,10 +632,10 @@ experiments = {
     cmd
     for (model, ratio, sample_kind, triangulate, img_frac, bake_res, w_mul) in [
       #("scroll.obj", 0.05, "approx", True, 0.5, 1024),
-      ("scroll_constant.obj", 0.25, "approx", True, 1, 2048, 1),
-      ("jar_with_dragon_design_boundary.obj", 0.5, "approx", True, 1., 512, 5e-2),
+      ("scroll_constant.obj", 0.15, "approx", True, 1, 2048, 1),
+      #("jar_with_dragon_design_boundary.obj", 0.5, "approx", True, 1., 512, 5e-2),
       #("ogre.obj", 0.02, "direct", False, 1., 1024),
-      ("longevity_buns.obj", 0.09, "approx", True, 0.5, 1024, 1e-1),
+      #("longevity_buns.obj", 0.09, "approx", True, 0.5, 1024, 1e-1),
     ]
     for cmd in [
       run(
@@ -620,9 +647,10 @@ experiments = {
       ),
       *[
         runnable_cmds([
-          f"uv run bin/tutte_param.py -i ablations/{model[:-4]}.ply \
+          f"{sys.executable} bin/tutte_param.py -i ablations/{model[:-4]}.ply \
             -o ablations/{model[:-4]}_{label}.ply \
-            --color-weight {cw} --color-kind {norm}",
+            --color-weight {cw} \
+            {f'--color-kind {norm}' if norm != 'uniform' else '--uniform'}",
           f"{copy_mesh_to_uv} -i ablations/{model[:-4]}.ply \
             -u ablations/{model[:-4]}_{label}.ply \
             -o ablations/{model[:-4]}_{label}.ply",
@@ -665,48 +693,62 @@ experiments = {
       ],
     ]
   ],
+
   "tutte-param-render": [
     render(
-      "data/scroll.obj",
+      "data/scroll_constant.obj",
       0, -26, 0, 0, fy=-4, rz=0, cx=2,lx=2, h=560,
-      out="ablations/scroll.png",
+      out="ablations/scroll_constant.png",
       extras="--light-z -80",
       missing_only=True,
     ),
     render(
-      "ablations/scroll_lpl_pos_only.obj",
+      "ablations/scroll_constant_pos_only.obj",
       0, -26, 0, 0, fy=-4, rz=0, cx=2,lx=2, h=560,
-      out="ablations/scroll_lpl_pos_only_3d.png",
+      out="ablations/scroll_constant_pos_only_3d.png",
       extras="--light-z -80 --roughness 1 --shade-flat",
     ),
     render(
-      "ablations/scroll_lpl_add_3e-3.obj",
+      "ablations/scroll_constant_add_3e-01.obj",
       0, -26, 0, 0, fy=-4, rz=0, cx=2,lx=2, h=560,
-      out="ablations/scroll_lpl_add_3e-3_3d.png",
+      out="ablations/scroll_constant_add_3e-01_3d.png",
+      extras="--light-z -80 --roughness 1 --shade-flat",
+    ),
+    render(
+      "ablations/scroll_constant_concat_3e-01.obj",
+      0, -26, 0, 0, fy=-4, rz=0, cx=2,lx=2, h=560,
+      out="ablations/scroll_constant_concat_3e-01_3d.png",
       extras="--light-z -80 --roughness 1 --shade-flat",
     ),
 
     # insets
     render(
-      "data/scroll.obj",
-      0, -13, 0, 0, fy=-4, rz=0, cx=-2,lx=-2, h=560,
-      out="ablations/scroll_inset.png",
+      "data/scroll_constant.obj",
+      0, -13, 0, 0, fy=-4, rz=0, cx=0,lx=0, h=560,
+      out="ablations/scroll_constant_inset.png",
       extras="--light-z -80",
       missing_only=True,
     ),
     render(
-      "ablations/scroll_lpl_pos_only.obj",
-      0, -13, 0, 0, fy=-4, rz=0, cx=-2,lx=-2, h=560,
-      out="ablations/scroll_lpl_pos_only_3d_inset.png",
+      "ablations/scroll_constant_pos_only.obj",
+      0, -13, 0, 0, fy=-4, rz=0, cx=0,lx=0, h=560,
+      out="ablations/scroll_constant_pos_only_3d_inset.png",
       extras="--light-z -80 --roughness 1 --shade-flat",
     ),
     render(
-      "ablations/scroll_lpl_add_3e-3.obj",
-      0, -13, 0, 0, fy=-4, rz=0, cx=-2,lx=-2, h=560,
-      out="ablations/scroll_lpl_add_3e-3_3d_inset.png",
+      "ablations/scroll_constant_add_3e-01.obj",
+      0, -13, 0, 0, fy=-4, rz=0, cx=0,lx=0, h=560,
+      out="ablations/scroll_constant_add_3e-01_3d_inset.png",
+      extras="--light-z -80 --roughness 1 --shade-flat",
+    ),
+    render(
+      "ablations/scroll_constant_concat_3e-01.obj",
+      0, -13, 0, 0, fy=-4, rz=0, cx=0,lx=0, h=560,
+      out="ablations/scroll_constant_concat_3e-01_3d_inset.png",
       extras="--light-z -80 --roughness 1 --shade-flat",
     ),
   ],
+
   "tutte-param-rebake-ablation": [
     *[
       cmd
@@ -780,7 +822,7 @@ experiments = {
   ],
   "cubify-musk-melon": [
     runnable_cmds([
-      "uv run bin/cubify.py -i outputs/musk_melon_direct.ply \
+      f"{sys.executable} bin/cubify.py -i outputs/musk_melon_direct.ply \
         -o ablations/cube_musk_melon.ply --cubeness 50 --lr 1e-3 --scale-luma"
     ]),
     #runnable_cmds([
@@ -798,7 +840,7 @@ experiments = {
     #  "breakfast_still_life_line_art.ply",
     #  f"--dist-thresh 0. --color-thresh 0.2 --dir min-curvature --width 5e-4 --length 0.01 \
     #  --bend-amt 1",
-    #  bin=hatching_bin, is_abl=False,
+    #  bin=hatching_bin, out_dir="outputs",
     #  eval=False,
     #),
     run(
@@ -806,7 +848,7 @@ experiments = {
       "breakfast_still_life_line_art.ply",
       f"--dist-thresh 3e-3 --color-thresh 0.1 --dir edge --width 1e-3 --length 0.01 \
         --bend-amt 5",
-      bin=hatching_bin, is_abl=False,
+      bin=hatching_bin, out_dir="outputs",
       eval=False,
     ),
     render(
@@ -821,7 +863,7 @@ experiments = {
       "strawberry_line_art.ply",
       f"--dist-thresh 3e-3 --color-thresh 0.2 --dir edge --width 1e-3 --length 0.1 \
         --bend-amt 3",
-      bin=hatching_bin, is_abl=False,
+      bin=hatching_bin, out_dir="outputs",
       eval=False,
     ),
     render(
@@ -838,7 +880,7 @@ experiments = {
       "nishiki_utsugi_line_art_max.ply",
       f"--dist-thresh 4e-3 --color-thresh 0.02 --dir max-curvature --width 1e-3 --length 0.01 \
         --bend-amt 5",
-      bin=hatching_bin, is_abl=False,
+      bin=hatching_bin, out_dir="outputs",
       eval=False,
     ),
     render(
@@ -851,7 +893,7 @@ experiments = {
       "nishiki_utsugi_line_art_edge.ply",
       f"--dist-thresh 4e-3 --color-thresh 0.02 --dir edge --width 1e-3 --length 0.01 \
         --bend-amt 5",
-      bin=hatching_bin, is_abl=False,
+      bin=hatching_bin, out_dir="outputs",
       eval=False,
     ),
     render(
@@ -866,7 +908,7 @@ experiments = {
       "../outputs/inari_mask_approx.ply",
       "inari_mask_max_curvature_field.ply",
       f"--dist-thresh 6e-3 --color-thresh 0.0 --dir max-curvature --width 1e-3 --length 0.03",
-      bin=hatching_bin, is_abl=False,
+      bin=hatching_bin, out_dir="outputs",
       eval=False,
     ),
 
@@ -875,7 +917,7 @@ experiments = {
       "inari_mask_color_grad_field.ply",
       f"--dist-thresh 1e-5 --color-thresh 0.0 --dir max-curvature --width 1e-3 --length 0.03 \
         --face-hatching",
-      bin=hatching_bin, is_abl=False,
+      bin=hatching_bin, out_dir="outputs",
       eval=False,
     ),
     render(
@@ -896,6 +938,74 @@ experiments = {
       6, -28, 0, 0, fy=-8, rz=0, w=800,
       out="outputs/inari_mask_color_grad_field.png",
       extras="--light-z -155 --light-x 1",
+    ),
+
+    # insets
+
+    render(
+      "data/inari_mask.obj",
+      4, -16, 2, 0, fy=-8, rz=0, h=512, w=800,
+      out="outputs/inari_mask_input_inset.png",
+      extras="--light-z -155 --light-x 1",
+      missing_only=True,
+    ),
+    render(
+      "outputs/inari_mask_max_curvature_field.ply",
+      4, -16, 2, 0, fy=-8, rz=0, h=512, w=800,
+      out="outputs/inari_mask_max_curv_field_inset.png",
+      extras="--light-z -155 --light-x 1",
+    ),
+    render(
+      "outputs/inari_mask_color_grad_field.ply",
+      4, -16, 2, 0, fy=-8, rz=0, h=512, w=800,
+      out="outputs/inari_mask_color_grad_field_inset.png",
+      extras="--light-z -155 --light-x 1",
+    ),
+  ],
+
+  "lod-comparison": [
+    *[
+      run(
+        "japanese_tea_cup.obj", f"japanese_tea_cup_res_{tri_num}.ply",
+        f"-r {tri_num} --sample-kind approx",
+        out_dir="outputs",
+        missing_only=True,
+      )
+      for tri_num in [1, 0.25, 0.0625, 0.015]
+    ],
+    render(
+      f"data/japanese_tea_cup.obj",
+      6, -18.5, 6, 0, fy=0, rz=0, w=660,
+      out=f"outputs/japanese_tea_cup_input.png",
+      extras="--light-z -155 --light-x -30",
+      missing_only=True,
+    ),
+    *[
+      render(
+        f"outputs/japanese_tea_cup_res_{tri_num}.ply",
+        6, -18.5, 6, 0, fy=0, rz=0, w=660,
+        out=f"outputs/japanese_tea_cup_res_{tri_num}.png",
+        extras="--light-z -155 --light-x -30",
+        missing_only=True,
+      )
+      for tri_num in [1, 0.25, 0.0625, 0.015]
+    ],
+    *[
+      render(
+        f"outputs/japanese_tea_cup_res_{tri_num}.ply",
+        5.5, -9, 5.5, 0, fy=0, rz=0, w=800,
+        out=f"outputs/japanese_tea_cup_res_{tri_num}_inset.png --wireframe-thickness 6e-3",
+        extras="--light-z -155 --light-x -30",
+        missing_only=True,
+      )
+      for tri_num in [1, 0.25, 0.0625, 0.015]
+    ],
+    render(
+      f"data/japanese_tea_cup.obj",
+      5.5, -9, 5.5, 0, fy=0, rz=0, w=800,
+      out=f"outputs/japanese_tea_cup_input_inset.png",
+      extras="--light-z -155 --light-x -30 --wireframe-thickness 6e-3",
+      missing_only=True,
     ),
   ],
 
@@ -929,13 +1039,13 @@ experiments = {
     #  "../outputs/officebot_approx.ply",
     #  "officebot_uniform_dithering.ply",
     #  "--weighting uniform",
-    #  bin=dithering_bin, is_abl=False, eval=False
+    #  bin=dithering_bin, out_dir="outputs", eval=False
     #),
     run(
       "../outputs/officebot_approx.ply",
       "officebot_length_dithering.ply",
       "--weighting length",
-      bin=dithering_bin, is_abl=False, eval=False
+      bin=dithering_bin, out_dir="outputs", eval=False
     ),
     render(
       "outputs/officebot_length_dithering.ply",
@@ -965,7 +1075,7 @@ experiments = {
       "../outputs/watercolor_cake_approx.ply",
       "watercolor_cake_dithering.ply",
       "--weighting length --color-weight 1e-2",
-      bin=dithering_bin, is_abl=False, eval=False
+      bin=dithering_bin, out_dir="outputs", eval=False
     ),
     #render(
     #  "data/watercolor_cake.obj",
@@ -991,7 +1101,7 @@ experiments = {
       "../outputs/watercolor_girl_approx.ply",
       "watercolor_girl_dithering.ply",
       "--weighting laplacian --color-weight 1. --face --order index",
-      bin=dithering_bin, is_abl=False, eval=False
+      bin=dithering_bin, out_dir="outputs", eval=False
     ),
     render(
       "data/watercolor_girl.obj",
@@ -1022,7 +1132,7 @@ experiments = {
       "../outputs/private_detective_approx.ply",
       "private_detective_dithering.ply",
       "--weighting laplacian --color-weight 0",
-      bin=dithering_bin, is_abl=False, eval=False
+      bin=dithering_bin, out_dir="outputs", eval=False
     ),
     render(
       "data/private_detective.obj",
@@ -1080,7 +1190,7 @@ experiments = {
 
     runnable_cmds([
       "cp data/tiger_butterfly* tmp/",
-      "uv run bin/canny_edge.py -i tmp/tiger_butterfly_diffuse.jpg \
+      f"{sys.executable} bin/canny_edge.py -i tmp/tiger_butterfly_diffuse.jpg \
         -o tmp/tiger_butterfly_diffuse.jpg --min 50 --max 130"
     ]),
 
@@ -1092,7 +1202,7 @@ experiments = {
     ),
 
     runnable_cmds([
-      "uv run bin/canny_edge.py -i ablations/tiger_butterfly_input.png \
+      f"{sys.executable} bin/canny_edge.py -i ablations/tiger_butterfly_input.png \
         -o ablations/tiger_butterfly_rendered_edges.png --min 80 --max 180"
     ]),
   ],
@@ -1188,7 +1298,7 @@ experiments = {
         f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
           --sample-kind exact \
           {'' if img_size_frac is None else f'--image-size-frac {img_size_frac}'}",
-        is_abl=False,
+        out_dir="outputs",
       )
       for (model, texture, tri_num, img_size_frac) in dataset
     ],
@@ -1200,7 +1310,7 @@ experiments = {
         f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} \
           --sample-kind approx \
           {'' if img_size_frac is None else (f'--image-size-frac {img_size_frac}' if type(img_size_frac) == float else f'--image-size-px {img_size_frac}')}",
-        is_abl=False,
+        out_dir="outputs",
       )
       for (model, texture, tri_num, img_size_frac) in dataset
     ],
@@ -1210,9 +1320,110 @@ experiments = {
       run(
         model, model[:-4] + "_direct.ply",
         f"{f'-d data/{texture}' if len(texture) else ''} -t {tri_num} --sample-kind direct",
-        is_abl=False,
+        out_dir="outputs",
       )
       for (model, texture, tri_num) in dataset_direct
+    ],
+  ],
+
+  "uvatlas-clustering": [
+    *[
+      cmd
+      for f in os.listdir("data")
+      if ".obj" in f and all(v not in f for v in
+        ["basic", "cube", "plane", "sphere", "takifugu", "meadowsweet", "nishiki", "mango",
+        "chozuya", "watercolor_cake", "angelfish", "musk_melon", "officebot"])
+      for cmd in [
+        runnable_cmds([
+          f"{sys.executable} bin/run_uvatlas.py -i data/{f} -o {cl_dir}/{f[:-4]}_uvatlas.obj",
+        ], missing_only=True, output_name=f"{cl_dir}/{f[:-4]}_uvatlas.obj"),
+        run(
+          f"../{cl_dir}/{f[:-4]}_uvatlas.obj", f"{f[:-4]}_uvatlas.ply",
+          flags="",
+          out_dir=cl_dir,
+          bin=measure_flat, eval=False,
+          missing_only=True,
+        )
+      ]
+    ],
+  ],
+
+  "our-clustering-match-uvatlas-planar": [
+    *[
+      cmd
+      for f in os.listdir("data")
+      if ".obj" in f and all(v not in f for v in ["basic", "cube", "plane", "sphere"])
+      for cmd in [
+        run(
+          f,
+          f"{f[:-4]}_match_uvatlas_dev.obj",
+          f"--match-json {cl_dir}/{f[:-4]}_uvatlas.json --eigenvalue one --geometry-only \
+            --eigen-eps 0",
+          bin=clustering_bin, eval=False,
+        ),
+        #run(
+        #  f"../{cl_dir}/{f[:-4]}_match_uvatlas_dev.obj",
+        #  f"{f[:-4]}_match_uvatlas_dev.ply",
+        #  flags="",
+        #  out_dir=cl_dir,
+        #  bin=measure_flat, eval=False,
+        #)
+      ]
+    ],
+  ],
+
+  "xatlas-clustering": [
+    *[
+      cmd
+      for f in os.listdir("data")
+      if ".obj" in f and all(v not in f for v in ["basic", "cube", "plane", "sphere"])
+      for cmd in [
+        runnable_cmds([
+          f"{sys.executable} bin/run_xatlas.py -i data/{f} -o {cl_dir}/{f[:-4]}_xatlas.obj",
+        ], missing_only=True, output_name=f"{cl_dir}/{f}"),
+        run(
+          f"../{cl_dir}/{f[:-4]}_xatlas.obj", f"{f[:-4]}_xatlas.ply",
+          flags="",
+          out_dir=cl_dir,
+          bin=measure_flat, eval=False,
+        )
+      ]
+    ],
+  ],
+
+  "our-clustering-match-xatlas-planar": [
+    *[
+      cmd
+      for f in os.listdir("data")
+      if ".obj" in f and all(v not in f for v in ["basic", "cube", "plane", "sphere"])
+      for cmd in [
+        run(
+          f,
+          f"{f[:-4]}_match_xatlas_planar.ply",
+          f"--match-json {cl_dir}/{f[:-4]}_xatlas.json --eigenvalue one --geometry-only \
+          --eigen-eps 1e-12 --color-eps 100000 --no-wireframe",
+          bin=clustering_bin, eval=False, out_dir=cl_dir,
+          missing_only=True,
+        ),
+      ]
+    ],
+  ],
+
+  "our-clustering-match-xatlas-dev": [
+    *[
+      cmd
+      for f in os.listdir("data")
+      if ".obj" in f and all(v not in f for v in ["basic", "cube", "plane", "sphere"])
+      for cmd in [
+        run(
+          f,
+          f"{f[:-4]}_match_xatlas_dev.ply",
+          f"--match-json {cl_dir}/{f[:-4]}_xatlas.json --eigenvalue zero --geometry-only \
+          --eigen-eps 1e-12 --color-eps 100000 --no-wireframe",
+          bin=clustering_bin, eval=False, out_dir=cl_dir,
+          missing_only=True,
+        ),
+      ]
     ],
   ],
 }

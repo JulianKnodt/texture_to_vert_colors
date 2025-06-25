@@ -8,12 +8,12 @@ def arguments():
   a.add_argument("-o", "--output", help="Destination path",required=True)
   a.add_argument("--size", type=int, default=1024, help="Size of texture")
   a.add_argument("--stats", default=None, help="Where to store stats of running this")
-  a.add_argument("--max-stretch", default=0.16666, type=float, help="Stretch to use")
+  a.add_argument("--max-stretch", default=0.3, type=float, help="Stretch to use")
   return a.parse_args()
 
 def main():
   args = arguments()
-  mesh = o3d.t.io.read_triangle_mesh(args.input)
+  mesh = o3d.t.io.read_triangle_mesh(args.input, enable_post_processing=True)
   stretch, num_charts, _partitions = mesh.compute_uvatlas(size=args.size, max_stretch=args.max_stretch)
   o3d.t.io.write_triangle_mesh(args.output, mesh)
 

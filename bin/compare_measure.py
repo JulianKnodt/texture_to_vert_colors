@@ -3,7 +3,10 @@ import argparse
 import json
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandas as pd
+import scienceplots
+import numpy as np
+
+plt.style.use(["science", "ieee", "no-latex"])
 
 def arguments():
   a = argparse.ArgumentParser()
@@ -16,7 +19,8 @@ our_suffix = f"match_{args.comparison}_{args.our_kind}"
 
 base = "cluster_outputs"
 our_results = sorted([
-  f for f in os.listdir(base) if our_suffix in f and ".json" in f
+  f for f in os.listdir(base)
+  if our_suffix in f and ".json" in f and not ".swp" in f
 ])
 
 comp = [
@@ -24,8 +28,9 @@ comp = [
 ]
 
 keys = [
-  "max_developability", "avg_developability", "median_developability",
-  "max_planarity", "avg_planarity", "median_planarity",
+  "max_developability", "avg_developability",
+  "max_planarity", "avg_planarity",
+  #"boundary_len",
 ]
 
 data_keys = ["planarity", "developability"]
@@ -45,7 +50,7 @@ for (o, c) in zip(our_results, comp):
   o = os.path.join(base, o)
   c = os.path.join(base, c)
   assert(os.path.exists(o))
-  assert(os.path.exists(c))
+  assert(os.path.exists(c)), c
   with open(o, "r") as fo:
     o = json.load(fo)
   with open(c, "r") as fc:
@@ -60,7 +65,6 @@ for (o, c) in zip(our_results, comp):
   for k in keys:
     our_vals[k][name] = o[k]
     cmp_vals[k][name] = c[k]
-    if abs(o[k] - c[k]) < 1e-8: continue
     if o[k] == c[k]: continue
     total[k] += 1
     cmp[k] += o[k] < c[k]
@@ -70,22 +74,44 @@ for (o, c) in zip(our_results, comp):
     our_data[k][name] = o[k]
     cmp_data[k][name] = c[k]
 
+cmp_key = "XAtlas" if args.comparison == "xatlas" else "UVAtlas"
+width = 0.8
+our_label = "Ours (Planar)" if args.our_kind == "planar" else "Ours (Devel.)"
+use_log = True
 for k in keys:
-  #plt.clf()
-  #plt.bar(list(our_vals[k].keys()), list(our_vals[k].values()), log=True, alpha=0.8)
-  #plt.bar(list(cmp_vals[k].keys()), list(cmp_vals[k].values()), log=True, alpha=0.8)
-  #plt.xticks(rotation=90)
-  #plt.title(k)
-  #plt.savefig(f"tmp_{k}.pdf", bbox_inches="tight")
+  if "avg" in k: continue
   print(k, cmp[k], total[k])
+  plt.clf()
+  N = len(cmp_vals[k].keys())
+  plt.bar(np.arange(N) * 2 - width/2, list(our_vals[k].values()), log=use_log, alpha=1,
+    label="Ours", color="green", width=width)
+  plt.bar(np.arange(N) * 2 + width/2, list(cmp_vals[k].values()), log=use_log, alpha=1,
+    label=cmp_key, color="red", width=width)
+  plt.xticks(
+    ticks=np.arange(N) * 2, labels=[k.title().replace("_", " ") for k in
+    cmp_vals[k].keys()],rotation=90,
+    fontsize=2, minor=False,
+  )
+  plt.minorticks_off()
+  plt.tick_params(top=False, right=False)
+  plt.ylabel("Log Radians/Unit Length$^\downarrow$")
+  title = k.title()\
+    .replace("_", " ")\
+    .replace("Planarity", "Planar")\
+    .replace("Developability", "Developable")\
+    .replace("Max", "Least")
+  if "max" in k: title += " Chart"
+  plt.title(title)
+  frame = plt.legend(frameon=True, framealpha=0.6, edgecolor="white",ncols=2)
+  plt.savefig(f"plots/overall_{args.comparison}_{args.our_kind}_{k}.pdf", bbox_inches="tight")
 
+exit()
 for k in data_keys:
   for name in our_data[k]:
     plt.clf()
     o_vals = our_data[k][name]
     c_vals = cmp_data[k][name]
     #keys = pd.Series(["ours", "cmps"
-    cmp_key = "XAtlas" if args.comparison == "xatlas" else "UVAtlas"
     df = pd.DataFrame(data={
       "Ours": o_vals,
       cmp_key: c_vals,

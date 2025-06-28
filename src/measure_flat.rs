@@ -37,20 +37,22 @@ pub fn measure_flat(
 
     // construct chart adjacency
     mesh.geometry_only();
-    let edge_adj = mesh.edge_pos_kinds();
+    let edge_adj = mesh.edge_kinds();
     let mut chart_adj: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
 
-    for ek in edge_adj.values() {
+    let mut bd_len = 0.;
+    for (&[vi0, vi1], ek) in edge_adj.iter() {
         let ek = ek.as_slice();
-        for &fi in ek {
+        for (fo, &fi) in ek.iter().enumerate() {
             let ci = face_charts(fi);
-            for &fj in ek {
+            for &fj in &ek[0..fo] {
                 let cj = face_charts(fj);
                 if ci == cj {
                     continue;
                 }
                 push_uniq(chart_adj.entry(ci).or_default(), cj);
                 push_uniq(chart_adj.entry(cj).or_default(), ci);
+                bd_len += super::dist(mesh.v[vi0], mesh.v[vi1]);
             }
         }
     }
@@ -74,17 +76,18 @@ pub fn measure_flat(
         let face_coloring = pars3d::visualization::greedy_face_coloring(
             |i| face_charts(i),
             mesh.f.len(),
-            |i, j| chart_adj.get(&i).is_some_and(|adjs| adjs.contains(&j)),
+            |gi| chart_adj.get(&gi).map_or(&[], Vec::as_slice),
             &pars3d::coloring::HIGH_CONTRAST,
         );
 
         let mut colored_mesh = mesh.with_face_coloring(&face_coloring);
+        colored_mesh.denormalize(s, t);
         colored_mesh.append(&mut wireframe_mesh.clone());
         let out_scene = colored_mesh.into_scene();
         pars3d::save(&args.cluster_vis, &out_scene)?;
     }
 
-    let mut planarity = per_chart_quadric
+    let planarity = per_chart_quadric
         .iter()
         .map(|q| q.a.eigen_sorted().0[1])
         .collect::<Vec<_>>();
@@ -92,10 +95,7 @@ pub fn measure_flat(
     println!("[INFO]: Max planarity is {max_planarity:e}");
 
     let avg_planarity = planarity.iter().copied().sum::<F>() / per_chart_quadric.len() as F;
-    let (_, &mut median_planarity, _) =
-        planarity.select_nth_unstable_by(num_charts / 2, F::total_cmp);
-
-    let mut devs = per_chart_quadric
+    let devs = per_chart_quadric
         .iter()
         .map(|q| q.a.eigen_sorted().0[0])
         .collect::<Vec<_>>();
@@ -104,8 +104,6 @@ pub fn measure_flat(
     println!("[INFO]: Max developability is {max_developability:e}");
 
     let avg_developability = devs.iter().copied().sum::<F>() / per_chart_quadric.len() as F;
-    let (_, &mut median_developability, _) =
-        devs.select_nth_unstable_by(num_charts / 2, F::total_cmp);
 
     let eigenvalues = per_chart_quadric
         .iter()
@@ -163,13 +161,12 @@ pub fn measure_flat(
         writeln!(
             f,
             r#"{{
-  "eigenvalue_max": {max_e},
-  "max_planarity": {max_planarity},
-  "avg_planarity": {avg_planarity},
-  "median_planarity": {median_planarity},
-  "max_developability": {max_developability},
-  "avg_developability": {avg_developability},
-  "median_developability": {median_developability},
+  "boundary_len": {bd_len},
+  "eigenvalue_max": {max_e:e},
+  "max_planarity": {max_planarity:e},
+  "avg_planarity": {avg_planarity:e},
+  "max_developability": {max_developability:e},
+  "avg_developability": {avg_developability:e},
   "num_charts": {num_charts},
   "developability": {devs:?},
   "planarity": {planarity:?}

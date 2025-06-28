@@ -12,13 +12,9 @@ pub struct Args {
     #[arg(short, long, required = true)]
     pub input: String,
 
-    /// Output PLY file for the color of regions
-    #[arg(short, long, default_value_t = String::new())]
-    pub output: String,
-
     /// Output PLY file, where clusters are colored by their clustering instead of average color
     #[arg(short, long, default_value_t = String::new())]
-    pub cluster_vis: String,
+    pub output: String,
 
     /// Output PLY file, to visualize the optimized eigenvalue of each cluster normalized to the
     /// range [0,1]
@@ -71,7 +67,7 @@ pub fn main() -> std::io::Result<()> {
             no_wireframe: args.no_wireframe,
             max_eigen: args.max_eigen,
             stats: args.stats,
-            cluster_vis: args.cluster_vis,
+            cluster_vis: args.output,
         },
     )
 }

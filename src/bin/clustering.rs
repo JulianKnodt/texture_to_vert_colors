@@ -24,7 +24,7 @@ pub struct Args {
     pub input: String,
 
     /// Output PLY file.
-    #[arg(short, long, required = true)]
+    #[arg(short, long, default_value_t = String::new())]
     pub output: String,
 
     /// Output PLY file, where clusters are colored by their clustering instead of average color
@@ -70,7 +70,7 @@ pub struct Args {
     ordering: OrderingKind,
 
     /// What metric to use when evaluating the quality of output cluster shape
-    #[arg(long, default_value_t = ShapeMetric::AngleDeviation)]
+    #[arg(long, default_value_t = ShapeMetric::MaxManhattanDist)]
     shape_metric: ShapeMetric,
 
     /// Prefer opposite effect of shape metric (For jokes)
@@ -98,6 +98,10 @@ pub struct Args {
     /// Do not include the wireframe in the output.
     #[arg(long)]
     no_wireframe: bool,
+
+    /// Do not use the delta cost function
+    #[arg(long)]
+    no_delta_cost: bool,
 }
 
 impl From<Args> for ClusterArgs {
@@ -112,6 +116,7 @@ impl From<Args> for ClusterArgs {
             ordering: a.ordering,
             shape_metric: a.shape_metric,
             invert_shape: a.invert_shape,
+            no_delta_cost: a.no_delta_cost,
         }
     }
 }
@@ -124,6 +129,7 @@ pub fn main() -> std::io::Result<()> {
 
     let scene = pars3d::load(&args.input).expect(&format!("Failed to load input {}", &args.input));
     let mut mesh = scene.into_flattened_mesh();
+    mesh.f.retain_mut(|f| !f.canonicalize());
     let (s, t) = mesh.normalize();
     //let (cs, ct) = mesh.normalize_colors();
     if args.geometry_only {
@@ -144,8 +150,14 @@ pub fn main() -> std::io::Result<()> {
                 continue;
             }
             let num_charts = l.split_whitespace().nth(1).unwrap();
+            let num_charts = if num_charts.ends_with(",") {
+                num_charts.strip_suffix(",").unwrap()
+            } else {
+                num_charts
+            };
             println!("[INFO]: Target number of charts is {num_charts}");
             args.target_num_charts = Some(num_charts.parse::<usize>().unwrap());
+            break;
         }
     }
 
@@ -168,6 +180,33 @@ pub fn main() -> std::io::Result<()> {
     eprintln!("[INFO]: Output # Charts = {num_charts}");
 
     mesh.denormalize(s, t);
+
+    let mut wireframe_mesh = if args.no_wireframe {
+        pars3d::Mesh::default()
+    } else {
+        let wireframe_parts = pars3d::visualization::face_segmentation_wireframes(
+            |fi| mesh.f[fi].as_slice(),
+            |fi| face_charts[fi],
+            mesh.f.len(),
+            &mesh.v,
+            3e-4,
+        );
+        pars3d::visualization::wireframe_to_mesh(wireframe_parts)
+    };
+    if !args.output.is_empty() {
+        let face_colors = (0..mesh.f.len())
+            .map(|i| chart_attribs[face_charts[i]].1)
+            .collect::<Vec<[F; 3]>>();
+
+        let mut colored_mesh = mesh.with_face_coloring(&face_colors);
+        //colored_mesh.denormalize_colors(cs, ct);
+
+        colored_mesh.append(&mut wireframe_mesh);
+
+        let out_scene = colored_mesh.into_scene();
+        pars3d::save(&args.output, &out_scene)?;
+    }
+
     use texture_to_vert_colors::measure_flat as mf;
     mf::measure_flat(
         &mut mesh,
@@ -182,127 +221,6 @@ pub fn main() -> std::io::Result<()> {
             cluster_vis: args.cluster_vis,
         },
     )?;
-
-    let mut wireframe_mesh = if args.no_wireframe {
-        pars3d::Mesh::default()
-    } else {
-        let wireframe_parts = pars3d::visualization::face_segmentation_wireframes(
-            |fi| mesh.f[fi].as_slice(),
-            |fi| face_charts[fi],
-            mesh.f.len(),
-            &mesh.v,
-            3e-4,
-        );
-        let mut wireframe_mesh = pars3d::visualization::wireframe_to_mesh(wireframe_parts);
-        wireframe_mesh.denormalize(s, t);
-        wireframe_mesh
-    };
-
-    /*
-    if !args.cluster_vis.is_empty() {
-        let face_coloring = pars3d::visualization::greedy_face_coloring(
-            |i| face_charts[i],
-            face_charts.len(),
-            |i, j| chart_adj.get(&i).is_some_and(|adjs| adjs.contains(&j)),
-            &pars3d::coloring::HIGH_CONTRAST,
-        );
-
-        let mut colored_mesh = mesh.with_face_coloring(&face_coloring);
-        colored_mesh.denormalize(s, t);
-        colored_mesh.append(&mut wireframe_mesh.clone());
-        let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.cluster_vis, &out_scene)?;
-    }
-
-    let max_planarity = chart_attribs
-        .iter()
-        .map(|(q, _, _)| q.a.eigen_sorted().0[1])
-        .max_by(F::total_cmp)
-        .unwrap();
-    let max_developability = chart_attribs
-        .iter()
-        .map(|(q, _, _)| q.a.eigen_sorted().0[0])
-        .max_by(F::total_cmp)
-        .unwrap();
-
-    println!("[INFO]: Max planarity is {max_planarity:e}");
-    println!("[INFO]: Max developability is {max_developability:e}");
-    let avg_planarity = chart_attribs
-        .iter()
-        .map(|(q, _, _)| q.a.eigen_sorted().0[0])
-        .sum::<F>()
-        / chart_attribs.len() as F;
-    let avg_developability = chart_attribs
-        .iter()
-        .map(|(q, _, _)| q.a.eigen_sorted().0[1])
-        .sum::<F>()
-        / chart_attribs.len() as F;
-
-    let eigenvalues = chart_attribs
-        .iter()
-        .map(|(q, _, _)| {
-            let eigens = q.a.eigen_sorted().0;
-            args.eigenvalue.apply(eigens)
-        })
-        .collect::<Vec<_>>();
-
-    let [min_e, max_e] = eigenvalues
-        .iter()
-        .fold([F::INFINITY, F::NEG_INFINITY], |[l, h], &n| {
-            [l.min(n), h.max(n)]
-        });
-    assert!(max_e.is_finite());
-    assert!(min_e.is_finite());
-    assert!(max_e >= min_e);
-    println!("[INFO]: Eigenvalues in range [{min_e:e}, {max_e:e}]");
-
-    if !args.eigen_vis.is_empty() {
-        let mut face_eigens = (0..mesh.f.len())
-            .map(|i| eigenvalues[face_charts[i]])
-            .collect::<Vec<F>>();
-        let low = min_e.max(1e-20).ln();
-        let r = max_e.ln() - low;
-        let div = if args.max_eigen > 0. {
-            args.max_eigen.ln()
-        } else {
-            r
-        };
-        for e in &mut face_eigens {
-            *e = e.max(1e-20).ln() - low;
-            if div == 0. {
-                continue;
-            }
-            *e = *e / div;
-            *e = e.clamp(0., 1.);
-        }
-        let face_colors = face_eigens
-            .into_iter()
-            .map(pars3d::coloring::magma)
-            .collect::<Vec<_>>();
-        let mut colored_mesh = mesh.with_face_coloring(&face_colors);
-
-        colored_mesh.denormalize(s, t);
-
-        colored_mesh.append(&mut wireframe_mesh.clone());
-
-        let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.eigen_vis, &out_scene)?;
-    }
-    */
-
-    {
-        let face_colors = (0..mesh.f.len())
-            .map(|i| chart_attribs[face_charts[i]].1)
-            .collect::<Vec<[F; 3]>>();
-
-        let mut colored_mesh = mesh.with_face_coloring(&face_colors);
-        //colored_mesh.denormalize_colors(cs, ct);
-
-        colored_mesh.append(&mut wireframe_mesh);
-
-        let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.output, &out_scene)?;
-    }
 
     if !args.xatlas_output.is_empty() {
         // for each chart, output a separate mesh
@@ -327,24 +245,6 @@ pub fn main() -> std::io::Result<()> {
         }
         pars3d::save(&args.xatlas_output, &out_scene)?;
     }
-
-    /*
-    if !args.stats.is_empty() {
-        let f = std::fs::File::create(args.stats)?;
-        let mut f = BufWriter::new(f);
-        writeln!(
-            f,
-            r#"{{
-  "eigenvalue_max": {max_e},
-  "max_planarity": {max_planarity},
-  "avg_planarity": {avg_planarity},
-  "max_developability": {max_developability},
-  "avg_developability": {avg_developability},
-  "num_charts": {num_charts}
-}}"#
-        )?;
-    }
-    */
 
     Ok(())
 }

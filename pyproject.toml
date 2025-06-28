@@ -19,4 +19,5 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "seaborn>=0.13.2",
     "pandas>=2.3.0",
+    "scienceplots>=2.1.1",
 ]

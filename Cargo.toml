@@ -13,6 +13,7 @@ ordered-float = "5.0.0"
 indicatif = "0.17.11"
 pars3d = { path = "../pars3d", features = ["f64", "svg"] }
 least_sq = { git="https://github.com/JulianKnodt/qr_lst_sq.git", features = ["f64"] }
+#least_sq = { path="..//qr_lst_sq", features = ["f64"] }
 #union-find = { git = "https://github.com/JulianKnodt/union-find.git", version = "0.1.0" }
 union-find = { path = "../union-find", features = ["unchecked"] }
 rayon = { version= "1.10.0", optional = true }

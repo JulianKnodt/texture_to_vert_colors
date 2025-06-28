@@ -66,6 +66,18 @@ pub struct Args {
     /// Perform edge detection on faces instead of on vertices.
     #[arg(long)]
     face: bool,
+
+    /// Include area weighting
+    #[arg(long)]
+    no_area_weight: bool,
+
+    /// Show colors for debugging (red is weak rejected, green is weak accept)
+    #[arg(long)]
+    debug_colors: bool,
+
+    /// Cull triangles below a certain area (no gradient)
+    #[arg(long, default_value_t = 1e-8)]
+    cull_area_below: F,
 }
 
 fn main() {
@@ -86,7 +98,6 @@ fn main() {
         if !args.no_normalize_colors {
             m.normalize_colors();
         }
-        //println!("{:?}", pars3d::aabb::AABB::from_slice(&m.vert_colors));
 
         edge_detection(m, &args);
 
@@ -159,7 +170,7 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
     // gradient for each face (gradient at each vertex is the sum of gradient of adjacent faces)
     for (fi, f) in mesh.f.iter().enumerate() {
         let area = f.area(&mesh.v);
-        if area < 1e-20 {
+        if area < args.cull_area_below {
             continue;
         }
         let n = f.normal(&mesh.v);
@@ -187,7 +198,11 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
             ),
         };
 
-        face_gradients[fi] = q_attr.g[0];
+        face_gradients[fi] = if args.no_area_weight {
+            q_attr.g[0]
+        } else {
+            kmul(area, q_attr.g[0])
+        }
     }
 
     let gradients = if args.face {
@@ -218,7 +233,7 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
         */
         let l = colors.len();
         let (_, &mut median_len, _) =
-            colors.select_nth_unstable_by((3 * l) / 4, |a, b| a[0].total_cmp(&b[0]));
+            colors.select_nth_unstable_by(l / 2, |a, b| a[0].total_cmp(&b[0]));
         println!("{median_len:?}");
         let ml_recip = median_len[0].recip();
         for vc in colors.iter_mut() {
@@ -247,7 +262,7 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
         mesh.v.len()
     };
     // gradient suppresion
-    let mut is_edge = vec![true; src_len];
+    let mut is_edge = vec![false; src_len];
     for i in 0..src_len {
         let mut max_w = 0.;
         let mut max_dir = [0.; 3];
@@ -287,7 +302,7 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
         .fold([F::INFINITY, F::NEG_INFINITY], |[l, h], n| {
             [l.min(n), h.max(n)]
         });
-    println!("Range of vertex gradients is {range:?}");
+    println!("Range of gradients is {range:?}");
 
     // double thresholding
     let mut is_strong = vec![false; src_len];
@@ -303,6 +318,9 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
         is_strong[vi] = strength > args.max_val;
     }
 
+    let og_weaks = (0..src_len)
+        .map(|vi| is_edge[vi] && !is_strong[vi])
+        .collect::<Vec<_>>();
     let mut weaks = (0..src_len)
         .filter(|&vi| is_edge[vi] && !is_strong[vi])
         .collect::<Vec<_>>();
@@ -320,8 +338,7 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
             //num_strong += 1./ d2;
             num_strong += 1;
         }
-        //if num_strong > 1 {
-        if num_strong == 2 {
+        if num_strong > 0 {
             is_strong[n] = true;
             for &adj in adj.adj(n) {
                 weaks.push(adj as usize);
@@ -329,15 +346,24 @@ pub fn edge_detection(mesh: &mut Mesh, args: &Args) {
         }
     }
 
+    let col = |vi| {
+        if !args.debug_colors {
+            [if is_strong[vi] { 1. } else { 0. }; 3]
+        } else {
+            match (is_strong[vi], og_weaks[vi]) {
+                (true, false) => [1.; 3],
+                (true, true) => [0., 1., 0.],
+                (false, true) => [1., 0., 0.],
+                (false, false) => [0.; 3],
+            }
+        }
+    };
     if args.face {
-        let new_face_colors = is_strong
-            .iter()
-            .map(|&s| [if s { 1. } else { 0. }; 3])
-            .collect::<Vec<_>>();
+        let new_face_colors = (0..is_strong.len()).map(col).collect::<Vec<_>>();
         *mesh = mesh.with_face_coloring(&new_face_colors);
     } else {
         for (vi, vc) in mesh.vert_colors.iter_mut().enumerate() {
-            *vc = if is_strong[vi] { [1.; 3] } else { [0.; 3] };
+            *vc = col(vi);
         }
     }
 }

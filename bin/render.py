@@ -74,6 +74,7 @@ def arguments():
   a.add_argument("--roughness", default=0.3, type=float, help="Roughness of the mesh")
   a.add_argument("--ambient-light", type=float, default=0, help="Amount of ambient lighting to use")
   a.add_argument("--shade-flat", action="store_true", help="Use flat shading instead of smooth")
+  a.add_argument("--with-vertex-colors", action="store_true", help="Try using vertex colors")
 
   return a.parse_args()
 
@@ -269,7 +270,7 @@ def main():
     #bpy.ops.object.shade_smooth() # Option1: Gouraud shading
     bpy.ops.object.shade_flat()
 
-  if is_ply:
+  if is_ply or args.with_vertex_colors:
     for o in new_mesh_obs: add_vertex_colors(o)
 
   #for o in mesh_obs: set_mat(o) # TEMPORARY LINE

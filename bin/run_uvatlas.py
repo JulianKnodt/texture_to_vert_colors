@@ -14,6 +14,8 @@ def arguments():
 def main():
   args = arguments()
   mesh = o3d.t.io.read_triangle_mesh(args.input, enable_post_processing=True)
+  # delete previous texture UVs so that they can't be used when processing
+  del mesh.triangle.texture_uvs
   stretch, num_charts, _partitions = mesh.compute_uvatlas(size=args.size, max_stretch=args.max_stretch)
   o3d.t.io.write_triangle_mesh(args.output, mesh)
 

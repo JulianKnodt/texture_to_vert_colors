@@ -496,22 +496,6 @@ pub fn texture_to_vert_colors<'a>(
         return out;
     }
 
-    /*
-    macro_rules! check_manifold {
-        () => {{
-            if out.num_edge_kinds().2 != 0 {
-                for (e, fis) in out.non_manifold_faces() {
-                    println!("Non-manifold edge {e:?}");
-                    for &fi in &fis {
-                        println!("\t- {:?} {:?}", face_labels[fi], out.f[fi]);
-                    }
-                }
-                panic!("Found non-manifold edge");
-            }
-        }};
-    }
-    */
-
     // map from (new vertex -> adjacent vertices that share the same corner on these two faces)
     // TODO make this a small vec of size 2
     let mut edge_adj: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -1165,6 +1149,11 @@ pub fn sample_exact(
         out.f.push(FaceKind::Quad(new_verts));
     }
     if out.f.len() == start_f {
+        face_labels.truncate(start_f);
+        out.f.truncate(start_f);
+        out.vert_colors.truncate(start);
+        out.v.truncate(start);
+        out.n.truncate(start);
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1451,7 +1440,10 @@ pub fn sample_exact(
         curr = next;
     }
 
-    assert_eq!(og_order.len(), f.len());
+    if og_order.len() != f.len() {
+        triagram!();
+    }
+    assert_eq!(og_order.len(), f.len(), "{og_order:?} {corner_verts:?}");
     while og_order[0] != f_slice[0] {
         og_order.rotate_left(1);
     }

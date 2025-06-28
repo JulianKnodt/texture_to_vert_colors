@@ -146,6 +146,9 @@ dataset = [
   #("hot_air_balloon.obj", "", 1000000, 0.5),
   #("dish_with_maple_leaves.obj", "", 2000000, 0.25),
   #("milk_carton.obj", "", 1000000, None),
+  #("bag_with_floral_pattern.obj", "", 500000, 0.5),
+  #("old_teapot.obj", "", 500000, 0.4),
+  #("vase.obj", "vase_2k.png", 150000, 0.5),
 
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
@@ -178,7 +181,7 @@ experiments = {
       "data/basic_tri.obj",
       22, -0.01, 0, 0, rz=0, fy=-1000,
       out="ablations/basic_tri_input.png",
-      #missing_only=True,
+      missing_only=True,
     ),
     *[
       run("basic_tri.obj", f"basic_tri_{k}.ply", f"-r 1. --sample-kind {k}")
@@ -632,19 +635,19 @@ experiments = {
     cmd
     for (model, ratio, sample_kind, triangulate, img_frac, bake_res, w_mul) in [
       #("scroll.obj", 0.05, "approx", True, 0.5, 1024),
-      ("scroll_constant.obj", 0.15, "approx", True, 1, 2048, 1),
+      #("scroll_constant.obj", 0.15, "approx", True, 1, 2048, 1),
       #("jar_with_dragon_design_boundary.obj", 0.5, "approx", True, 1., 512, 5e-2),
       #("ogre.obj", 0.02, "direct", False, 1., 1024),
-      #("longevity_buns.obj", 0.09, "approx", True, 0.5, 1024, 1e-1),
+      ("longevity_buns.obj", 0.09, "approx", True, 0.5, 512, 4e-1),
     ]
     for cmd in [
-      run(
-        model, model[:-4] + ".ply",
-        f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
-        {'--triangulate' if triangulate else ''} \
-        --image-size-frac {img_frac}",
-        missing_only=True,
-      ),
+      #run(
+      #  model, model[:-4] + ".ply",
+      #  f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
+      #  {'--triangulate' if triangulate else ''} \
+      #  --image-size-frac {img_frac}",
+      #  missing_only=True,
+      #),
       *[
         runnable_cmds([
           f"{sys.executable} bin/tutte_param.py -i ablations/{model[:-4]}.ply \
@@ -746,6 +749,51 @@ experiments = {
       0, -13, 0, 0, fy=-4, rz=0, cx=0,lx=0, h=560,
       out="ablations/scroll_constant_concat_3e-01_3d_inset.png",
       extras="--light-z -80 --roughness 1 --shade-flat",
+    ),
+  ],
+
+  "tutte-param-render-longevity-buns": [
+    render(
+      "data/longevity_buns.obj",
+      15.5, -20, 5.5, 0, fy=4, rz=20, h=800,
+      out="ablations/longevity_buns_input.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      "ablations/longevity_buns_pos_only.obj",
+      15.5, -20, 5.5, 0, fy=4, rz=20, h=800,
+      out="ablations/longevity_buns_pos_only_3d.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      "ablations/longevity_buns_add_1e-02.obj",
+      15.5, -20, 5.5, 0, fy=4, rz=20, h=800,
+      out="ablations/longevity_buns_add_1e-02_3d.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+
+    # insets
+    render(
+      "data/longevity_buns.obj",
+      5.5, -10, 5.5, 0, fy=4, rz=10, h=512,
+      out="ablations/longevity_buns_inset.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      "ablations/longevity_buns_pos_only.obj",
+      5.5, -10, 5.5, 0, fy=4, rz=10, h=512,
+      out="ablations/longevity_buns_pos_only_3d_inset.png",
+      extras="--light-z -80 --roughness 1",
+    ),
+    render(
+      "ablations/longevity_buns_add_1e-02.obj",
+      5.5, -10, 5.5, 0, fy=4, rz=10, h=512,
+      out="ablations/longevity_buns_add_1e-02_3d_inset.png",
+      extras="--light-z -80 --roughness 1",
     ),
   ],
 
@@ -1162,13 +1210,13 @@ experiments = {
   #  ],
   #],
 
-  "edge-detection": [
+  "edge-detection-butterfly": [
     run(
       "../outputs/tiger_butterfly_approx.ply",
       "tiger_butterfly_edges.ply",
       #"--smoothing-iters 10 --min-val 0 --max-val 0",
       "--smoothing-iters 4 --min-val 1e-4 --max-val 5e-4 \
-        --cone-angle-degrees 30 --no-normalize-colors",
+        --cone-angle-degrees 30 --no-normalize-colors --no-area-weight",
       #"--smoothing-iters 4 --min-val 1e-5 --max-val 3e-4 --cone-angle-degrees 30",
       bin=edge_detection_bin, eval=False,
     ),
@@ -1205,6 +1253,57 @@ experiments = {
       f"{sys.executable} bin/canny_edge.py -i ablations/tiger_butterfly_input.png \
         -o ablations/tiger_butterfly_rendered_edges.png --min 80 --max 180"
     ]),
+  ],
+
+  "edge-detection-bag-with-floral-pattern": [
+    run(
+      "../outputs/bag_with_floral_pattern_approx.ply",
+      "bag_with_floral_pattern_edges.ply",
+      "--smoothing-iters 0 --min-val 1e-3 --max-val 1.2e-3 \
+        --cone-angle-degrees 45 --no-normalize-colors \
+        --cull-area-below 2e-7",
+      bin=edge_detection_bin, eval=False,
+    ),
+
+    render(
+      "data/bag_with_floral_pattern.obj",
+      9, -17.5, 5.5, 0, fy=0, rz=70, w=800,lx=0.5,
+      out="ablations/bag_with_floral_pattern_input.png",
+      extras="--roughness 1 --light-z -50 --wireframe-thickness 1e-2",
+      missing_only=True,
+    ),
+    render(
+      "data/bag_with_floral_pattern.obj",
+      9, -17.5, 5.5, 0, fy=0, rz=70, w=800,lx=0.5,
+      out="ablations/bag_with_floral_pattern_input_no_wireframe.png",
+      extras="--roughness 1 --light-z -50",
+      missing_only=True,
+    ),
+
+    render(
+      "ablations/bag_with_floral_pattern_edges.ply",
+      9, -17.5, 5.5, 0, fy=0, rz=70, w=800,lx=0.5,
+      out="ablations/bag_with_floral_pattern_edges.png",
+      extras="--roughness 1 --light-z -50",
+    ),
+
+    runnable_cmds([
+      "cp data/bag_with_floral_pattern* tmp/",
+      f"{sys.executable} bin/canny_edge.py -i tmp/bag_with_floral_pattern_diffuse.png \
+        -o tmp/bag_with_floral_pattern_diffuse.png --min 30 --max 50"
+    ], output_name="bag_with_floral_pattern_uv_space.png"),
+
+    render(
+      "tmp/bag_with_floral_pattern.obj",
+      9, -17.5, 5.5, 0, fy=0, rz=70, w=800,lx=0.5,
+      out="ablations/bag_with_floral_pattern_uv_space.png",
+      extras="--roughness 1 --light-z -50",
+    ),
+
+    runnable_cmds([
+      f"{sys.executable} bin/canny_edge.py -i ablations/bag_with_floral_pattern_input_no_wireframe.png \
+        -o ablations/bag_with_floral_pattern_rendered_edges.png --min 80 --max 180"
+    ], output_name="bag_with_floral_pattern_rendered_edges.png"),
   ],
 
   "compare-subdiv": [
@@ -1332,23 +1431,24 @@ experiments = {
       for f in os.listdir("data")
       if ".obj" in f and all(v not in f for v in
         ["basic", "cube", "plane", "sphere", "takifugu", "meadowsweet", "nishiki", "mango",
-        "chozuya", "watercolor_cake", "angelfish", "musk_melon", "officebot"])
+        "chozuya", "watercolor_cake", "angelfish", "musk_melon", "officebot", "breakfast",
+        "oshima", "maple_leaves", "tiger", "ibis", "scan_vase", "newt", "flowers_in_vase",
+        "watermelon", "thin_tri", "non_manifold", "open_top_box", "boundary", "scroll_constant"])
       for cmd in [
         runnable_cmds([
           f"{sys.executable} bin/run_uvatlas.py -i data/{f} -o {cl_dir}/{f[:-4]}_uvatlas.obj",
         ], missing_only=True, output_name=f"{cl_dir}/{f[:-4]}_uvatlas.obj"),
         run(
-          f"../{cl_dir}/{f[:-4]}_uvatlas.obj", f"{f[:-4]}_uvatlas.ply",
+          f"../{cl_dir}/{f[:-4]}_uvatlas.obj", f"{f[:-4]}_uvatlas.obj",
           flags="",
           out_dir=cl_dir,
           bin=measure_flat, eval=False,
-          missing_only=True,
         )
       ]
     ],
   ],
 
-  "our-clustering-match-uvatlas-planar": [
+  "our-clustering-match-uvatlas": [
     *[
       cmd
       for f in os.listdir("data")
@@ -1356,18 +1456,15 @@ experiments = {
       for cmd in [
         run(
           f,
-          f"{f[:-4]}_match_uvatlas_dev.obj",
-          f"--match-json {cl_dir}/{f[:-4]}_uvatlas.json --eigenvalue one --geometry-only \
-            --eigen-eps 0",
+          f"{f[:-4]}_match_uvatlas_{label}.ply",
+          f"--match-json {cl_dir}/{f[:-4]}_uvatlas.json --eigenvalue {egv} --geometry-only \
+            --eigen-eps 1e-8 --color-eps 100000 --no-wireframe \
+            --shape-metric max-manhattan-dist --no-delta-cost \
+            --cluster-vis {cl_dir}/{f[:-4]}_match_uvatlas_{label}.ply",
+          out_dir=cl_dir,
           bin=clustering_bin, eval=False,
-        ),
-        #run(
-        #  f"../{cl_dir}/{f[:-4]}_match_uvatlas_dev.obj",
-        #  f"{f[:-4]}_match_uvatlas_dev.ply",
-        #  flags="",
-        #  out_dir=cl_dir,
-        #  bin=measure_flat, eval=False,
-        #)
+          missing_only=True,
+        ) for (label, egv) in [("planar", "one"), ("dev", "zero")]
       ]
     ],
   ],
@@ -1376,13 +1473,17 @@ experiments = {
     *[
       cmd
       for f in os.listdir("data")
-      if ".obj" in f and all(v not in f for v in ["basic", "cube", "plane", "sphere"])
+      if ".obj" in f and all(
+        v not in f for v
+        in ["basic", "cube", "plane", "sphere", "thin_tri", "non_manifold", "open_top_box",
+          "boundary", "scroll_constant"]
+      )
       for cmd in [
         runnable_cmds([
           f"{sys.executable} bin/run_xatlas.py -i data/{f} -o {cl_dir}/{f[:-4]}_xatlas.obj",
-        ], missing_only=True, output_name=f"{cl_dir}/{f}"),
+        ], missing_only=True, output_name=f"{cl_dir}/{f[:-4]}_xatlas.obj"),
         run(
-          f"../{cl_dir}/{f[:-4]}_xatlas.obj", f"{f[:-4]}_xatlas.ply",
+          f"../{cl_dir}/{f[:-4]}_xatlas.obj", f"{f[:-4]}_xatlas.obj",
           flags="",
           out_dir=cl_dir,
           bin=measure_flat, eval=False,
@@ -1391,7 +1492,7 @@ experiments = {
     ],
   ],
 
-  "our-clustering-match-xatlas-planar": [
+  "our-clustering-match-xatlas": [
     *[
       cmd
       for f in os.listdir("data")
@@ -1399,31 +1500,154 @@ experiments = {
       for cmd in [
         run(
           f,
-          f"{f[:-4]}_match_xatlas_planar.ply",
-          f"--match-json {cl_dir}/{f[:-4]}_xatlas.json --eigenvalue one --geometry-only \
-          --eigen-eps 1e-12 --color-eps 100000 --no-wireframe",
+          f"{f[:-4]}_match_xatlas_{label}.ply",
+          f"--match-json {cl_dir}/{f[:-4]}_xatlas.json --eigenvalue {egv} --geometry-only \
+          --eigen-eps 1e-8 --color-eps 100000 --no-wireframe \
+          --shape-metric max-manhattan-dist --no-delta-cost \
+          --cluster-vis {cl_dir}/{f[:-4]}_match_xatlas_{label}.ply",
           bin=clustering_bin, eval=False, out_dir=cl_dir,
           missing_only=True,
-        ),
+        ) for (label, egv) in [("planar", "one"), ("dev", "zero")]
       ]
     ],
   ],
 
-  "our-clustering-match-xatlas-dev": [
+  "render-ours-xatlas": [
+    render(
+      "data/baluster_vase.obj",
+      2, -34, 0, 0, fy=-11.5, rz=0, w=450,
+      out="ablations/baluster_vase_input.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+      missing_only=True,
+    ),
+    render(
+      "cluster_outputs/baluster_vase_xatlas.obj",
+      2, -34, 0, 0, fy=-11.5, rz=0, w=450,
+      out="ablations/baluster_vase_xatlas.png",
+      extras="--roughness 1 --light-z -50 --light-x 20 --with-vertex-colors",
+    ),
+    render(
+      "cluster_outputs/baluster_vase_match_xatlas_planar.ply",
+      2, -34, 0, 0, fy=-11.5, rz=0, w=450,
+      out="ablations/baluster_vase_match_xatlas_planar.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+    ),
+    render(
+      "cluster_outputs/baluster_vase_match_xatlas_dev.ply",
+      2, -34, 0, 0, fy=-11.5, rz=0, w=450,
+      out="ablations/baluster_vase_match_xatlas_dev.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+    ),
+
+    run(
+      "baluster_vase.obj",
+      "baluster_vase_cmp_planar.ply",
+      f"-t 32 --eigenvalue one --cluster-vis ablations/baluster_vase_cmp_planar.ply \
+      --eigen-eps 1e-10 --geometry-only --shape-metric max-manhattan-dist",
+      bin=clustering_bin, eval=False,
+    ),
+    render(
+      "ablations/baluster_vase_cmp_planar.ply",
+      2, -34, 0, 0, fy=-11.5, rz=0, w=450,
+      out="ablations/baluster_vase_cmp_planar.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+    ),
+
+    run(
+      "baluster_vase.obj",
+      "baluster_vase_cmp_dev.ply",
+      f"-t 32 --eigenvalue zero --cluster-vis ablations/baluster_vase_cmp_dev.ply \
+      --eigen-eps 1e-10 --geometry-only --shape-metric boundary-length",
+      bin=clustering_bin, eval=False,
+    ),
+    render(
+      "ablations/baluster_vase_cmp_dev.ply",
+      2, -34, 0, 0, fy=-11.5, rz=0, w=450,
+      out="ablations/baluster_vase_cmp_dev.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+    ),
+  ],
+
+  "render-ours-uvatlas": [
+    render(
+      "data/vase.obj",
+      6, -17, 6, 0, fy=0, rz=0, w=600,
+      out="ablations/vase_input.png",
+      extras="--roughness 1 --light-z -50",
+      missing_only=True,
+    ),
+    render(
+      "cluster_outputs/vase_uvatlas.obj",
+      6, -17, 6, 0, fy=0, rz=0, w=600,
+      out="ablations/vase_uvatlas.png",
+      extras="--roughness 1 --light-z -50 --with-vertex-colors",
+    ),
+    render(
+      "cluster_outputs/vase_match_uvatlas_planar.ply",
+      6, -17, 6, 0, fy=0, rz=0, w=600,
+      out="ablations/vase_match_uvatlas_planar.png",
+      extras="--roughness 1 --light-z -50",
+    ),
+    render(
+      "cluster_outputs/vase_match_uvatlas_dev.ply",
+      6, -17, 6, 0, fy=0, rz=0, w=600,
+      out="ablations/vase_match_uvatlas_dev.png",
+      extras="--roughness 1 --light-z -50",
+    ),
+
+    #run(
+    #  "../outputs/vase_approx.ply",
+    #  "vase_color.ply",
+    #  f"-t 150 --eigenvalue one --cluster-vis ablations/vase_clusters.ply \
+    #    --eigen-eps 1e-3 --shape-metric max-euclidean-dist --color-eps 0",
+    #  bin=clustering_bin, eval=False,
+    #),
+    #render(
+    #  "ablations/vase_clusters.ply",
+    #  6, -17, 6, 0, fy=0, rz=0, w=600,
+    #  out="ablations/vase_clusters.png",
+    #  extras="--roughness 1 --light-z -50",
+    #),
+    #render(
+    #  "ablations/vase_color.ply",
+    #  6, -17, 6, 0, fy=0, rz=0, w=600,
+    #  out="ablations/vase_color.png",
+    #  extras="--roughness 1 --light-z -50",
+    #),
+
+    #run(
+    #  "vase.obj",
+    #  "vase_cmp_planar.ply",
+    #  f"-t 64 --eigenvalue one --cluster-vis ablations/vase_cmp_planar.ply \
+    #  --eigen-eps 1e-11 --geometry-only --shape-metric boundary-length",
+    #  bin=clustering_bin, eval=False,
+    #),
+    #run(
+    #  "vase.obj",
+    #  "vase_cmp_dev.ply",
+    #  f"-t 64 --eigenvalue zero --cluster-vis ablations/vase_cmp_dev.ply \
+    #  --eigen-eps 1e-11 --geometry-only --shape-metric boundary-length",
+    #  bin=clustering_bin, eval=False,
+    #),
+    #render(
+    #  "ablations/vase_cmp_planar.ply",
+    #  6, -17, 6, 0, fy=0, rz=0, w=600,
+    #  out="ablations/vase_cmp_planar.png",
+    #  extras="--roughness 1 --light-z -50",
+    #),
+    #render(
+    #  "ablations/vase_cmp_dev.ply",
+    #  6, -17, 6, 0, fy=0, rz=0, w=600,
+    #  out="ablations/vase_cmp_dev.png",
+    #  extras="--roughness 1 --light-z -50",
+    #),
+  ],
+
+  "compare-remeshing": [
     *[
-      cmd
-      for f in os.listdir("data")
-      if ".obj" in f and all(v not in f for v in ["basic", "cube", "plane", "sphere"])
-      for cmd in [
-        run(
-          f,
-          f"{f[:-4]}_match_xatlas_dev.ply",
-          f"--match-json {cl_dir}/{f[:-4]}_xatlas.json --eigenvalue zero --geometry-only \
-          --eigen-eps 1e-12 --color-eps 100000 --no-wireframe",
-          bin=clustering_bin, eval=False, out_dir=cl_dir,
-          missing_only=True,
-        ),
-      ]
+      run("traffic_light_with_stickers.obj", f"traffic_light_with_stickers_{k}.ply",
+        f"-t 2000000 --sample-kind {k} --image-size-frac 0.4 --triangulate-input")
+      for k in ["exact", "approx", "direct"]
     ],
   ],
 }

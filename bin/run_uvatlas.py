@@ -9,18 +9,23 @@ def arguments():
   a.add_argument("--size", type=int, default=1024, help="Size of texture")
   a.add_argument("--stats", default=None, help="Where to store stats of running this")
   a.add_argument("--max-stretch", default=0.3, type=float, help="Stretch to use")
+  a.add_argument("--no-delete-uvs", action="store_true", help="Do not delete input UVs")
   return a.parse_args()
 
 def main():
   args = arguments()
   mesh = o3d.t.io.read_triangle_mesh(args.input, enable_post_processing=True)
   # delete previous texture UVs so that they can't be used when processing
-  del mesh.triangle.texture_uvs
+  if "texture_uvs" in mesh.triangle and not args.no_delete_uvs:
+    del mesh.triangle.texture_uvs
+
+  mesh.remove_non_manifold_edges()
   stretch, num_charts, _partitions = mesh.compute_uvatlas(size=args.size, max_stretch=args.max_stretch)
-  o3d.t.io.write_triangle_mesh(args.output, mesh)
 
   print("Stretch =", stretch)
   print("Num Charts =", num_charts)
+
+  o3d.t.io.write_triangle_mesh(args.output, mesh)
 
   if args.stats is None: return
   data = {}

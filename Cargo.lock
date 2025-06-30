@@ -602,6 +602,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
+name = "sdfs"
+version = "0.1.0"
+source = "git+https://github.com/JulianKnodt/sdfs.git#f920646532250e23be2c466ab5892dd4034b805d"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.219"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -683,6 +691,7 @@ dependencies = [
  "pars3d",
  "priority-queue",
  "rayon",
+ "sdfs",
  "serde",
  "smallvec",
  "sparse_lu",

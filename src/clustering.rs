@@ -46,6 +46,9 @@ pub struct Args {
     /// Prefer opposite effect of shape metric (For jokes)
     /// Mey kill perf.
     pub invert_shape: bool,
+
+    /// Do not use the delta cost, use the straight cost.
+    pub no_delta_cost: bool,
 }
 
 pub fn face_clustering<'a, 'b>(
@@ -242,7 +245,11 @@ pub fn face_clustering<'a, 'b>(
             let ev1 = prev_eigens[e1];
             let [evn, ev0, ev1] = [evn, ev0, ev1].map(F::abs);
             // subtract previous values here (only penalize added deviation)?
-            let cost = evn - (ev0 + ev1);
+            let cost = if args.no_delta_cost {
+                evn
+            } else {
+                evn - (ev0 + ev1)
+            };
 
             // also need to compute deviation from constant color
             let new_area = area0 + area1;

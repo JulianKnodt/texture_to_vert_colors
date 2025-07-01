@@ -20,4 +20,5 @@ dependencies = [
     "seaborn>=0.13.2",
     "pandas>=2.3.0",
     "scienceplots>=2.1.1",
+    "potpourri3d>=1.2.2",
 ]

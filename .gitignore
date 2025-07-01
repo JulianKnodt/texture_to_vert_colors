@@ -14,3 +14,4 @@ profile.json.gz
 __pycache__/
 tmp/
 cluster_outputs/
+*.csv

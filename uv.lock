@@ -812,6 +812,31 @@ wheels = [
 ]
 
 [[package]]
+name = "potpourri3d"
+version = "1.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/23/a6/21f61bcb45c5b4e32a14db906c4635b641eabe523983dd83648c79eaf4e4/potpourri3d-1.2.2.tar.gz", hash = "sha256:212824954aa3a2f41dd6822017c2df8ab0e476a679a5ebb5be907e8b39558d97", size = 30450181 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/ae/540592c9ce76ede14a636ca0563f73847a985c583d16a71de0a8640ade44/potpourri3d-1.2.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:89692ccd37eff451551e4e3e555dfef80ce368336834f72ff17187cb3bb89f17", size = 3672007 },
+    { url = "https://files.pythonhosted.org/packages/a7/de/852f38c6a402ee65445ca8d3ad7d198d6c0a6fd9c348e0b1b8c20362cce1/potpourri3d-1.2.2-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:6e83aa73f7d3bad8a2af0e802f02df5fb4e0c6838af0abc3857cd01af6dbed52", size = 3239773 },
+    { url = "https://files.pythonhosted.org/packages/ae/69/ab5389f1c3f98a78ee44a7da9105360d9ac67fcedfdaa376486d8bbbe3a2/potpourri3d-1.2.2-cp310-cp310-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:f13dffc5ad2c9a8614392e335725a58aa3b9514fd9b9977d02eb9ad7763aae8e", size = 3653595 },
+    { url = "https://files.pythonhosted.org/packages/9a/04/ce82a3f9764ac4cc6a122fbdba763762ca86c45af1169ef3669dc141e0e0/potpourri3d-1.2.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bfd7583c63d47eb9085efedc3fc3751840f54102e5ef18a4998a7e65327aab98", size = 3431736 },
+    { url = "https://files.pythonhosted.org/packages/db/32/c3458e721ff19e46f214cc0f040bf1f1e12ae758850fcfae55192d6079bf/potpourri3d-1.2.2-cp310-cp310-musllinux_1_2_i686.whl", hash = "sha256:bb65201baa8bf198fa3fd17c4a075c03396b36d0a50927f8ec5875efd39a2c81", size = 4880213 },
+    { url = "https://files.pythonhosted.org/packages/85/1a/7cc26ddbd3c59ec648600ba37867ceb91eb14af7babdca5a3f749cf3377a/potpourri3d-1.2.2-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:a0e201a42d9381b7951db1eb4accabe13e5a818ae5e4eb72a0ea25fa7fc10d9d", size = 4613855 },
+    { url = "https://files.pythonhosted.org/packages/fe/06/fb6f873d1b5f1f33be8f942fd53718c35db6724d5f019252437945444366/potpourri3d-1.2.2-cp310-cp310-win32.whl", hash = "sha256:fefc422386d8ab913be0caa1256a26fa5facc18bfa9ca2f60f4c8a3b1e118caf", size = 4434098 },
+    { url = "https://files.pythonhosted.org/packages/fe/ee/32b3eb75266d2cbd74936bd11b5ce8e07c49f4893c92ee5d2ec15dd17a35/potpourri3d-1.2.2-cp310-cp310-win_amd64.whl", hash = "sha256:879910004423ad5aec2e31dbc9267d26b7f219ee743c116eac67aa47d4edfcb1", size = 6032983 },
+    { url = "https://files.pythonhosted.org/packages/4f/f1/47d307c52ff3c70cf296cdb466a46d2212db4b0a85e2472acc6625d5a23b/potpourri3d-1.2.2-pp310-pypy310_pp73-macosx_10_15_x86_64.whl", hash = "sha256:8ae1a3b36b1f54cd64a0505c50bf960dfaf20a971dc470477572b502da8ffaef", size = 3676366 },
+    { url = "https://files.pythonhosted.org/packages/e4/51/f87e74cea71cdf9f203219ebf0a82ffe85de2f23bb749dd198f9f0264bf3/potpourri3d-1.2.2-pp310-pypy310_pp73-macosx_11_0_arm64.whl", hash = "sha256:cdf003af182ffb69a9d586ea7a62679d2915043edc487db49feefed27cb78ed9", size = 3239571 },
+    { url = "https://files.pythonhosted.org/packages/d7/0f/9c38709199d41d385b27cf39bf7f96eddf75123981fa63c86ca3b0c68054/potpourri3d-1.2.2-pp310-pypy310_pp73-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:b953d803155c95fdadf468e912e63ec0cdb2dbbd3ff852b22accd48c539ad368", size = 3654113 },
+    { url = "https://files.pythonhosted.org/packages/a5/cc/de08ceebd2656fc31026448580ceafbbbfba1ef1b4fcc8745983d219da1d/potpourri3d-1.2.2-pp310-pypy310_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:059b3cc49185946de6ed2cb78ee20988e112e6278e3168b0abe2b503393a00fa", size = 3433517 },
+    { url = "https://files.pythonhosted.org/packages/e4/37/c988e123d4b693153fc621bc60442f84ce2249a8a814687822005496fd6f/potpourri3d-1.2.2-pp310-pypy310_pp73-win_amd64.whl", hash = "sha256:a943c8154e61bbeffebf0c028268c23dc0121964926ccd402aa4cfe584a82457", size = 6032573 },
+]
+
+[[package]]
 name = "pycparser"
 version = "2.22"
 source = { registry = "https://pypi.org/simple" }
@@ -1094,6 +1119,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pandas" },
     { name = "pillow" },
+    { name = "potpourri3d" },
     { name = "robust-laplacian" },
     { name = "scienceplots" },
     { name = "scipy" },
@@ -1113,6 +1139,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pandas", specifier = ">=2.3.0" },
     { name = "pillow", specifier = ">=11.2.1" },
+    { name = "potpourri3d", specifier = ">=1.2.2" },
     { name = "robust-laplacian", specifier = ">=1.0.0" },
     { name = "scienceplots", specifier = ">=2.1.1" },
     { name = "scipy", specifier = ">=1.15.3" },

@@ -64,7 +64,7 @@ pub struct Args {
     stats: String,
 
     /// How much to separate each pixel by (DEBUGGING)
-    #[arg(long, default_value_t = 0.99)]
+    #[arg(long, default_value_t = 0.999)]
     pixel_sep: F,
 
     /// How much to pull each vertex associated with an edge toward it.
@@ -227,6 +227,7 @@ pub fn main() {
         } else {
             mesh.normalize()
         };
+
         if args.triangulate_input {
             mesh.triangulate();
         } else {
@@ -294,6 +295,7 @@ pub fn main() {
   "num_vertices": {},
   "input_num_faces": {},
   "input_num_vertices": {},
+  "texture_size": {},
   "num_boundary_edges": {output_bd_edges},
   "input_num_boundary_edges": {input_bd_edges},
   "num_non_manifold_edges": {output_non_manifold_edges},
@@ -303,6 +305,12 @@ pub fn main() {
             out_scene.num_vertices(),
             scene.num_faces(),
             scene.num_vertices(),
+            if let Some(diff_img) = diff_img.as_ref() {
+                let (w, h) = diff_img.dimensions();
+                format!("[{w},{h}]")
+            } else {
+                String::from("null")
+            }
         )
         .expect("Failed to write stats");
     }
@@ -1077,13 +1085,17 @@ pub fn sample_exact(
             [u + (1. - delta), v + delta],
         ];
         let cfs = cfs.map(|[u, v]| [u / w as F, v / h as F]);
+        let mut cf_aabb = pars3d::aabb::AABB::<F, 2>::new();
+        for cf in cfs {
+            cf_aabb.add_point(cf);
+        }
 
         let barys = cfs.map(|cf| uv_f.barycentric(cf));
 
-        let all_outside = uv_f.as_triangle_fan().all(|uv_t| {
-            let t_bary = cfs.map(|cf| pars3d::barycentric_2d(cf, uv_t));
-            (0..3).any(|i| t_bary.iter().all(|b| b[i] < 0.) || t_bary.iter().all(|b| b[i] > 1.))
-        });
+        let all_outside = uv_f
+            .as_triangle_fan()
+            .all(|uv_t| !cf_aabb.intersects_tri(uv_t));
+
         if all_outside {
             continue;
         }
@@ -1441,7 +1453,7 @@ pub fn sample_exact(
     }
 
     if og_order.len() != f.len() {
-        triagram!();
+        save_bad_mesh!("There was an island");
     }
     assert_eq!(og_order.len(), f.len(), "{og_order:?} {corner_verts:?}");
     while og_order[0] != f_slice[0] {

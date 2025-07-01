@@ -75,6 +75,7 @@ def arguments():
   a.add_argument("--ambient-light", type=float, default=0, help="Amount of ambient lighting to use")
   a.add_argument("--shade-flat", action="store_true", help="Use flat shading instead of smooth")
   a.add_argument("--with-vertex-colors", action="store_true", help="Try using vertex colors")
+  a.add_argument("--texture-res", default=None, type=int, help="Resolution to change a texture image to")
 
   return a.parse_args()
 
@@ -248,6 +249,9 @@ def main():
   elif ".fbx" in args.mesh:
     bpy.ops.import_scene.fbx(filepath=args.mesh)
   else: assert(False), args.mesh
+
+  if args.texture_res is not None:
+    bpy.data.images[0].scale(args.texture_res, args.texture_res)
 
   if args.rigid_body:
     # make the input mesh passive

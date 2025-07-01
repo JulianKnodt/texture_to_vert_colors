@@ -34,3 +34,5 @@ pub mod clustering;
 
 /// Shared code for measuring flatness of regions.
 pub mod measure_flat;
+
+pub mod vector_field;

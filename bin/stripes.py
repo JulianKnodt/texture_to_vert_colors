@@ -78,9 +78,9 @@ def main():
 
   # per vertex gradient function
   out = solver.transport_tangent_vectors(np.nonzero(mask)[0], grads_tan)
-  out /= np.linalg.norm(out,axis=-1,keepdims=True) + 1e-8
+  gl_dirs = out[:, 0, None] * x_basis + out[:, 1, None] * y_basis
   if args.output is not None:
-    np.savetxt(args.output, out, delimiter=',')
+    np.savetxt(args.output, gl_dirs, delimiter=',')
 
 def luma(rgb):
   return np.sum(np.array([0.299, 0.587, 0.114]) * rgb)

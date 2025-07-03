@@ -1,4 +1,4 @@
-use super::{F, add, dot, kmul, length, normalize, sub};
+use super::{F, add, kmul, length, normalize};
 use crate::clustering::luma;
 use crate::quadric::{AttrWeights, Quadric};
 use pars3d::FaceKind;
@@ -23,8 +23,7 @@ pub fn texture_grad_field(m: &pars3d::Mesh, area_weight: bool) -> Vec<[F; 3]> {
                 $vis.map(|vi| [luma(m.vert_colors[vi])]),
                 attr_ws,
             )
-          }}
-        );
+          }});
 
         // add attributes as well
         let q_attr = match f {
@@ -50,15 +49,8 @@ pub fn texture_grad_field(m: &pars3d::Mesh, area_weight: bool) -> Vec<[F; 3]> {
 pub fn dir_field_relaxation(
     dir_field: &mut [[F; 3]],
     adj: pars3d::adjacency::Adj<F>,
-    normals: impl Fn(usize) -> [F; 3],
     iters: usize,
 ) {
-    for (i, d) in dir_field.iter_mut().enumerate() {
-        let n = normalize(normals(i));
-        let ortho = sub(*d, kmul(dot(n, *d), n));
-        assert!(dot(ortho, n).abs() < 1e-3);
-        *d = normalize(ortho);
-    }
     let zero_mask = dir_field
         .iter()
         .map(|&v| length(v) == 0.)
@@ -66,27 +58,34 @@ pub fn dir_field_relaxation(
     let mut buf = vec![[0.; 3]; dir_field.len()];
     for _ in 0..iters {
         for (i, d) in dir_field.iter().enumerate() {
-            if !zero_mask[i] {
-                buf[i] = *d;
+            if zero_mask[i] {
                 continue;
             }
+            let mut total_w = 0.;
             let mut dir = [0.; 3];
-            let n = normalize(normals(i));
             for (adj, w) in adj.adj_data(i) {
                 if w == 0. {
                     continue;
                 }
+                total_w += w;
                 let curr_dir = dir_field[adj as usize];
                 //let ortho = sub(curr_dir, kmul(dot(n, curr_dir), n));
                 dir = add(dir, kmul(w, curr_dir));
             }
 
-            let dir = normalize(dir);
-            let dir = sub(dir, kmul(dot(n, dir), n));
-            assert!(dot(dir, n) < 1e-3, "{dir:?} {n:?}");
-            buf[i] = normalize(dir);
+            if total_w == 0. {
+                continue;
+            }
+
+            buf[i] = kmul(total_w.recip(), dir);
+            buf[i] = normalize(buf[i]);
+            buf[i] = kmul(length(*d), buf[i]);
         }
         dir_field.copy_from_slice(&buf);
         buf.fill([0.; 3]);
+    }
+
+    for v in dir_field.iter_mut() {
+        *v = normalize(*v);
     }
 }

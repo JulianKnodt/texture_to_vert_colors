@@ -18,6 +18,7 @@ bake_tex_to_vert_colors_bin = "target/release/examples/bake_textures_to_vertex_c
 bake_vert_colors_to_tex = "target/release/examples/bake_vertex_colors_to_textures"
 copy_mesh_to_uv = "target/release/examples/copy_mesh_to_uv"
 measure_flat = "target/release/examples/measure_flat"
+pars3d_dist_bin = "../pars3d/target/release/distance"
 
 args = None
 
@@ -43,12 +44,13 @@ def run(src, dst, flags, out_dir=abl_dir, src_dir="data", bin=bin_file, eval=Tru
     ]
     print(cmds[0])
     if (not args.no_eval) and eval:
-      if ".fbx" in src:
+      if eval == "color":
+        cmds.append(f"{pars3d_dist_bin} data/{src} {out_file} \
+          --stat {out_json} 1000000 --color-weight 0.01");
+      elif ".fbx" in src:
         cmds.append('echo "FBX is not currently supported for Hausdorff"')
       else:
-        cmds.append(
-          f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_file} --stats {out_json}"
-        )
+        cmds.append(f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_file} --stats {out_json}")
 
     return cmds
   return cb
@@ -159,7 +161,9 @@ dataset = [
 ]
 
 dataset_direct = [
-  #("takifugu.obj", "", 1000000),
+  #("baking_scallop.obj", "", 700000),
+  #("chinese_sacred_lily.obj", "", 250000),
+  #("takifugu.obj", "", 250000),
   #("musk_melon.obj", "", 2000000),
   #("oshima_cherry.obj", "", 2000000),
   #("mango.obj", "", 1000000),
@@ -1011,6 +1015,41 @@ experiments = {
     ),
   ],
 
+  "stripes": [
+    run(
+      "plane.obj",
+      "plane_black_circle.obj",
+      f"--triangulate-input --triangulate --target-tri-num 5000 --sample-kind approx \
+        --image-size-frac 1 --no-adaptive -d data/black_circle.png",
+      #missing_only=True,
+      eval=False,
+    ),
+    run(
+      "plane.obj",
+      "plane_hokusai.obj",
+      f"--triangulate-input --triangulate --target-tri-num 150000 --sample-kind approx \
+        --image-size-frac 1 --no-adaptive -d data/hokusai.jpg",
+      #missing_only=True,
+      eval=False,
+    ),
+    run(
+      "dense_sphere.obj",
+      "dense_sphere_black_circle.obj",
+      f"--triangulate-input --triangulate --target-tri-num 50000 --sample-kind approx \
+        --image-size-frac 1 --no-adaptive -d data/black_circle.png",
+      #missing_only=True,
+      eval=False,
+    ),
+    run(
+      "inari_mask_front.obj",
+      "inari_mask_front_approx_manifold.obj",
+      f"--triangulate-input --triangulate --target-tri-num 100000 --sample-kind approx \
+        --image-size-frac 0.25 --no-adaptive",
+      #missing_only=True,
+      eval=False,
+    ),
+  ],
+
   "lod-comparison": [
     *[
       run(
@@ -1019,7 +1058,7 @@ experiments = {
         out_dir="outputs",
         missing_only=True,
       )
-      for tri_num in [1, 0.25, 0.0625, 0.015]
+      for tri_num in [1, 0.25, 0.125, 0.0625, 0.03125, 0.015, 0.008]
     ],
     render(
       f"data/japanese_tea_cup.obj",
@@ -1646,7 +1685,42 @@ experiments = {
   "compare-remeshing": [
     *[
       run("traffic_light_with_stickers.obj", f"traffic_light_with_stickers_{k}.ply",
-        f"-t 2000000 --sample-kind {k} --image-size-frac 0.4 --triangulate-input")
+        f"-t 2000000 --sample-kind {k} --image-size-frac 0.5 --triangulate-input")
+      for k in ["exact", "approx", "direct"]
+    ],
+
+    render(
+      "data/traffic_light_with_stickers.obj",
+      6, -17, 6, 0, fy=0, rz=-20,w=400,
+      out="ablations/traffic_light_with_stickers_input.png",
+      extras="--roughness 1 --light-z -50 --light-x 30 --texture-res 2048",
+      missing_only=True,
+    ),
+    render(
+      "data/traffic_light_with_stickers.obj",
+      10, -3, 10, 0, fy=0, rz=-60,w=400,
+      extras="--roughness 1 --light-z -50 --light-x 30",
+      out="ablations/traffic_light_with_stickers_input_inset.png --texture-res 2048 \
+       --wireframe-thickness 2e-3",
+      missing_only=True,
+    ),
+
+    *[
+      render(
+        f"ablations/traffic_light_with_stickers_{k}.ply",
+        6, -17, 6, 0, fy=0, rz=-20,w=400,
+        out=f"ablations/traffic_light_with_stickers_{k}.png",
+        extras="--roughness 1 --light-z -50 --light-x 30",
+      )
+      for k in ["exact", "approx", "direct"]
+    ],
+    *[
+      render(
+        f"ablations/traffic_light_with_stickers_{k}.ply",
+        10, -3, 10, 0, fy=0, rz=-60,w=400,
+        extras="--roughness 1 --light-z -50 --light-x 30",
+        out=f"ablations/traffic_light_with_stickers_{k}_inset.png",
+      )
       for k in ["exact", "approx", "direct"]
     ],
   ],

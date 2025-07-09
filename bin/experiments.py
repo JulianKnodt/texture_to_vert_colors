@@ -39,10 +39,9 @@ def run(src, dst, flags, out_dir=abl_dir, src_dir="data", bin=bin_file, eval=Tru
     if missing_only and (not eval) and os.path.exists(out_file):
       print(f"Skipping {src} -> {out_file}, destination already exists")
       return []
-    cmds = [
-      f"{bin} -i {src_dir}/{src} -o {out_dir}/{dst} {flags} --stats {out_json}",
-    ]
+    cmds = [f"{bin} -i {src_dir}/{src} -o {out_dir}/{dst} {flags} --stats {out_json}"]
     print(cmds[0])
+    if args.eval_only: cmds.pop()
     if (not args.no_eval) and eval:
       if eval == "color":
         cmds.append(f"{pars3d_dist_bin} data/{src} {out_file} \
@@ -53,6 +52,19 @@ def run(src, dst, flags, out_dir=abl_dir, src_dir="data", bin=bin_file, eval=Tru
         cmds.append(f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_file} --stats {out_json}")
 
     return cmds
+  return cb
+
+def eval(src, dst, out_dir=abl_dir):
+  def cb():
+    if "run" not in args.stages: return []
+    if args.match_output is not None and args.match_output not in dst: return []
+    out_json = f"{out_dir}/{dst[:-4]}.json"
+    out_file = f"{out_dir}/{dst}"
+    return [
+      f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_file} \
+        --stats {out_json}"
+    ]
+
   return cb
 
 def render(
@@ -640,18 +652,20 @@ experiments = {
     for (model, ratio, sample_kind, triangulate, img_frac, bake_res, w_mul) in [
       #("scroll.obj", 0.05, "approx", True, 0.5, 1024),
       #("scroll_constant.obj", 0.15, "approx", True, 1, 2048, 1),
-      #("jar_with_dragon_design_boundary.obj", 0.5, "approx", True, 1., 512, 5e-2),
-      #("ogre.obj", 0.02, "direct", False, 1., 1024),
-      ("longevity_buns.obj", 0.09, "approx", True, 0.5, 512, 4e-1),
+      #("jar_with_dragon_design_boundary.obj", 0.4, "approx", True, 1., 512, 8e-2),
+      #("ogre.obj", 0.1, "approx", True, 0.5, 512, 5e-2),
+      #("longevity_buns.obj", 0.09, "approx", True, 0.5, 512, 4e-1),
+      ("japanese_lantern.obj", 0.025, "approx", True, 1., 512, 1.),
+      #("perfume_bottle.obj", 0.15, "approx", True, 0.25, 1024, 1),
     ]
     for cmd in [
-      #run(
-      #  model, model[:-4] + ".ply",
-      #  f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
-      #  {'--triangulate' if triangulate else ''} \
-      #  --image-size-frac {img_frac}",
-      #  missing_only=True,
-      #),
+      run(
+        model, model[:-4] + ".ply",
+        f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
+        {'--triangulate' if triangulate else ''} \
+        --image-size-frac {img_frac}",
+        missing_only=True,
+      ),
       *[
         runnable_cmds([
           f"{sys.executable} bin/tutte_param.py -i ablations/{model[:-4]}.ply \
@@ -666,6 +680,10 @@ experiments = {
           --bake-res {bake_res} \
           --bake-texture {model[:-4]}_{label}.png",
           f"rm ablations/{model[:-4]}_{label}.ply",
+
+          f"{sys.executable} bin/hausdorff.py -o data/{model} \
+            -n ablations/{model[:-4]}_{label}.obj \
+            --stats ablations/{model[:-4]}_{label}.json",
         ], output_name=f"ablations/{model[:-4]}_{label}.obj", missing_only=True)
         #run(
         #  f"../ablations/{model[:-4]}.ply",
@@ -799,6 +817,51 @@ experiments = {
       out="ablations/longevity_buns_add_1e-02_3d_inset.png",
       extras="--light-z -80 --roughness 1",
     ),
+  ],
+
+  "tutte-param-hyperparam-ablation": [
+    cmd
+    for (model, ratio, sample_kind, triangulate, img_frac, bake_res) in [
+      ("scroll_constant.obj", 0.15, "approx", True, 1, 2048),
+    ]
+    for cmd in [
+      #run(
+      #  model, model[:-4] + ".ply",
+      #  f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
+      #  {'--triangulate' if triangulate else ''} \
+      #  --image-size-frac {img_frac}",
+      #  missing_only=True,
+      #),
+      *[
+        runnable_cmds([
+          f"{sys.executable} bin/tutte_param.py -i ablations/{model[:-4]}.ply \
+            -o ablations/{model[:-4]}_{label}.ply \
+            --color-weight {cw} \
+            {f'--color-kind {norm}' if norm != 'uniform' else '--uniform'}",
+          f"{copy_mesh_to_uv} -i ablations/{model[:-4]}.ply \
+            -u ablations/{model[:-4]}_{label}.ply \
+            -o ablations/{model[:-4]}_{label}.ply",
+          f"{bake_vert_colors_to_tex} -i ablations/{model[:-4]}_{label}.ply \
+          -o ablations/{model[:-4]}_{label}.obj \
+          --bake-res {bake_res} \
+          --bake-texture {model[:-4]}_{label}.png",
+          f"rm ablations/{model[:-4]}_{label}.ply",
+
+          f"{sys.executable} bin/hausdorff.py -o data/{model} \
+            -n ablations/{model[:-4]}_{label}.obj \
+            --stats ablations/{model[:-4]}_{label}.json",
+        ], output_name=f"ablations/{model[:-4]}_{label}.obj", missing_only=True)
+        for (w, norm, cw, label) in [
+          s
+          for w in [5e-3, 1e-2, 2e-2, 5e-2, 1e-1, 0.2, 0.5, 1, 2]
+          for s in [
+            tutte("laplacian", "add", w),
+            tutte("laplacian", "concat", w),
+            tutte("laplacian", "max", w),
+          ]
+        ]
+      ],
+    ]
   ],
 
   "tutte-param-rebake-ablation": [
@@ -1058,7 +1121,7 @@ experiments = {
         out_dir="outputs",
         missing_only=True,
       )
-      for tri_num in [1, 0.25, 0.125, 0.0625, 0.03125, 0.015, 0.008]
+      for tri_num in [1, 0.75, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015, 0.008]
     ],
     render(
       f"data/japanese_tea_cup.obj",
@@ -1177,17 +1240,26 @@ experiments = {
       extras="--light-z 80 --light-x 40",
     ),
   ],
+  "baking-scallop-dithering": [
+    run(
+      "../outputs/baking_scallop_direct.ply",
+      "baking_scallop_dither.ply",
+      "--weighting laplacian --color-weight 0 --face --order index --diffusion lut",
+      bin=dithering_bin, out_dir="ablations", eval=False
+    ),
+  ],
   "watercolor-girl-dithering": [
     runnable_cmds([
       "cp data/watercolor_girl.obj outputs/watercolor_girl_dithered.obj",
       "cp data/watercolor_girl.mtl outputs",
       "cargo run --release --example dither_texture -- -i data/watercolor-girl-albedo.jpg \
         -o outputs/watercolor-girl-albedo.jpg"
-    ]),
+    ], output_name="watercolor-girl-albedo.jpg"),
     run(
       "../outputs/watercolor_girl_approx.ply",
       "watercolor_girl_dithering.ply",
-      "--weighting laplacian --color-weight 1. --face --order index",
+      "--weighting laplacian --color-weight 0 --face --order nearest \
+        --error-diffused 0.85 --diffusion lut",
       bin=dithering_bin, out_dir="outputs", eval=False
     ),
     render(
@@ -1346,12 +1418,12 @@ experiments = {
   ],
 
   "compare-subdiv": [
-    #run(
-    #  "officebot.obj",
-    #  "officebot_subdiv.ply",
-    #  "-s 5 -d data/officebot_textures/diffuse.png",
-    #  bin=bake_tex_to_vert_colors_bin, eval=False,
-    #),
+    run(
+      "officebot.obj",
+      "officebot_subdiv.ply",
+      "-s 5 -d data/officebot_textures/diffuse.png",
+      bin=bake_tex_to_vert_colors_bin,
+    ),
 
     # KEEP THESE COMMENTED OUT, TOO DENSE TO RENDER
     #runnable_cmds([
@@ -1749,6 +1821,10 @@ def arguments():
   a.add_argument(
     "--no-eval", action="store_true",
     help="Do not evaluate similarity of input and output mesh",
+  )
+  a.add_argument(
+    "--eval-only", action="store_true",
+    help="Only run evaluation for output",
   )
   a.add_argument(
     "--force", action="store_true",

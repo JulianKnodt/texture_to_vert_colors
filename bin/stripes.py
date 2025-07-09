@@ -17,6 +17,7 @@ def arguments():
   a.add_argument("--uniform", action="store_true")
   a.add_argument("--color-kind", choices=["max", "concat", "add", "color-only"], default="add")
   a.add_argument("--color-weight", default=0., type=float, help="How much to weigh color")
+  a.add_argument("--no-transfer", action="store_true")
   return a.parse_args()
 
 def main():
@@ -44,8 +45,11 @@ def main():
       [n[0], n[1], n[2], 0]
     ])
     attrs = np.array([luma(vci), luma(vcj), luma(vck), 0.])
-    grad_offset = np.linalg.lstsq(pn, attrs)[0]
-    grad = grad_offset[:3]
+    try:
+      grad = np.linalg.solve(pn, attrs)[:3]
+      #grad = np.linalg.lstsq(pn, attrs)[0][:3]
+    except:
+      grad = np.zeros(3)
     for i in vis:
       M[i] += third_area
       V_g[i] += area * grad
@@ -56,6 +60,11 @@ def main():
   mask = np.linalg.norm(V_g, axis=-1) > args.thresh
   if not np.any(mask):
     print("[INFO]: Lower threshold for gradient")
+
+  if args.no_transfer:
+    V_g[~mask] = 0
+    np.savetxt(args.output, V_g, delimiter=',')
+    return
 
   solver = pp3d.MeshVectorHeatSolver(mesh.vertices, mesh.faces)
   (x_basis, y_basis, _normal) = solver.get_tangent_frames()
@@ -69,6 +78,7 @@ def main():
     print("[INFO]: number of elements used is", mask.sum())
 
   grads = V_g[mask]
+  V_g[~mask] = 0
   def dot(a,b, dim=-1): return np.sum(a * b,axis=dim)
   grads_tan = np.stack([
     dot(x_basis[mask], grads),
@@ -78,7 +88,10 @@ def main():
 
   # per vertex gradient function
   out = solver.transport_tangent_vectors(np.nonzero(mask)[0], grads_tan)
+  assert(np.all(np.isfinite(out)))
+  out[~mask] = 0
   gl_dirs = out[:, 0, None] * x_basis + out[:, 1, None] * y_basis
+  gl_dirs[~np.isfinite(gl_dirs)] = V_g[~np.isfinite(gl_dirs)]
   if args.output is not None:
     np.savetxt(args.output, gl_dirs, delimiter=',')
 

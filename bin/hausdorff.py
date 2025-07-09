@@ -10,7 +10,7 @@ def arguments():
   a.add_argument("-o", "--original-mesh", required=True, help="Original mesh")
   a.add_argument("-n", "--new-mesh", required=True, help="New mesh")
   a.add_argument("--stats", default=None, help="File to write statistics to")
-  a.add_argument("--num-random-samples", default=100000, type=int, help="Number of random samples to use")
+  a.add_argument("--num-random-samples", default=1000000, type=int, help="Number of random samples to use")
   return a.parse_args()
 
 def get_color_per_vertex(mesh):
@@ -23,11 +23,11 @@ def get_color_per_vertex(mesh):
     coords = uv * dims
     img = mesh.visual.material.image
     img_data = img.getdata()
-    img = np.array(img_data).reshape(img.size[0], img.size[1], len(img.getbands()))
+    img = np.array(img_data).reshape(img.size[1], img.size[0], len(img.getbands()))
     img = np.moveaxis(img, 1, 0)
     coords = coords.astype(int)
-    u = coords[:, 0]
-    v = coords[:, 1]
+    u = coords[:, 0] % dims[0,0]
+    v = coords[:, 1] % dims[0,1]
     return img[u,v,:3]
 
 def get_color(mesh, face_idxs, barys=None, pos=None):
@@ -59,11 +59,11 @@ def get_color(mesh, face_idxs, barys=None, pos=None):
     coords = interp_uv * dims
     img = mesh.visual.material.image
     img_data = img.getdata()
-    img = np.array(img_data).reshape(img.size[0], img.size[1], len(img.getbands()))
+    img = np.array(img_data).reshape(img.size[1], img.size[0], len(img.getbands()))
     img = np.moveaxis(img, 1, 0)
     coords = coords.astype(int)
-    u = coords[:, 0]
-    v = coords[:, 1]
+    u = coords[:, 0] % dims[0,0]
+    v = coords[:, 1] % dims[0,1]
     return img[u,v,:3]
 
 def main():
@@ -103,12 +103,16 @@ def main():
     og_mesh.faces,
   )
   og_nearest_color = get_color(og_mesh, og_face_idxs, pos=og_pts)
+
+  # --- Debug
   #import matplotlib.pyplot as plt
   #fig = plt.figure()
   #ax = fig.add_subplot(projection='3d')
-  #ax.scatter(og_pts[:,0], og_pts[:,1], og_pts[:,2], c=og_nearest_color/255)
+  #S = 100
+  #ax.scatter(og_pts[::S,0], og_pts[::S,1], og_pts[::S,2], c=og_nearest_color[::S]/255)
   #plt.show()
-  #exit()
+  # ---
+
   avg_new_to_og_color = np.mean(np.linalg.norm((nvc - og_nearest_color)/255., axis=-1))
 
   new_to_og = np.sqrt(new_to_og)/bb_diag
@@ -128,6 +132,14 @@ def main():
   )
   new_nearest_color = get_color(new_mesh, new_face_idxs, pos=new_pts)
   avg_og_to_new_color = np.mean(np.linalg.norm((ovc - new_nearest_color)/255., axis=-1))
+  # --- Debug
+  #import matplotlib.pyplot as plt
+  #fig = plt.figure()
+  #ax = fig.add_subplot(projection='3d')
+  #S = 100
+  #ax.scatter(new_pts[::S,0], new_pts[::S,1], new_pts[::S,2], c=new_nearest_color[::S]/255)
+  #plt.show()
+  # ---
 
   og_to_new = np.sqrt(og_to_new)/bb_diag
 

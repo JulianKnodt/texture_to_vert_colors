@@ -51,6 +51,14 @@ pub struct Args {
     /// How to diffuse errors to adjacent faces
     #[arg(long, default_value_t = ErrorDiffusionKind::Exact)]
     diffusion: ErrorDiffusionKind,
+
+    /// Do not diffuse error if it is below this threshold.
+    #[arg(long, default_value_t = 0.)]
+    thresh: F,
+
+    /// Diffuse only a fraction of the quantization error.
+    #[arg(long, default_value_t = 0.5)]
+    error_diffused: F,
 }
 
 fn main() {
@@ -105,7 +113,7 @@ fn main() {
     };
 
     let mut elem_weights = if args.face {
-        m.f.iter().map(|f| f.area(&m.v) + 1e-8).collect::<Vec<_>>()
+        m.f.iter().map(|f| f.area(&m.v)).collect::<Vec<_>>()
     } else {
         let mut bary_areas = vec![];
         pars3d::geom_processing::barycentric_areas(&m.f, &m.v, &mut bary_areas);
@@ -174,10 +182,14 @@ pub fn dither(adj: &Adj<F>, elem_weights: &[F], channel: &mut [F], palette: &[F]
         let nearest = nearest_palette_and_cost!(curr_color).0;
 
         // RGB error to be diffused to other vertices
-        let err = (nearest - curr_color) * elem_weights[vi];
+        let err = (nearest - curr_color) * elem_weights[vi] * args.error_diffused;
         channel[vi] = nearest;
 
         curr_iter += 1;
+
+        if err.abs() < args.thresh {
+            continue;
+        }
 
         let mut total_w = 0.;
         all_ws.clear();

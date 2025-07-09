@@ -1,8 +1,6 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
-#![feature(generic_arg_infer)]
 #![feature(cmp_minmax)]
-#![feature(let_chains)]
 #![feature(array_windows)]
 
 pub type F = f64;

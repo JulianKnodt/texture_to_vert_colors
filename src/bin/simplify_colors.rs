@@ -1,7 +1,6 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
-#![feature(let_chains)]
 
 use std::collections::HashMap;
 

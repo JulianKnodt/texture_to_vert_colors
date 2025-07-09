@@ -1,5 +1,6 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
-#![feature(let_chains)]
 
 use std::cmp::minmax;
 use std::collections::BTreeMap;
@@ -132,6 +133,10 @@ pub struct Args {
     /// Triangulate the input mesh
     #[arg(long)]
     triangulate_input: bool,
+
+    /// Do not use direct remeshing even with constant colors.
+    #[arg(long)]
+    no_adaptive: bool,
 }
 
 pub fn main() {
@@ -282,6 +287,8 @@ pub fn main() {
         output_bd_edges,
         output_non_manifold_edges,
     );
+    out_scene.materials.clear();
+    out_scene.textures.clear();
 
     pars3d::save(&args.output, &out_scene).expect("Failed to save output");
     println!("[INFO]: Saved to {}", args.output);
@@ -1068,7 +1075,7 @@ pub fn sample_exact(
         src.get_value(u, v)
     });
     let first_col = color_iter.next().unwrap();
-    if color_iter.all(|v| dist(v, first_col) < 1e-8) {
+    if !args.no_adaptive && color_iter.all(|v| dist(v, first_col) < 1e-8) {
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1145,6 +1152,13 @@ pub fn sample_exact(
         let new_verts = new_verts.map(|(new_vert, rgb, normal)| {
             let vi = out.v.len();
             out.v.push(new_vert);
+            /*
+            out.vert_colors.push(if bary.tri_idx() == 0 {
+              [1., 0., 0.]
+            } else {
+              [0., 0., 1.]
+            });
+            */
             out.vert_colors.push(rgb);
             if let Some(normal) = normal {
                 out.n.push(normal);
@@ -1624,7 +1638,7 @@ pub fn sample_approx(
         src.get_value(u, v)
     });
     let first_col = color_iter.next().unwrap();
-    if color_iter.all(|v| v == first_col) {
+    if !args.no_adaptive && color_iter.all(|v| v == first_col) {
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1727,7 +1741,7 @@ pub fn sample_approx(
         .iter()
         .skip(start + 1)
         .all(|&vc| dist(first_color, vc) < 1e-8);
-    if all_same_color {
+    if !args.no_adaptive && all_same_color {
         truncate!();
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }

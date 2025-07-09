@@ -1,7 +1,5 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
-#![feature(let_chains)]
-#![feature(generic_arg_infer)]
 
 use clap::Parser;
 

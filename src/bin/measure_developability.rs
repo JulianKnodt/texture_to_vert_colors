@@ -1,3 +1,6 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
+
 use clap::Parser;
 use texture_to_vert_colors::quadric::Quadric;
 use texture_to_vert_colors::{F, length};

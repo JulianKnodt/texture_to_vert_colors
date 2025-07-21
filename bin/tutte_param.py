@@ -118,7 +118,7 @@ def dist_fn(va,vca, vb, vcb, color_weight=1e-4, kind="add"):
   color = abs(luma(vca) - luma(vcb))
   #color = np.linalg.norm(vca - vcb)
   if kind == "add":
-    return geom + color_weight * color
+    return (geom + color_weight * color) / (1 + color_weight)
   elif kind == "max":
     return np.maximum(geom, color_weight * color)
   elif kind == "concat":

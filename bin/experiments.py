@@ -19,6 +19,10 @@ bake_vert_colors_to_tex = "target/release/examples/bake_vertex_colors_to_texture
 copy_mesh_to_uv = "target/release/examples/copy_mesh_to_uv"
 measure_flat = "target/release/examples/measure_flat"
 pars3d_dist_bin = "../pars3d/target/release/distance"
+color_smoothing = f"{sys.executable} bin/color_smoothing.py"
+gaussian_blur = "target/release/examples/smooth_image"
+stripe_pattern = f"{sys.executable} bin/stripes.py"
+pars3d_quad_remesh = f"../pars3d/target/release/examples/quad_remesh"
 
 args = None
 
@@ -26,6 +30,7 @@ abl_dir = "ablations"
 cl_dir = "cluster_outputs"
 
 def run(src, dst, flags, out_dir=abl_dir, src_dir="data", bin=bin_file, eval=True, missing_only=False):
+  if dst.endswith(".csv"): eval=False
   def cb():
     nonlocal missing_only
     if "run" not in args.stages: return []
@@ -81,7 +86,7 @@ def render(
     cmd = f"{sys.executable} bin/render.py \
       --mesh {i} \
       --cam-x {cx} --rot-z {rz} \
-      --cam-y {cy} --cam-z {cz} --lookat-y {ly} --lookat-z {lz} \
+      --cam-y {cy} --cam-z {cz} --lookat-y {ly:f} --lookat-z {lz} \
       -o {out} --width {w} --floor-y {fy} --lookat-x {lx} --height {h} {extras} "
     if not args.debug_render: cmd += " --final-render --samples 256"
     return [cmd]
@@ -163,6 +168,7 @@ dataset = [
   #("bag_with_floral_pattern.obj", "", 500000, 0.5),
   #("old_teapot.obj", "", 500000, 0.4),
   #("vase.obj", "vase_2k.png", 150000, 0.5),
+  #("teacup.obj", "", 1500000, 0.5),
 
   # very expensive but doable?
   #("meadowsweet.obj", "meadowsweet_diffuse.jpeg", 500000, 0.5),
@@ -216,6 +222,22 @@ experiments = {
         22, -0.01, 0, 0, rz=0, fy=-1000,
         out=f"ablations/basic_tri_{k}.png",
         extras=f"--wireframe ablations/basic_tri_{k}_wireframe.ply",
+        missing_only=True,
+      )
+      for k in ["exact", "approx", "direct"]
+    ],
+    render(
+      f"data/basic_tri.obj",
+      8, 1.49, 0, 1.5, rz=0, fy=-1000,h=512,
+      out=f"ablations/basic_tri_input_inset.png",
+      missing_only=True,
+    ),
+    *[
+      render(
+        f"ablations/basic_tri_{k}.ply",
+        8, 1.49, 0, 1.5, rz=0, fy=-1000,h=512,
+        out=f"ablations/basic_tri_{k}_inset.png",
+        extras=f"--wireframe ablations/basic_tri_{k}_wireframe.ply",
         #missing_only=True,
       )
       for k in ["exact", "approx", "direct"]
@@ -226,7 +248,7 @@ experiments = {
   "basic-cube": [
     *[
       run("cube.obj", f"cube_{k}.ply", f"-d data/uv_grid.png -t 100000 --sample-kind {k}")
-      for k in ["approx"]#["exact", "approx", "direct"]
+      for k in ["exact"]#["exact", "approx", "direct"]
     ]
   ],
   "sphere": [
@@ -258,7 +280,7 @@ experiments = {
     *[
       run(
         "cube_rotated_uv.obj", f"cube_rot_uv_{k}.ply",
-        f"-d data/uv_grid.png --target-tri-ratio 0.5 --sample-kind {k}",
+        f"-d data/uv_grid.png --target-tri-ratio 0.2 --sample-kind {k}",
       ) for k in ["exact", "approx"]
     ]
   ],
@@ -274,6 +296,7 @@ experiments = {
   ],
 
   "teaser": [
+    # --- Input
     render(
       "data/wanderers.obj",
       1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
@@ -282,12 +305,58 @@ experiments = {
       missing_only=True,
     ),
     render(
+      "data/wanderers.obj",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="outputs/wanderers_input_bright.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 0 \
+        --ambient-light 50 --wireframe-thickness 5e-3",
+      missing_only=True,
+    ),
+
+    # Direct remesh render
+    render(
       "outputs/wanderers_approx.ply",
       1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
       out="outputs/wanderers_remesh.png",
       extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
       missing_only=True,
     ),
+    render(
+      "outputs/wanderers_approx.ply",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="outputs/wanderers_remesh_bright.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 0 \
+        --ambient-light 50 --wireframe-thickness 5e-3",
+      missing_only=True,
+    ),
+    # ---
+
+    # --- Zoom
+    render(
+      "data/wanderers.obj",
+      1, -0.5, 1.2, 0, fy=-1000, rz=0, cx=2.5,lx=2.3,
+      out="outputs/wanderers_input_bright_zoom.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 0 \
+        --ambient-light 50 --wireframe-thickness 5e-3",
+      missing_only=True,
+    ),
+    render(
+      "outputs/wanderers_approx.ply",
+      1, -0.5, 1.2, 0, fy=-1000, rz=0, cx=2.5,lx=2.3,
+      out="outputs/wanderers_remesh_zoom.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+      missing_only=True,
+    ),
+    render(
+      "outputs/wanderers_approx.ply",
+      1, -0.5, 1.2, 0, fy=-1000, rz=0, cx=2.5,lx=2.3,
+      out="outputs/wanderers_remesh_bright_zoom.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 0 \
+        --ambient-light 50 --wireframe-thickness 5e-3",
+      missing_only=True,
+    ),
+
+    # ---
 
     run(
       "../outputs/wanderers_approx.ply",
@@ -314,6 +383,7 @@ experiments = {
       missing_only=True,
     ),
 
+
     run(
       "../ablations/space_suit.ply",
       f"space_suit_tutte.obj",
@@ -321,6 +391,13 @@ experiments = {
         --uv-svg ablations/space_suit_tutte.svg --iters 500000 \
         --pos-color-norm add --color-weight 3e-3 --bake-res 2048",
       bin=tutte_bin, eval=False,
+    ),
+
+    render(
+      f"data/space_suit.obj",
+      1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+      out=f"ablations/space_suit_input.png",
+      extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
     ),
 
     render(
@@ -350,6 +427,7 @@ experiments = {
       extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
     ),
 
+    # --- Edge Detection
     run(
       "../outputs/wanderers_approx.ply",
       "wanderers_edges.ply",
@@ -363,6 +441,21 @@ experiments = {
       out="ablations/wanderers_edges.png",
       extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
     ),
+    # --- Texture Smoothing
+    run(
+      "../outputs/wanderers_approx.ply",
+      "wanderers_color_smoothed.ply",
+      "--weight 0.2 --color-weight 64 --color-kind add",
+      bin=color_smoothing, eval=False,
+    ),
+
+    render(
+      "ablations/wanderers_color_smoothed.ply",
+      1, -5.5, 2, 0, fy=-1000, rz=0, cx=2.5,lx=1,
+      out="ablations/wanderers_color_smoothed.png",
+      extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+    # --- Vector Fields
 
     run(
       "../outputs/wanderers_approx.ply",
@@ -862,6 +955,8 @@ experiments = {
         ]
       ],
     ]
+  ] + [
+    runnable_cmds([f"{sys.executable} bin/ablate_tutte_params.py"]),
   ],
 
   "tutte-param-rebake-ablation": [
@@ -1082,15 +1177,23 @@ experiments = {
     run(
       "plane.obj",
       "plane_black_circle.obj",
-      f"--triangulate-input --triangulate --target-tri-num 5000 --sample-kind approx \
+      f"--triangulate-input --triangulate --target-tri-num 20000 --sample-kind approx \
         --image-size-frac 1 --no-adaptive -d data/black_circle.png",
       #missing_only=True,
       eval=False,
     ),
     run(
       "plane.obj",
+      "plane_black_square.obj",
+      f"--triangulate --target-tri-ratio 1. --sample-kind approx \
+        --image-size-frac 0.4 --no-adaptive -d data/black_square.jpg",
+      #missing_only=True,
+      eval=False,
+    ),
+    run(
+      "plane.obj",
       "plane_hokusai.obj",
-      f"--triangulate-input --triangulate --target-tri-num 150000 --sample-kind approx \
+      f"--triangulate --target-tri-num 150000 --sample-kind approx \
         --image-size-frac 1 --no-adaptive -d data/hokusai.jpg",
       #missing_only=True,
       eval=False,
@@ -1111,6 +1214,308 @@ experiments = {
       #missing_only=True,
       eval=False,
     ),
+    run(
+      "gothic_armchair.obj",
+      "gothic_armchair_manifold.obj",
+      f"--triangulate --target-tri-num 200000 --sample-kind approx \
+        --image-size-frac 0.15 --no-adaptive", # originally 400,000 and 0.25
+      #missing_only=True,
+      eval=False,
+    ),
+  ],
+
+  "stripe-pattern-gen": [
+    #run(
+    #  "../ablations/inari_mask_front_approx_manifold.obj",
+    #  "../../../oss/stripes/build/direction_field.csv",
+    #  "--thresh 1e-4",
+    #  bin=stripe_pattern,
+    #  eval=False,
+    #),
+
+    #run(
+    #  "../ablations/plane_hokusai.obj",
+    #  "../../../oss/stripes/build/direction_field.csv",
+    #  "--thresh 6e-3",
+    #  bin=stripe_pattern,
+    #  eval=False,
+    #),
+    run(
+      "../ablations/gothic_armchair_manifold.obj",
+      "../../../oss/stripes/build/direction_field.csv",
+      "--thresh 5e-4",
+      bin=stripe_pattern,
+      eval=False,
+    ),
+  ],
+
+  "render-original-stripes": [
+    #render(
+    #  f"ablations/plane_hokusai.obj",
+    #  22, 0, 0, 0.0001, fy=-100, rz=0,
+    #  out=f"ablations/plane_hokusai.png",
+    #  extras="--light-z -155 --light-x -30 --roughness 1 --with-vertex-colors",
+    #  missing_only=True,
+    #),
+    render(
+      f"data/gothic_armchair.obj",
+      6, -26.8, 1.3, 0, fy=-1000., rz=0, h=770,#cx=-0.25, lx=-0.25,
+      out=f"outputs/gothic_armchair.png",
+      extras="--light-z -155 --light-x -30 --roughness 1",
+      missing_only=True,
+    ),
+  ],
+
+  "quad_remesh_wagara": [
+    run(
+      "plane.obj",
+      "plane_wagara.obj",
+      f"--triangulate --target-tri-ratio 1. --sample-kind approx \
+        --image-size-frac 0.6 --no-adaptive -d data/wagara.jpg",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/plane_wagara.obj",
+      "plane_wagara_grads.csv",
+      "--thresh 1e-3",
+      #"--thresh 1e-2",
+      missing_only=True,
+      eval=False,
+      bin=stripe_pattern,
+    ),
+    run(
+      "../ablations/plane_wagara.obj",
+      "plane_wagara_remesh.obj",
+      "--field ablations/plane_wagara_grads.csv --scale 0.008 --subdivisions 1 \
+        --save-grid ablations/plane_wagara_grid.ply \
+        --save-arrows ablations/plane_wagara_arrows.ply",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+    run(
+      "../ablations/plane_wagara.obj",
+      "plane_wagara_remesh_no_grad.obj",
+      "--scale 0.008 --subdivisions 1 \
+        --save-grid ablations/plane_wagara_grid_no_grad.ply",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+    # insets
+    render(
+      "ablations/plane_wagara.obj",
+      5, 0, 0, -0.0001, fy=-1000, rz=180,
+      out=f"ablations/plane_wagara_inset.png",
+      extras="--light-z -155 --light-x -30 --roughness 1 --ambient-light 1.5 \
+        --with-vertex-colors",
+    ),
+    render(
+      "ablations/plane_wagara_remesh.obj",
+      5, 0, 0, -0.0001, fy=-1000, rz=180,
+      out=f"ablations/plane_wagara_remesh_inset.png",
+      extras="--light-z -155 --light-x -30 --roughness 1 \
+        --wireframe ablations/plane_wagara_grid.ply --ambient-light 1",
+    ),
+    render(
+      "ablations/plane_wagara_remesh_no_grad.obj",
+      5, 0, 0, -0.0001, fy=-1000, rz=180,
+      out=f"ablations/plane_wagara_remesh_no_grad_inset.png",
+      extras="--light-z -155 --light-x -30 --roughness 1 \
+        --wireframe ablations/plane_wagara_grid_no_grad.ply --ambient-light 1",
+    ),
+    # ---
+
+    render(
+      "ablations/plane_wagara.obj",
+      22, 0, 0, -0.0001, fy=-1000, rz=180,
+      out=f"ablations/plane_wagara.png",
+      extras="--light-z -155 --light-x -30 --roughness 1 --ambient-light 1.5 \
+        --with-vertex-colors",
+    ),
+    render(
+      "ablations/plane_wagara_remesh.obj",
+      22, 0, 0, -0.0001, fy=-1000, rz=180,
+      out=f"ablations/plane_wagara_remesh.png",
+      extras="--light-z -155 --light-x -30 --roughness 1 \
+        --wireframe ablations/plane_wagara_grid.ply --ambient-light 1",
+    ),
+    render(
+      "ablations/plane_wagara_remesh_no_grad.obj",
+      22, 0, 0, -0.0001, fy=-1000, rz=180,
+      out=f"ablations/plane_wagara_remesh_no_grad.png",
+      extras="--light-z -155 --light-x -30 --roughness 1 \
+        --wireframe ablations/plane_wagara_grid_no_grad.ply --ambient-light 1",
+    ),
+  ],
+
+  "quad-remesh-yazd-dome": [
+    run(
+      "yazd_dome.obj",
+      "yazd_dome.obj",
+      f"--triangulate-input --target-tri-ratio 1. --sample-kind approx \
+        --image-size-frac 0.125 --no-adaptive",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/yazd_dome.obj",
+      "yazd_dome_grads.csv",
+      "--thresh 1e-3 --no-transfer",
+      #"--thresh 1e-2",
+      missing_only=True,
+      eval=False,
+      bin=stripe_pattern,
+    ),
+    run(
+      "../ablations/yazd_dome.obj",
+      "yazd_dome_remesh.obj",
+      "--field ablations/yazd_dome_grads.csv --scale 0.0005 --subdivisions 1 \
+        --save-grid ablations/yazd_dome_grid.ply \
+        --save-arrows ablations/yazd_dome_arrows.ply",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+    run(
+      "../ablations/yazd_dome.obj",
+      "yazd_dome_remesh_no_grad.obj",
+      "--scale 0.008 --subdivisions 1 \
+        --save-grid ablations/yazd_dome_grid_no_grad.ply",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+    # insets
+    #render(
+    #  "ablations/yazd_dome.obj",
+    #  5, 0, 0, -0.0001, fy=-1000, rz=180,
+    #  out=f"ablations/yazd_dome_inset.png",
+    #  extras="--light-z -155 --light-x -30 --roughness 1 --ambient-light 1.5 \
+    #    --with-vertex-colors",
+    #),
+    #render(
+    #  "ablations/yazd_dome_remesh.obj",
+    #  5, 0, 0, -0.0001, fy=-1000, rz=180,
+    #  out=f"ablations/yazd_dome_remesh_inset.png",
+    #  extras="--light-z -155 --light-x -30 --roughness 1 \
+    #    --wireframe ablations/yazd_dome_grid.ply --ambient-light 1",
+    #),
+    #render(
+    #  "ablations/yazd_dome_remesh_no_grad.obj",
+    #  5, 0, 0, -0.0001, fy=-1000, rz=180,
+    #  out=f"ablations/yazd_dome_remesh_no_grad_inset.png",
+    #  extras="--light-z -155 --light-x -30 --roughness 1 \
+    #    --wireframe ablations/yazd_dome_grid_no_grad.ply --ambient-light 1",
+    #),
+    # ---
+
+    render(
+      "ablations/yazd_dome.obj",
+      22, 0, 0, -0.0001, fy=-1000, rz=180,
+      out=f"ablations/yazd_dome.png",
+      extras="--light-z -155 --light-x -30 --roughness 1 --ambient-light 1.5 \
+        --with-vertex-colors",
+    ),
+    #render(
+    #  "ablations/yazd_dome_remesh.obj",
+    #  22, 0, 0, -0.0001, fy=-1000, rz=180,
+    #  out=f"ablations/yazd_dome_remesh.png",
+    #  extras="--light-z -155 --light-x -30 --roughness 1 \
+    #    --wireframe ablations/yazd_dome_grid.ply --ambient-light 1",
+    #),
+    #render(
+    #  "ablations/yazd_dome_remesh_no_grad.obj",
+    #  22, 0, 0, -0.0001, fy=-1000, rz=180,
+    #  out=f"ablations/yazd_dome_remesh_no_grad.png",
+    #  extras="--light-z -155 --light-x -30 --roughness 1 \
+    #    --wireframe ablations/yazd_dome_grid_no_grad.ply --ambient-light 1",
+    #),
+  ],
+
+  "color-smoothing": [
+    #*[
+    #  run(
+    #    "../outputs/bag_with_floral_pattern_approx.ply",
+    #    f"smoothing_bag_with_floral_pattern_cw_{cw:08.03f}.ply",
+    #    f"--weight 1. --color-weight {cw} --color-kind add",
+    #    out_dir="ablations",
+    #    bin=color_smoothing,
+    #    missing_only=True,
+    #  ) for cw in [0, 1/64, 1/16, 1/4, 1,4,16, 64, 256, 1024]
+    #],
+
+    *[
+      run(
+        "../outputs/old_teapot_approx.ply",
+        f"smoothing_old_teapot_cw_{cw:08.03f}.ply",
+        f"--weight 0.05 --color-weight {cw} --color-kind add",
+        out_dir="ablations",
+        bin=color_smoothing,
+        missing_only=True,
+      ) for cw in [0, 1/64, 1/16, 1/4, 1,4,16, 64, 256, 1024]
+    ],
+
+    render(
+      f"data/old_teapot.obj",
+      11, -16, 4, 0, fy=-1, rz=-110, cx=-0.25, lx=-0.25,
+      out=f"outputs/old_teapot_input.png",
+      extras="--light-z -155 --light-x -30 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      f"data/old_teapot.obj",
+      6, -10, 4.5, 0, fy=-1, rz=-135, cx=-0.25, lx=-0.25, h=512,
+      out=f"outputs/old_teapot_input_inset.png",
+      extras="--light-z -155 --light-x -30 --roughness 1",
+      missing_only=True,
+    ),
+
+    *[
+      render(
+        f"ablations/smoothing_old_teapot_cw_{cw:08.03f}.ply",
+        11, -16, 4, 0, fy=-1, rz=-110, cx=-0.25, lx=-0.25,
+        out=f"ablations/smoothing_old_teapot_cw_{cw:08.03f}.png",
+        extras="--light-z -155 --light-x -30 --roughness 1",
+        missing_only=True,
+      ) for cw in [0, 1/64, 1/16, 1/4, 1,4,16, 64, 256, 1024]
+    ],
+    *[
+      render(
+        f"ablations/smoothing_old_teapot_cw_{cw:08.03f}.ply",
+        6, -10, 4.5, 0, fy=-1, rz=-135, cx=-0.25, lx=-0.25, h=512,
+        out=f"ablations/smoothing_old_teapot_cw_{cw:08.03f}_inset.png",
+        extras="--light-z -155 --light-x -30 --roughness 1",
+        missing_only=True,
+      ) for cw in [0, 1/64, 1/16, 1/4, 1,4,16, 64, 256, 1024]
+    ],
+
+    runnable_cmds([
+      "cp data/old_teapot* tmp/",
+      f"{gaussian_blur} -i tmp/old_teapot_albedo.jpg \
+        -o tmp/old_teapot_albedo.jpg --sigma 12"
+    ]),
+    render(
+      f"tmp/old_teapot.obj",
+      11, -16, 4, 0, fy=-1, rz=-110, cx=-0.25, lx=-0.25,
+      out=f"ablations/smoothing_old_teapot_uv_blur.png",
+      extras="--light-z -155 --light-x -30 --roughness 1",
+    ),
+    render(
+      f"tmp/old_teapot.obj",
+      6, -10, 4.5, 0, fy=-1, rz=-135, cx=-0.25, lx=-0.25, h=512,
+      out=f"ablations/smoothing_old_teapot_uv_blur_inset.png",
+      extras="--light-z -155 --light-x -30 --roughness 1",
+    ),
+
+    #*[
+    #  run(
+    #    "../outputs/takifugu_direct.ply",
+    #    f"smoothing_takifugu_direct_cw_{cw:08.03f}.ply",
+    #    f"--weight 0.1 --color-weight {cw} --color-kind add",
+    #    out_dir="ablations",
+    #    bin=color_smoothing,
+    #    missing_only=True,
+    #  ) for cw in [0, 1/64, 1/16, 1/4, 1,4,16, 64, 256, 1024]
+    #],
+
   ],
 
   "lod-comparison": [
@@ -1306,20 +1711,6 @@ experiments = {
       extras="--light-z -80 --light-x -20",
     ),
   ],
-
-  # TODO this was only partially filled in
-  #"geometry-param-comparison": [
-  #  *[
-  #    run(
-  #      "data/ding",
-  #      "wanderers_constant_colors.ply",
-  #      f"-t 2000 --eigenvalue zero --cluster-vis ablations/wanderers_clusters.ply \
-  #      --eigen-eps 100000 --color-eps 1e-6 --eigen-vis ablations/wanderers_eigen.ply \
-  #      --shape-metric angle-deviation",
-  #      bin=clustering_bin, eval=False,
-  #    ),
-  #  ],
-  #],
 
   "edge-detection-butterfly": [
     run(
@@ -1830,6 +2221,7 @@ def arguments():
     "--force", action="store_true",
     help="Force run all meshes, even if missing_only = True was specified",
   )
+  a.add_argument("--no-build", action="store_true", help="Do not build (CAUTION: Use wisely)")
   return a.parse_args()
 
 args = arguments()
@@ -1839,8 +2231,11 @@ experiment_timestamps = {}
 
 exp_file = "experiment_log.json"
 
-if len(args.experiments) > 0:
+if len(args.experiments) > 0 and not args.no_build:
   assert(not os.system("cargo build --release --bins --examples"))
+
+if args.no_build:
+  print("[CAUTION]: THIS FLAG SHOULD BE USED WITH CAUTION, MAY NOT REFLECT CURRENT RESULTS")
 
 for exp in args.experiments:
   if args.skip_to is not None:

@@ -167,6 +167,8 @@ def set_mat(m, transparent:bool=False, roughness:float=0.3):
       pbsdf.inputs["Alpha"].default_value = 1
     pbsdf.inputs["Roughness"].default_value = roughness
     pbsdf.inputs["Metallic"].default_value = 0.
+    #print(pbsdf.inputs.keys())
+    pbsdf.inputs["Specular IOR Level"].default_value = 0.
 
 def center(o, origin=None):
   me = o.data

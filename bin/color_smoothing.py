@@ -4,6 +4,7 @@ import numpy as np
 import scipy.sparse as sp
 from tqdm import tqdm
 import random
+import math
 
 def arguments():
   a = argparse.ArgumentParser(
@@ -12,10 +13,11 @@ def arguments():
   a.add_argument("-i", "--input", required=True, help="Input mesh")
   a.add_argument("-o", "--output", required=True, help="Output mesh")
   a.add_argument("--uniform", action="store_true", help="Use uniform weighting instead")
-  a.add_argument("--color-kind", choices=["max", "concat", "add", "color-only"], default="add")
+  a.add_argument("--color-kind", choices=["max", "concat", "add", "mul", "color-only", "bilateral"], default="add")
   a.add_argument("--color-weight", default=0, type=float, help="How much to weigh color")
   a.add_argument("--debug-colors", action="store_true", help="Render debug colors as output")
   a.add_argument("--weight", default=1e-2, type=float, help="Weight of smoothing")
+  a.add_argument("--stats", help="Currently unused", default=None)
   return a.parse_args()
 
 def main():
@@ -43,7 +45,7 @@ def main():
   M = [0] * V
   for vis in tqdm(mesh.faces, leave=False):
     vi,vj,vk = [mesh.vertices[idx] for idx in vis]
-    vci,vcj,vck = [vert_colors[idx][:-1] for idx in vis]
+    vci,vcj,vck = [vert_colors[idx][:3] for idx in vis]
     a = dist_fn(vi,vci, vj,vcj, args.color_weight, args.color_kind)
     b = dist_fn(vj,vcj, vk,vck, args.color_weight, args.color_kind)
     c = dist_fn(vi,vci, vk,vck, args.color_weight, args.color_kind)
@@ -53,7 +55,7 @@ def main():
   M = np.array(M)
 
 
-  EPS = 1e-3
+  EPS = 3e-3 # are higher values ok?
   rows = []
   cols = []
   data = []
@@ -67,7 +69,7 @@ def main():
 
     for ijk in edges:
       vi,vj,vk = [mesh.vertices[idx] for idx in ijk]
-      vci,vcj,vck = [vert_colors[idx][:-1] for idx in ijk]
+      vci,vcj,vck = [vert_colors[idx][:3] for idx in ijk]
       a = dist_fn(vi,vci, vj,vcj, args.color_weight, args.color_kind)
       b = dist_fn(vj,vcj, vk,vck, args.color_weight, args.color_kind)
       c = dist_fn(vi,vci, vk,vck, args.color_weight, args.color_kind)
@@ -119,16 +121,23 @@ def dist_fn(va,vca, vb, vcb, color_weight=1e-4, kind="add"):
   color = abs(luma(vca) - luma(vcb))
   #color = np.linalg.norm(vca - vcb)
   if kind == "add":
-    return geom + color_weight * color
+    result = geom + color_weight * color
   elif kind == "max":
-    return np.maximum(geom, color_weight * color)
+    result = np.maximum(geom, color_weight * color)
   elif kind == "concat":
-    return np.linalg.norm(
+    result = np.linalg.norm(
       np.concatenate([va, color_weight * vca]) - \
       np.concatenate([vb, color_weight * vcb])
     )
   elif kind == "color-only": return color + 1
+  elif kind == "mul": return geom * (color ** color_weight)
+  elif kind == "bilateral":
+    combined = gaussian(geom, 1.) * \
+      (gaussian(color, 1.) ** color_weight),
+    return inv_gaussian(combined)
   else: raise NotImplementedError(kind)
+  #return result
+  return result / (1 + color_weight)
 
 def herons(e0, e1, e2):
   s = (e0 + e1 + e2) / 2
@@ -137,5 +146,15 @@ def herons(e0, e1, e2):
   return np.exp(0.5 * (f(s) + f(s - e0) + f(s - e1) + f(s - e2)))
 
 def minmax(a, b): return [min(a,b), max(a,b)]
+
+def gaussian(x, sigma):
+  return 1/(sigma * math.sqrt(math.tau)) * math.exp(-0.5 * x * x / (sigma * sigma))
+
+def inv_gaussian(y, sigma):
+  #assert(y > 0.),y
+  y = max(y, 1e-6)
+  x2 = math.log(y * sigma * math.sqrt(math.tau)) * -2 * sigma * sigma
+  assert(x2 >= -1e-3), x2
+  return math.sqrt(max(x2, 1e-6))
 
 if __name__ == "__main__": main()

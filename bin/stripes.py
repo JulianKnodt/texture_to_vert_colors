@@ -3,6 +3,7 @@ import argparse
 import numpy as np
 import scipy.sparse as sp
 import potpourri3d as pp3d
+import robust_laplacian
 from tqdm import tqdm
 
 def arguments():
@@ -17,7 +18,9 @@ def arguments():
   a.add_argument("--uniform", action="store_true")
   a.add_argument("--color-kind", choices=["max", "concat", "add", "color-only"], default="add")
   a.add_argument("--color-weight", default=0., type=float, help="How much to weigh color")
-  a.add_argument("--no-transfer", action="store_true")
+  a.add_argument("--no-transfer", action="store_true", help="Do not smooth the field over the surface")
+  a.add_argument("--robust-laplacian", action="store_true", help="Use the robust laplacian to smooth the surface")
+  a.add_argument("--stats", default=None, help="Unused")
   return a.parse_args()
 
 def main():
@@ -60,10 +63,24 @@ def main():
   mask = np.linalg.norm(V_g, axis=-1) > args.thresh
   if not np.any(mask):
     print("[INFO]: Lower threshold for gradient")
+    exit(-1)
 
   if args.no_transfer:
     V_g[~mask] = 0
     np.savetxt(args.output, V_g, delimiter=',')
+    return
+
+  if args.robust_laplacian:
+    L, M = robust_laplacian.mesh_laplacian(
+      np.array(mesh.vertices),
+      np.array(mesh.faces),
+    )
+    np.clip(M.data, a_min=1e-3, a_max=None, out=M.data)
+    np.reciprocal(M.data, out=M.data)
+    V_g[~mask] = 0
+    MinvL = M * L
+    V_ng = sp.linalg.spsolve(-MinvL, V_g)
+    np.savetxt(args.output, V_ng, delimiter=',')
     return
 
   solver = pp3d.MeshVectorHeatSolver(mesh.vertices, mesh.faces)
@@ -78,6 +95,7 @@ def main():
     print("[INFO]: number of elements used is", mask.sum())
 
   grads = V_g[mask]
+  grads /= np.linalg.norm(grads, axis=-1, keepdims=True) + 1e-8
   V_g[~mask] = 0
   def dot(a,b, dim=-1): return np.sum(a * b,axis=dim)
   grads_tan = np.stack([
@@ -85,11 +103,12 @@ def main():
     dot(y_basis[mask], grads),
   ], axis=-1)
   assert(np.isfinite(grads_tan).all())
+  print(grads_tan[0])
 
   # per vertex gradient function
   out = solver.transport_tangent_vectors(np.nonzero(mask)[0], grads_tan)
   assert(np.all(np.isfinite(out)))
-  out[~mask] = 0
+  #out[~mask] = 0
   gl_dirs = out[:, 0, None] * x_basis + out[:, 1, None] * y_basis
   gl_dirs[~np.isfinite(gl_dirs)] = V_g[~np.isfinite(gl_dirs)]
   if args.output is not None:

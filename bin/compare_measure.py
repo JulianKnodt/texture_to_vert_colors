@@ -90,8 +90,9 @@ for k in keys:
   plt.xticks(
     ticks=np.arange(N) * 2, labels=[k.title().replace("_", " ") for k in
     cmp_vals[k].keys()],rotation=90,
-    fontsize=2, minor=False,
+    fontsize=12, minor=False,
   )
+  plt.gcf().set_size_inches(12, 4)
   plt.minorticks_off()
   plt.tick_params(top=False, right=False)
   plt.ylabel("Log Radians/Unit Length$^\downarrow$")

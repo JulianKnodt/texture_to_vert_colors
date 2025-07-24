@@ -515,6 +515,7 @@ dependencies = [
  "gltf-json",
  "image 0.24.9",
  "svg",
+ "union-find 0.1.0 (git+https://github.com/JulianKnodt/union-find.git)",
  "zune-inflate",
 ]
 
@@ -695,7 +696,7 @@ dependencies = [
  "serde",
  "smallvec",
  "sparse_lu",
- "union-find",
+ "union-find 0.1.0",
 ]
 
 [[package]]
@@ -724,6 +725,11 @@ checksum = "1fc81956842c57dac11422a97c3b8195a1ff727f06e85c84ed2e8aa277c9a0fd"
 [[package]]
 name = "union-find"
 version = "0.1.0"
+
+[[package]]
+name = "union-find"
+version = "0.1.0"
+source = "git+https://github.com/JulianKnodt/union-find.git#6db617262de9c8ed656d37595bda5e6f288c2f11"
 
 [[package]]
 name = "urlencoding"

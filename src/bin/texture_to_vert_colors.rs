@@ -1,11 +1,13 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
+#![feature(duration_millis_float)]
 
 use std::cmp::minmax;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::ops::Range;
+use std::time::Duration;
 
 type Map<K, V> = BTreeMap<K, V>;
 const CHAN: usize = 0;
@@ -169,6 +171,7 @@ pub fn main() {
 
     // Copy vertex colors for each input UV
     // TODO remove this assumption of a single material and copy per face with duplication
+    let mut img_res = vec![];
     let diff_img = if !args.diffuse_img.is_empty() {
         let img = pars3d::image::open(&args.diffuse_img)
             .expect(&format!(
@@ -197,6 +200,7 @@ pub fn main() {
         } else {
             img
         };
+        img_res.push([img.width(), img.height()]);
         Some(img)
     } else {
         for texture in scene.textures.iter_mut() {
@@ -220,12 +224,16 @@ pub fn main() {
                     texture.original_path
                 );
             }
+            img_res.push([txt.width(), txt.height()]);
         }
         None
     };
 
     let mut out_scene = scene.clone();
     let start = std::time::Instant::now();
+    let mut remesh_times = vec![];
+    let mut simplification_times = vec![];
+    let mut before_simplify_faces = 0;
     for (mi, mesh) in scene.meshes.iter_mut().enumerate() {
         let (s, t) = if args.no_normalize {
             (1., [0.; 3])
@@ -247,7 +255,12 @@ pub fn main() {
         }
         assert!(!mesh.uv[0].is_empty());
         assert_eq!(mesh.uv[0].len(), mesh.v.len());
-        let mut new_mesh = texture_to_vert_colors(
+        let Outputs {
+            mesh: mut new_mesh,
+            remesh_time,
+            simplification_time,
+            before_simplify_num_faces,
+        } = texture_to_vert_colors(
             mesh,
             |fi| {
                 if let Some(diff_img) = diff_img.as_ref() {
@@ -269,6 +282,9 @@ pub fn main() {
         new_mesh.denormalize(s, t);
         new_mesh.n.clear();
         out_scene.meshes[mi] = new_mesh;
+        remesh_times.push(remesh_time.as_millis_f64());
+        simplification_times.push(simplification_time.as_millis_f64());
+        before_simplify_faces += before_simplify_num_faces;
     }
     let elapsed = start.elapsed();
     let mut output_bd_edges = 0;
@@ -298,26 +314,27 @@ pub fn main() {
         writeln!(
             stat_file,
             r#"{{
-  "num_faces": {},
-  "num_vertices": {},
+  "num_faces": {out_faces},
+  "num_tris": {out_tris},
+  "num_vertices": {out_vertices},
+  "before_simplify_tris": {before_simplify_faces},
   "input_num_faces": {},
   "input_num_vertices": {},
-  "texture_size": {},
+  "remesh_times_ms": {remesh_times:?},
+  "simplification_times_ms": {simplification_times:?},
+  "total_time_ms": {total_time_ms},
+  "image_resolutions": {img_res:?},
   "num_boundary_edges": {output_bd_edges},
   "input_num_boundary_edges": {input_bd_edges},
   "num_non_manifold_edges": {output_non_manifold_edges},
   "input_non_manifold_edges": {input_non_manifold_edges}
 }}"#,
-            out_scene.num_faces(),
-            out_scene.num_vertices(),
             scene.num_faces(),
             scene.num_vertices(),
-            if let Some(diff_img) = diff_img.as_ref() {
-                let (w, h) = diff_img.dimensions();
-                format!("[{w},{h}]")
-            } else {
-                String::from("null")
-            }
+            total_time_ms=elapsed.as_millis_f64(),
+            out_faces=out_scene.num_faces(),
+            out_tris=out_scene.num_tris(),
+            out_vertices=out_scene.num_vertices(),
         )
         .expect("Failed to write stats");
     }
@@ -363,12 +380,20 @@ impl<'a> SourceTextures<'a> {
     }
 }
 
+pub struct Outputs {
+    mesh: Mesh,
+    remesh_time: Duration,
+    simplification_time: Duration,
+    before_simplify_num_faces: usize,
+}
+
 pub fn texture_to_vert_colors<'a>(
     mesh: &Mesh,
     f_mat: impl Fn(usize) -> &'a DynamicImage,
     args: &Args,
-) -> Mesh {
+) -> Outputs {
     let mut out = Mesh::default();
+    let start = std::time::Instant::now();
     let surface_area = mesh.f.iter().map(|f| f.area(&mesh.v)).sum::<F>();
 
     let mut edge_map = Map::new();
@@ -458,7 +483,7 @@ pub fn texture_to_vert_colors<'a>(
         let new_v = out.v.len();
         remap.extend_by(new_v - curr_v);
 
-        if !args.no_incremental_delete {
+        if !args.no_incremental_delete && args.sample_kind == SampleKind::Exact {
             del_degen_bridges(
                 &mut remap,
                 &mut out,
@@ -508,7 +533,13 @@ pub fn texture_to_vert_colors<'a>(
     }
 
     if args.no_gap_fill {
-        return out;
+        // this is only for debugging so leave 0 values for most results
+        return Outputs {
+            mesh: out,
+            remesh_time: std::time::Duration::from_secs(0),
+            simplification_time: std::time::Duration::from_secs(0),
+            before_simplify_num_faces: 0,
+        };
     }
 
     // map from (new vertex -> adjacent vertices that share the same corner on these two faces)
@@ -547,7 +578,7 @@ pub fn texture_to_vert_colors<'a>(
 
         assert!(
             swapped ^ correct,
-            "TODO colinear polygon (more than 3 verts) input faces {swapped} {correct} \
+            "TODO colinear polygon (more than 3 verts) input faces {swapped} {correct} \n\
             face = {:?} \n\
             face index = {f0} \n\
             verts in face = {face_verts:?} \n\
@@ -882,6 +913,9 @@ pub fn texture_to_vert_colors<'a>(
         out.f.push(face);
     }
 
+    let remesh_time = start.elapsed();
+
+    let before_simplify_num_faces = out.num_tris();
     // -------- Simplification of mesh
 
     assert_eq!(face_labels.len(), out.f.len());
@@ -950,6 +984,8 @@ pub fn texture_to_vert_colors<'a>(
 
     //canonicalize!();
 
+    let simplify_start = std::time::Instant::now();
+
     if args.delete_degen {
         del_degen_gap_fill(&mut remap, &mut out, args, &face_labels);
         canonicalize!();
@@ -995,19 +1031,26 @@ pub fn texture_to_vert_colors<'a>(
 
     out.delete_unused_vertices();
 
+    let simplification_time = simplify_start.elapsed();
+
     //out.remove_doublets();
     if init_f != out.f.len() {
         println!(
             "[INFO]: Cleaned mesh has {} faces (-{}, Tris = {}) & {} vertices (-{})",
             out.f.len(),
-            init_f - out.f.len(),
+            init_f.saturating_sub(out.f.len()),
             out.num_tris(),
             out.v.len(),
-            init_v - out.v.len(),
+            init_v.saturating_sub(out.v.len()),
         );
     }
 
-    out
+    Outputs {
+        mesh: out,
+        remesh_time,
+        simplification_time,
+        before_simplify_num_faces,
+    }
 }
 
 pub fn sample_exact(
@@ -1081,6 +1124,7 @@ pub fn sample_exact(
 
     let start = out.v.len();
     let start_f = out.f.len();
+    let mut isect_buf = vec![vec![]; 1];
     for c in iaabb.iter_coords() {
         let [u, v] = c.map(|v| v as F);
 
@@ -1099,9 +1143,13 @@ pub fn sample_exact(
 
         let barys = cfs.map(|cf| uv_f.barycentric(cf));
 
-        let all_outside = uv_f
-            .as_triangle_fan()
-            .all(|uv_t| !cf_aabb.intersects_tri(uv_t));
+        if isect_buf.len() < uv_f.num_tris() {
+            isect_buf.resize_with(uv_f.num_tris(), Vec::new);
+        }
+        let all_outside = uv_f.as_triangle_fan().enumerate().all(|(ti, uv_t)| {
+            cf_aabb.intersects_tri_poly(uv_t, &mut isect_buf[ti]);
+            isect_buf[ti].is_empty()
+        });
 
         if all_outside {
             continue;
@@ -1112,7 +1160,7 @@ pub fn sample_exact(
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
         assert!(tex_u.is_finite() && tex_v.is_finite(), "{bary:?} {uv_f:?}");
 
-        let default_rgb = src.get_value(tex_u, tex_v);
+        let center_rgb = src.get_value(tex_u, tex_v);
 
         let raw_pos = barys.map(|bary| v_f.from_barycentric(bary));
 
@@ -1122,19 +1170,34 @@ pub fn sample_exact(
             let (ti, bs) = bary.tri_idx_and_coords();
             if !bs.iter().any(|&b| b < -1e-3) {
                 let normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
-                return (pos, default_rgb, normal);
+                return (pos, normal);
             };
 
-            let tri = v_f.as_triangle_fan().nth(ti).unwrap();
+            // find nearest point in UV in isect buf and use that to compute new barycentric and
+            // position
+            let isects = &isect_buf[ti];
+            let (new_pos, new_bary) = if isects.is_empty() {
+                let tri = v_f.as_triangle_fan().nth(ti).unwrap();
+                let new_pos = nearest_point_on_tri(tri, pos);
+                let bary_coord = pars3d::barycentric_3d(new_pos, tri);
 
-            // NOTE have to be very careful here to not make the triangle non-convex
-            let new_pos = nearest_point_on_tri(tri, pos);
+                let new_bary = pars3d::face::Barycentric::new(&v_f, ti, bary_coord);
+                (new_pos, new_bary)
+            } else {
+                let cf = cfs[i];
+                let (nearest_isect, _) = isects
+                    .iter()
+                    .map(|&i_uv| (i_uv, dist(cf, i_uv)))
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .unwrap();
 
-            let bary_coord = pars3d::barycentric_3d(new_pos, tri);
+                let uv_tri = uv_f.as_triangle_fan().nth(ti).unwrap();
+                let bary_coord = pars3d::barycentric_2d(nearest_isect, uv_tri);
 
-            let new_bary = pars3d::face::Barycentric::new(&v_f, ti, bary_coord);
-            let [tu, tv] = uv_f.from_barycentric(new_bary);
-            let rgb = src.get_value(tu, tv);
+                let new_bary = pars3d::face::Barycentric::new(&uv_f, ti, bary_coord);
+                let new_pos = v_f.from_barycentric(new_bary);
+                (new_pos, new_bary)
+            };
 
             let new_normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(new_bary));
             debug_assert!(
@@ -1145,11 +1208,11 @@ pub fn sample_exact(
                 "{:?}",
                 v_f.barycentric(new_pos).coords(),
             );
-            (new_pos, rgb, new_normal)
+            (new_pos, new_normal)
         });
 
         // commit to this new pixel
-        let new_verts = new_verts.map(|(new_vert, rgb, normal)| {
+        let new_verts = new_verts.map(|(new_vert, normal)| {
             let vi = out.v.len();
             out.v.push(new_vert);
             /*
@@ -1159,7 +1222,7 @@ pub fn sample_exact(
               [0., 0., 1.]
             });
             */
-            out.vert_colors.push(rgb);
+            out.vert_colors.push(center_rgb);
             if let Some(normal) = normal {
                 out.n.push(normal);
             }
@@ -2088,7 +2151,6 @@ pub fn sample_approx(
     }
 
     // --- fix up winding order of corner verts (FIXME)
-    /*
     let (&start, adjs) = vert_adj.first_key_value().unwrap();
     let mut prev: usize = start;
     let mut curr: usize = adjs[0];
@@ -2107,25 +2169,23 @@ pub fn sample_approx(
     }
 
     assert_eq!(og_order.len(), f.len());
+
     while og_order[0] != f_slice[0] {
         og_order.rotate_left(1);
     }
-
+    /*
+     */
 
     if f_slice != og_order {
-        println!("{og_order:?} {f_slice:?}");
+        //println!("{og_order:?} {f_slice:?}");
         og_order.reverse();
         og_order.rotate_right(1);
         if f_slice == og_order {
-            for f in &mut out.f[start_f..] {
-                f.as_mut_slice().reverse();
-            }
             for v in vert_adj.values_mut() {
                 v.reverse();
             }
         }
     }
-    */
 
     for &(og_vi, new_vi) in corner_verts.as_slice() {
         let og_pos = mesh.v[og_vi];
@@ -2194,7 +2254,7 @@ pub fn sample_approx(
 
     for (&new_vi, ogs) in labels.range(start..) {
         if args.debug_colors && out.vert_colors[new_vi] != [1.; 3] {
-            out.vert_colors[new_vi] = [0.; 3];
+            out.vert_colors[new_vi] = [1., 0., 0.];
         }
         let [og0_key, og1_key] = ogs.map(|vi| vi.1);
         let fvs = edge_map.entry(minmax(og0_key, og1_key)).or_default();

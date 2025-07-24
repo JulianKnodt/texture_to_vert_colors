@@ -275,21 +275,15 @@ pub fn face_clustering<'a, 'b>(
               ShapeMetric::None => 0.,
               ShapeMetric::Area => -new_area,
               ShapeMetric::MaxEuclideanDist => {
-                let mut center = [0.; 3];
-                let mut cnt = 0;
+                let mut aabb = pars3d::aabb::AABB::new();
                 for c in [e0, e1] {
                   for fi in m.merged_vertices(c) {
-                    center = add(center, fs[fi].centroid(vs));
-                    cnt += 1;
-                    /*
                     for &vi in fs[fi].as_slice() {
-                      center = add(center, vs[vi]);
-                      cnt += 1;
+                      aabb.add_point(vs[vi]);
                     }
-                    */
                   }
                 }
-                let center = kmul((cnt as F).recip(), center);
+                let center = aabb.center();
 
                 let mut max_dist: F = 0.;
                 for c in [e0,e1] {
@@ -301,15 +295,15 @@ pub fn face_clustering<'a, 'b>(
                 -max_dist
               },
               ShapeMetric::MaxManhattanDist => {
-                let mut center = [0.; 3];
-                let mut cnt = 0;
+                let mut aabb = pars3d::aabb::AABB::new();
                 for c in [e0, e1] {
                   for fi in m.merged_vertices(c) {
-                    center = add(center, fs[fi].centroid(vs));
-                    cnt += 1;
+                    for &vi in fs[fi].as_slice() {
+                      aabb.add_point(vs[vi]);
+                    }
                   }
                 }
-                let center = kmul((cnt as F).recip(), center);
+                let center = aabb.center();
 
                 let mut max_dist: F = 0.;
                 for c in [e0,e1] {

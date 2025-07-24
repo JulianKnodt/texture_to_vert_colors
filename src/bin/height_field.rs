@@ -23,7 +23,7 @@ fn main() {
     let start = std::time::Instant::now();
     for m in scene.meshes.iter_mut() {
         if m.n.len() != m.v.len() {
-            pars3d::Mesh::vertex_normals(&m.f, &m.v, &mut m.n, Default::default());
+            m.vertex_normals(Default::default());
         }
         for vi in 0..m.v.len() {
             let offset = m.vert_colors[vi][0];

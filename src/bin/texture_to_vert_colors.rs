@@ -319,6 +319,7 @@ pub fn main() {
   "num_vertices": {out_vertices},
   "before_simplify_tris": {before_simplify_faces},
   "input_num_faces": {},
+  "input_num_tris": {},
   "input_num_vertices": {},
   "remesh_times_ms": {remesh_times:?},
   "simplification_times_ms": {simplification_times:?},
@@ -330,6 +331,8 @@ pub fn main() {
   "input_non_manifold_edges": {input_non_manifold_edges}
 }}"#,
             scene.num_faces(),
+            scene.num_tris(),
+
             scene.num_vertices(),
             total_time_ms=elapsed.as_millis_f64(),
             out_faces=out_scene.num_faces(),

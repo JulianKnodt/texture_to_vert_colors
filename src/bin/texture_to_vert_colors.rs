@@ -332,12 +332,11 @@ pub fn main() {
 }}"#,
             scene.num_faces(),
             scene.num_tris(),
-
             scene.num_vertices(),
-            total_time_ms=elapsed.as_millis_f64(),
-            out_faces=out_scene.num_faces(),
-            out_tris=out_scene.num_tris(),
-            out_vertices=out_scene.num_vertices(),
+            total_time_ms = elapsed.as_millis_f64(),
+            out_faces = out_scene.num_faces(),
+            out_tris = out_scene.num_tris(),
+            out_vertices = out_scene.num_vertices(),
         )
         .expect("Failed to write stats");
     }
@@ -553,6 +552,8 @@ pub fn texture_to_vert_colors<'a>(
     let mut corner_edge_dir: BTreeMap<[usize; 2], [[usize; 2]; 2]> = BTreeMap::new();
 
     // Zip edges together
+    let mut v0s = vec![];
+    let mut v1s = vec![];
     for ([e0_key, e1_key], face_verts) in edge_map {
         macro_rules! add_key {
             ($dst: expr, $key: expr, $face: expr, $l: expr) => {{
@@ -622,7 +623,8 @@ pub fn texture_to_vert_colors<'a>(
             };
 
             let f0 = *f0;
-            let mut v0s = verts0.iter().map(ordering).collect::<Vec<_>>();
+            v0s.clear();
+            v0s.extend(verts0.iter().map(ordering));
 
             let v0_max = v0s.iter().map(|v0| v0.1).max_by(F::total_cmp).unwrap_or(1.);
             for (_, v0t) in v0s.iter_mut() {
@@ -637,7 +639,8 @@ pub fn texture_to_vert_colors<'a>(
             v0s.dedup_by_key(|v| v.0);
 
             let f1 = *f1;
-            let mut v1s = verts1.iter().map(ordering).collect::<Vec<_>>();
+            v1s.clear();
+            v1s.extend(verts1.iter().map(ordering));
             let v1_max = v1s.iter().map(|v1| v1.1).max_by(F::total_cmp).unwrap_or(1.);
             for (_, v1t) in v1s.iter_mut() {
                 *v1t /= v1_max + 1.;
@@ -675,10 +678,10 @@ pub fn texture_to_vert_colors<'a>(
             let mut v1_front: (usize, F) = v1s.next().unwrap();
 
             while let [Some(&(p0n, t0n)), Some(&(p1n, t1n))] = [v0s.peek(), v1s.peek()] {
-                assert_ne!(v0_front.0, p0n);
-                assert_ne!(v1_front.0, p1n);
-                assert_ne!(p0n, p1n);
-                assert_ne!(v0_front.0, v1_front.0);
+                debug_assert_ne!(v0_front.0, p0n);
+                debug_assert_ne!(v1_front.0, p1n);
+                debug_assert_ne!(p0n, p1n);
+                debug_assert_ne!(v0_front.0, v1_front.0);
 
                 debug_assert!(t0n >= v0_front.1);
                 debug_assert!(t1n >= v1_front.1);

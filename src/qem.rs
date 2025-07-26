@@ -366,15 +366,10 @@ pub fn simplify_range_colored(
             let q01f = q0 + q1;
             // colors are also automatically clamped to [0., 1.].
             let attrs = q01f.attributes_opt(p, attr_ws);
-            let attrs = std::array::from_fn(|i| {
-                if let Some(a) = attrs[i] {
-                    a
-                } else {
-                    (a0[i] + a1[i]) / 2.
-                }
-            });
-            let total_cost =
-                q01f.cost_attrib(p, attrs, attr_ws).max(0.) - curr_costs[e0] - curr_costs[e1];
+            let attrs = std::array::from_fn(|i| attrs[i].unwrap_or_else(|| (a0[i] + a1[i]) / 2.));
+            let prev_cost =
+                unsafe { *curr_costs.get_unchecked(e0) + *curr_costs.get_unchecked(e1) };
+            let total_cost = q01f.cost_attrib(p, attrs, attr_ws).max(0.) - prev_cost;
 
             NotNan::new(-total_cost).unwrap()
         }};
@@ -453,8 +448,8 @@ pub fn simplify_range_colored(
         bufs.snd_pq.push([e0, e1], (0, q_err));
         while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
             assert!(e0 < e1);
-            assert!(vert_range.contains(&(e0 + offset)));
-            assert!(vert_range.contains(&(e1 + offset)));
+            debug_assert!(vert_range.contains(&(e0 + offset)));
+            debug_assert!(vert_range.contains(&(e1 + offset)));
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
@@ -525,13 +520,7 @@ pub fn simplify_range_colored(
                 .unwrap_or_else(|| kmul(0.5, add(p0, p1)));
             let q01 = q0 + q1;
             let attr = q01.attributes_opt(pos, attr_ws);
-            let attr = std::array::from_fn(|i| {
-                if let Some(a) = attr[i] {
-                    a
-                } else {
-                    (a0[i] + a1[i]) / 2.
-                }
-            });
+            let attr = std::array::from_fn(|i| attr[i].unwrap_or_else(|| (a0[i] + a1[i]) / 2.));
             if dist(attr, a0).max(dist(attr, a1)) > args.color_diff_threshold {
                 continue;
             }
@@ -582,10 +571,11 @@ pub fn simplify_range_colored(
                 (Some(mut bd0s), Some(mut bd1s)) => {
                     remap_bd!(bd0s);
                     remap_bd!(bd1s);
-                    // TODO delete shared between bd0s, bd1s to not allocate a new vector
+
+                    /* // Old version with allocation
                     let mut new = vec![];
                     for &bd0 in &bd0s {
-                        if !bd1s.contains(&bd0) {
+                        if !bd1s[0..og_bd1_len].contains(&bd0) {
                             new.push(bd0);
                         }
                     }
@@ -596,7 +586,29 @@ pub fn simplify_range_colored(
                     }
                     new.sort_unstable();
                     new.dedup();
-                    bd_edges.insert(e1, new);
+                    */
+                    // new version no alloc
+                    let og_bd1_len = bd1s.len();
+                    for &bd0 in &bd0s {
+                        if !bd1s[0..og_bd1_len].contains(&bd0) {
+                            bd1s.push(bd0);
+                        }
+                    }
+                    let mut i = 0;
+                    bd1s.retain(|v| {
+                        if i >= og_bd1_len {
+                            return true;
+                        }
+                        let keep = !bd0s.contains(v);
+                        i += 1;
+                        keep
+                    });
+
+                    bd1s.sort_unstable();
+                    bd1s.dedup();
+                    //assert_eq!(new, bd1s);
+
+                    bd_edges.insert(e1, bd1s);
                 }
             }
 

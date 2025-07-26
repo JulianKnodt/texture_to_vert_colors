@@ -403,7 +403,6 @@ pub fn texture_to_vert_colors<'a>(
     // This is required to be a BTreeMap for the range function.
     let mut labels = BTreeMap::new();
     let mut face_labels = vec![];
-    //let mut to_del = vec![];
     let mut remap = UnionFind::new_u32(0);
 
     use indicatif::ProgressIterator;
@@ -2455,13 +2454,7 @@ pub fn del_degen_bridges(
         if f.is_empty() {
             continue;
         }
-        let mean_color = kmul(
-            (f.len() as F).recip(),
-            f.as_slice()
-                .iter()
-                .map(|&vi| mesh.vert_colors[vi])
-                .fold([0.; 3], add),
-        );
+        let mean_color = f.centroid(&mesh.vert_colors);
         let all_near = f
             .as_slice()
             .iter()
@@ -2470,10 +2463,7 @@ pub fn del_degen_bridges(
             continue;
         }
 
-        let mean_pos = kmul(
-            (f.len() as F).recip(),
-            f.as_slice().iter().map(|&vi| mesh.v[vi]).fold([0.; 3], add),
-        );
+        let mean_pos = f.centroid(&mesh.v);
 
         let root = f.as_slice()[0];
         mesh.v[root] = mean_pos;
@@ -2626,54 +2616,7 @@ pub fn del_degen_gap_fill(
         del += 1;
     }
 
-    /*
-    for fi in 0..mesh.f.len() {
-        let FaceLabel::GapCorner = labels[fi] else {
-            continue;
-        };
-
-        // attempt to replace corners with a single vertex
-        let f = &mesh.f[fi];
-        if f.is_empty() {
-            continue;
-        }
-        let f_s = f.as_slice();
-        let avg_color = f_s
-            .iter()
-            .map(|&vi| mesh.vert_colors[remap.get_compress(vi)])
-            .fold([0.; 3], add);
-        let avg_color = kmul(1. / f.len() as F, avg_color);
-        let any_diff = f_s.iter().any(|&vi| {
-            dist(mesh.vert_colors[remap.get_compress(vi)], avg_color) > args.color_diff_threshold
-        });
-        if any_diff {
-            continue;
-        }
-
-        let avg_pos = f_s
-            .iter()
-            .map(|&vi| mesh.v[remap.get_compress(vi)])
-            .fold([0.; 3], add);
-        let avg_pos = kmul(1. / f.len() as F, avg_pos);
-
-        let kept = f_s[0];
-        mesh.v[kept] = avg_pos;
-        mesh.vert_colors[kept] = avg_color;
-
-        for &vi in &f_s[1..] {
-            remap.set(vi, kept);
-        }
-
-        mesh.f[fi] = FaceKind::empty();
-        del += 1;
-    }
-    */
     del
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PixelAdj<T> {
-    grid: [T; 8],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2710,7 +2653,6 @@ macro_rules! impl_display {
 /// How to sample the input mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SampleKind {
-    // TODO implement this more
     /// Compute the dual of exact (one vertex per pixel)
     Approx,
 

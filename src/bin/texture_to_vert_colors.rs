@@ -1809,147 +1809,70 @@ pub fn sample_approx(
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
-    // also check if all pixel maps are only 1 in width
-    let mut has_width = false;
-    let mut has_height = false;
-    for &[u, v] in pixel_map.keys() {
-        has_height = has_height
-            || pixel_map.contains_key(&[u + 1, v])
-            || pixel_map.contains_key(&[u.wrapping_sub(1), v]);
-
-        has_width = has_width
-            || pixel_map.contains_key(&[u, v + 1])
-            || pixel_map.contains_key(&[u, v.wrapping_sub(1)]);
-
-        if has_width && has_height {
-            break;
-        }
-    }
-    if !has_width || !has_height {
-        truncate!();
-        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
-    }
-
-    // check that no vertex will become non-manifold
-    let mut any_non_manifold = false;
-    for &[u, v] in pixel_map.keys() {
-        let has_lr = pixel_map.contains_key(&[u + 1, v]) && pixel_map.contains_key(&[u - 1, v]);
-        let has_one_ud = pixel_map.contains_key(&[u + 1, v + 1])
-            || pixel_map.contains_key(&[u + 1, v - 1])
-            || pixel_map.contains_key(&[u - 1, v + 1])
-            || pixel_map.contains_key(&[u - 1, v - 1])
-            || pixel_map.contains_key(&[u, v + 1])
-            || pixel_map.contains_key(&[u, v - 1]);
-        // if it has left-right, it must also have at least one up or down
-        if has_lr && !has_one_ud {
-            any_non_manifold = true;
-            break;
-        }
-
-        let has_ud = pixel_map.contains_key(&[u, v + 1]) && pixel_map.contains_key(&[u, v - 1]);
-        let has_one_lr = pixel_map.contains_key(&[u + 1, v])
-            || pixel_map.contains_key(&[u - 1, v])
-            || pixel_map.contains_key(&[u + 1, v + 1])
-            || pixel_map.contains_key(&[u - 1, v + 1])
-            || pixel_map.contains_key(&[u + 1, v - 1])
-            || pixel_map.contains_key(&[u - 1, v - 1]);
-        if has_ud && !has_one_lr {
-            any_non_manifold = true;
-            break;
-        }
-    }
-    // if there is exactly one non-manifold item, possibly may be ok, but need to add a more
-    // complex check.
-    if any_non_manifold {
-        truncate!();
-        return sample_exact(
-            mesh,
-            f,
-            fi,
-            src,
-            out,
-            corner_map,
-            edge_map,
-            labels,
-            face_labels,
-            args,
-        );
-    }
-    //triagram!();
-
-    // also check if a vertex only has collinear neighbors
-
-    let any_collinear = pixel_map.keys().any(|&uv| {
-        let lr = |[u, v]: [i32; 2]| [[u + 1, v], [u - 1, v]];
-        let above_below = |[u, v]: [i32; 2]| {
-            [
-                [u + 1, v + 1],
-                [u, v + 1],
-                [u - 1, v + 1],
-                [u + 1, v - 1],
+    // Check for manifoldness in a single pass, to reduce number of accesses needed
+    let res = pixel_map
+        .keys()
+        // has_height
+        .try_fold((false, false), |(has_height, has_width), &[u, v]| {
+            let nbrs = [
+                [u - 1, v - 1],
                 [u, v - 1],
-                [u - 1, v - 1],
-            ]
-        };
-
-        let collinear = lr(uv).iter().all(|v| pixel_map.contains_key(v))
-            && above_below(uv).iter().all(|v| !pixel_map.contains_key(v));
-        if collinear {
-            return true;
-        }
-
-        let ud = |[u, v]: [i32; 2]| [[u + 1, v], [u - 1, v]];
-        let left_right = |[u, v]: [i32; 2]| {
-            [
-                [u + 1, v + 1],
-                [u + 1, v],
                 [u + 1, v - 1],
-                [u - 1, v + 1],
                 [u - 1, v],
-                [u - 1, v - 1],
-            ]
-        };
+                [u + 1, v],
+                [u - 1, v + 1],
+                [u, v + 1],
+                [u + 1, v + 1],
+            ];
+            let [ul, u, ur, l, /**/ r, dl, d, dr] = nbrs.map(|duv| pixel_map.contains_key(&duv));
+            // check that each vertex has at least one nbr
+            if !(ul || u || ur || l || r || dl || d || dr) {
+                return Err(true);
+            }
+            // if it has left-right, it must also have at least one up or down to check for
+            // collinearity
+            let has_lr = l && r;
+            let has_one_ud = ur || dr || ul || dl || u || d;
+            if has_lr && !has_one_ud {
+                return Err(true);
+            }
 
-        ud(uv).iter().all(|v| pixel_map.contains_key(v))
-            && left_right(uv).iter().all(|v| !pixel_map.contains_key(v))
-    });
+            let has_ud = u && d;
+            let has_one_lr = ul || dl || l || ur || dr || r;
+            if has_ud && !has_one_lr {
+                return Err(true);
+            }
 
-    if any_collinear {
-        truncate!();
-        // TODO may be better to use sample_exact for this one.
-        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
-    }
+            Ok((has_height || u || d, has_width || l || r))
+        });
 
-    let cardinal_dirs = |[u, v]: [i32; 2]| [[u + 1, v], [u, v + 1], [u - 1, v], [u, v - 1]];
-    let diags = |[u, v]: [i32; 2]| {
-        [
-            [u + 1, v + 1],
-            [u + 1, v - 1],
-            [u - 1, v + 1],
-            [u - 1, v - 1],
-        ]
-    };
-    for (uv, _) in pixel_map.iter() {
-        let any_nbr = cardinal_dirs(*uv)
-            .into_iter()
-            .any(|cd| pixel_map.contains_key(&cd));
-        let any_diag = diags(*uv).into_iter().any(|cd| pixel_map.contains_key(&cd));
-        if any_diag || any_nbr {
-            continue;
+    match res {
+        // success
+        Ok((true, true)) => {}
+
+        Err(true) => {
+            truncate!();
+            return sample_exact(
+                mesh,
+                f,
+                fi,
+                src,
+                out,
+                corner_map,
+                edge_map,
+                labels,
+                face_labels,
+                args,
+            );
         }
-        truncate!();
-        return sample_exact(
-            mesh,
-            f,
-            fi,
-            src,
-            out,
-            corner_map,
-            edge_map,
-            labels,
-            face_labels,
-            args,
-        );
+        Err(false) => {
+            truncate!();
+            return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        }
+        Ok((false, _) | (_, false)) => {
+            truncate!();
+            return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        }
     }
 
     // compute faces for each new vertex (these are all pixels)

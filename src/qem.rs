@@ -8,7 +8,7 @@ use priority_queue::PriorityQueue;
 use union_find::UnionFind;
 
 use super::{
-    F, add, cross, dist, dot, kmul, length,
+    F, add, cross, dist_sq, dot, kmul, length,
     manifold::{CollapsibleManifold, EdgeKind},
     normalize,
     quadric::{AttrWeights, Quadric, QuadricAccumulator},
@@ -371,7 +371,7 @@ pub fn simplify_range_colored(
                 unsafe { *curr_costs.get_unchecked(e0) + *curr_costs.get_unchecked(e1) };
             let total_cost = q01f.cost_attrib(p, attrs, attr_ws).max(0.) - prev_cost;
 
-            NotNan::new(-total_cost).unwrap()
+            unsafe { NotNan::new_unchecked(-total_cost) }
         }};
     }
 
@@ -447,7 +447,7 @@ pub fn simplify_range_colored(
         bufs.recency.clear();
         bufs.snd_pq.push([e0, e1], (0, q_err));
         while let Some(([e0, e1], (rec, q_err))) = bufs.snd_pq.pop() {
-            assert!(e0 < e1);
+            debug_assert!(e0 < e1);
             debug_assert!(vert_range.contains(&(e0 + offset)));
             debug_assert!(vert_range.contains(&(e1 + offset)));
             if m.is_deleted(e0) || m.is_deleted(e1) {
@@ -460,8 +460,8 @@ pub fn simplify_range_colored(
                 break 'outer;
             }
 
-            let is_bd = if args.check_bd {
-                bd_edges
+            let is_bd = args.check_bd
+                && bd_edges
                     .get(&e0)
                     .map(|bd_es| {
                         bd_es.iter().any(|bd_e| {
@@ -469,10 +469,7 @@ pub fn simplify_range_colored(
                             minmax(v0, v1) == [e0, e1]
                         })
                     })
-                    .unwrap_or(false)
-            } else {
-                false
-            };
+                    .unwrap_or(false);
 
             debug_assert!((!is_bd) ^ bd_edges.contains_key(&e1));
 
@@ -482,7 +479,7 @@ pub fn simplify_range_colored(
                 ($dst: expr, $v: expr) => {{
                     $dst.clear();
                     for &adj_fi in &face_verts[$v] {
-                        let iter = mesh.f[adj_fi]
+                        let iter = unsafe { mesh.f.get_unchecked(adj_fi) }
                             .as_triangle_fan()
                             .map(|t| t.map(|vi| vi - offset))
                             .map(|t| t.map(|vi| m.get_new_vertex(vi)))
@@ -521,7 +518,7 @@ pub fn simplify_range_colored(
             let q01 = q0 + q1;
             let attr = q01.attributes_opt(pos, attr_ws);
             let attr = std::array::from_fn(|i| attr[i].unwrap_or_else(|| (a0[i] + a1[i]) / 2.));
-            if dist(attr, a0).max(dist(attr, a1)) > args.color_diff_threshold {
+            if dist_sq(attr, a0).max(dist_sq(attr, a1)).sqrt() > args.color_diff_threshold {
                 continue;
             }
 
@@ -558,17 +555,18 @@ pub fn simplify_range_colored(
                     }
                 }};
             }
-            match (bd_edges.remove(&e0), bd_edges.remove(&e1)) {
-                (None, None) => {}
-                (Some(mut adj_bds), None) => {
+            use std::collections::btree_map::Entry;
+            match (bd_edges.remove(&e0), bd_edges.entry(e1)) {
+                (None, Entry::Vacant(_)) => {}
+                (Some(mut adj_bds), Entry::Vacant(v)) => {
                     remap_bd!(adj_bds);
-                    bd_edges.insert(e1, adj_bds);
+                    v.insert(adj_bds);
                 }
-                (None, Some(mut adj_bds)) => {
-                    remap_bd!(adj_bds);
-                    bd_edges.insert(e1, adj_bds);
+                (None, Entry::Occupied(mut adj_bds)) => {
+                    remap_bd!(adj_bds.get_mut());
                 }
-                (Some(mut bd0s), Some(mut bd1s)) => {
+                (Some(mut bd0s), Entry::Occupied(mut bd1s)) => {
+                    let bd1s = bd1s.get_mut();
                     remap_bd!(bd0s);
                     remap_bd!(bd1s);
 
@@ -606,9 +604,6 @@ pub fn simplify_range_colored(
 
                     bd1s.sort_unstable();
                     bd1s.dedup();
-                    //assert_eq!(new, bd1s);
-
-                    bd_edges.insert(e1, bd1s);
                 }
             }
 
@@ -619,27 +614,34 @@ pub fn simplify_range_colored(
                     ef1.push(f);
                 }
             }
-            let prev_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
+            let prev_tri = ef1
+                .iter()
+                .map(|&fi| unsafe { mesh.f.get_unchecked(fi) }.num_tris())
+                .sum::<usize>();
+
             ef1.retain(|&fi| {
-                mesh.f[fi].remap(|vi| m.get_new_vertex(vi - offset) + offset);
+                let prev_f = unsafe { mesh.f.get_unchecked_mut(fi) };
+                prev_f.remap(|vi| m.get_new_vertex(vi - offset) + offset);
                 // important to not rotate here otherwise the ordering may change
                 // leading to non-manifold edge introduction
-                let retain = !mesh.f[fi].canonicalize_no_rotate();
+                let retain = !prev_f.canonicalize_no_rotate();
                 if !retain {
                     // necessary for triangle counting
-                    mesh.f[fi] = FaceKind::empty();
+                    *prev_f = FaceKind::empty();
                 }
                 retain
             });
-            let new_tri = ef1.iter().map(|&fi| mesh.f[fi].num_tris()).sum::<usize>();
+            let new_tri = ef1
+                .iter()
+                .map(|&fi| unsafe { mesh.f.get_unchecked(fi) }.num_tris())
+                .sum::<usize>();
             curr_tris -= prev_tri - new_tri;
 
             for &mut fi in ef1 {
-                bufs.face_normals[fi] =
-                    normalize(mesh.f[fi].normal_with(|vi| m.get(vi - offset).1));
+                let f = unsafe { mesh.f.get_unchecked(fi) };
+                *unsafe { bufs.face_normals.get_unchecked_mut(fi) } =
+                    normalize(f.normal_with(|vi| m.get(vi - offset).1));
             }
-
-            // TEMPORARY check that face verts is correct
 
             bufs.did_update.clear();
             let e_dst = m.get_new_vertex(e1);

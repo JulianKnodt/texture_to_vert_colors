@@ -128,7 +128,7 @@ pub struct Args {
     #[arg(long, default_value_t = 0)]
     image_size_px: u32,
 
-    /// Triangulate the output mesh
+    /// Triangulate the output mesh, for not introducing additional non-manifold edges.
     #[arg(long)]
     triangulate: bool,
 
@@ -474,7 +474,6 @@ pub fn texture_to_vert_colors<'a>(
                 &mut face_labels,
                 &mut corner_map,
                 &mut edge_map,
-                //&mut labels,
             ),
         };
         // Add a simplification step here, as some faces are relatively similar, and we want to
@@ -565,7 +564,7 @@ pub fn texture_to_vert_colors<'a>(
                 assert!(corner_map.contains_key($key));
                 let fv = &corner_map[$key];
                 let corner = fv.iter().find(|fv| fv.0 == $face).unwrap().1;
-                assert_eq!(fv.iter().filter(|fv| fv.0 == $face).count(), 1);
+                debug_assert_eq!(fv.iter().filter(|fv| fv.0 == $face).count(), 1);
                 $dst.push((corner, $l));
                 corner
             }};
@@ -658,11 +657,11 @@ pub fn texture_to_vert_colors<'a>(
             v1s.dedup_by_key(|v| v.0);
 
             let mut ins = |src: usize, dst: usize| {
-                assert_ne!(src, dst);
-                assert_ne!(src, usize::MAX);
-                assert_ne!(dst, usize::MAX);
+                debug_assert_ne!(src, dst);
+                debug_assert_ne!(src, usize::MAX);
+                debug_assert_ne!(dst, usize::MAX);
 
-                let v = edge_adj.entry(src).or_insert_with(Vec::new);
+                let v = edge_adj.entry(src).or_default();
                 if !v.contains(&dst) {
                     v.push(dst);
                 }
@@ -741,7 +740,7 @@ pub fn texture_to_vert_colors<'a>(
                 for key in [e0_key, e1_key] {
                     let fv = &corner_map[&key];
                     let corner = fv.iter().find(|fv| fv.0 == fv0.0).unwrap().1;
-                    edge_adj.entry(corner).or_insert_with(Vec::new);
+                    edge_adj.entry(corner).or_default();
                 }
 
                 continue;
@@ -911,8 +910,9 @@ pub fn texture_to_vert_colors<'a>(
                     {
                         c.reverse();
                     }
-                    assert!(!new_face.canonicalize());
-                    assert!(new_face.len() > 2);
+                    let is_degen = new_face.canonicalize();
+                    debug_assert!(!is_degen);
+                    debug_assert!(new_face.len() > 2);
                     out.f.push(new_face);
                     face_labels.push(FaceLabel::GapCorner);
                 }
@@ -961,7 +961,7 @@ pub fn texture_to_vert_colors<'a>(
                 count_face_label!(FaceLabel::GapFill(_, _)),
                 count_face_label!(FaceLabel::GapCorner),
                 count_face_label!(_),
-                out.f.iter().map(|f| f.num_tris()).sum::<usize>()
+                out.num_tris(),
             );
         }};
     }
@@ -1101,20 +1101,22 @@ pub fn sample_exact(
     let mut pix_fi: BTreeMap<_, usize> = BTreeMap::new();
 
     let iarea = iaabb.area();
-    if iarea == 0 {
+    if iarea <= 1 {
         // there is no area to this triangle, difficult to sample pixels so just skip it.
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
     // simple check for uniformity, if all are equal drop to sample_direct
-    let mut color_iter = iaabb.iter_coords().map(|c| {
-        let [u, v] = c.map(|v| v as F + 0.5);
-        let [u, v] = [u / w as F, v / h as F];
-        src.get_value(u, v)
-    });
-    let first_col = color_iter.next().unwrap();
-    if !args.no_adaptive && color_iter.all(|v| dist(v, first_col) < 1e-8) {
-        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+    if !args.no_adaptive {
+        let mut color_iter = iaabb.iter_coords().map(|c| {
+            let [u, v] = c.map(|v| v as F + 0.5);
+            let [u, v] = [u / w as F, v / h as F];
+            src.get_value(u, v)
+        });
+        let first_col = color_iter.next().unwrap();
+        if color_iter.all(|v| dist_sq(v, first_col) < (1e-8 as F).sqrt()) {
+            return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        }
     }
 
     let start = out.v.len();
@@ -1153,7 +1155,7 @@ pub fn sample_exact(
         let center_uv = [(u + 0.5) / w as F, (v + 0.5) / h as F];
         let bary = uv_f.barycentric(center_uv);
         let [tex_u, tex_v] = uv_f.from_barycentric(bary);
-        assert!(tex_u.is_finite() && tex_v.is_finite(), "{bary:?} {uv_f:?}");
+        debug_assert!(tex_u.is_finite() && tex_v.is_finite(), "{bary:?} {uv_f:?}");
 
         let center_rgb = src.get_value(tex_u, tex_v);
 
@@ -1195,14 +1197,7 @@ pub fn sample_exact(
             };
 
             let new_normal = n_f.as_ref().map(|n_f| n_f.from_barycentric(new_bary));
-            debug_assert!(
-                v_f.barycentric(new_pos)
-                    .coords()
-                    .iter()
-                    .all(|v| (-1e-3..=1.001).contains(v)),
-                "{:?}",
-                v_f.barycentric(new_pos).coords(),
-            );
+
             (new_pos, new_normal)
         });
 
@@ -1210,13 +1205,6 @@ pub fn sample_exact(
         let new_verts = new_verts.map(|(new_vert, normal)| {
             let vi = out.v.len();
             out.v.push(new_vert);
-            /*
-            out.vert_colors.push(if bary.tri_idx() == 0 {
-              [1., 0., 0.]
-            } else {
-              [0., 0., 1.]
-            });
-            */
             out.vert_colors.push(center_rgb);
             if let Some(normal) = normal {
                 out.n.push(normal);
@@ -1226,45 +1214,15 @@ pub fn sample_exact(
         });
 
         let prev = pixel_map.insert(c, new_verts);
-        assert_eq!(prev, None);
+        debug_assert_eq!(prev, None);
         let new_fi = out.f.len();
         pix_fi.insert(c, new_fi);
         face_labels.push(FaceLabel::Pixel);
         out.f.push(FaceKind::Quad(new_verts));
     }
+
     if out.f.len() == start_f {
-        face_labels.truncate(start_f);
-        out.f.truncate(start_f);
-        out.vert_colors.truncate(start);
-        out.v.truncate(start);
-        out.n.truncate(start);
-        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
-    }
-
-    let cardinal_dirs = |[u, v]: [i32; 2]| [[u + 1, v], [u, v + 1], [u - 1, v], [u, v - 1]];
-    let diags = |[u, v]: [i32; 2]| {
-        [
-            [u + 1, v + 1],
-            [u + 1, v - 1],
-            [u - 1, v + 1],
-            [u - 1, v - 1],
-        ]
-    };
-    let mut any_isolated = false;
-    for &uv in pixel_map.keys() {
-        let has_nbr = cardinal_dirs(uv)
-            .into_iter()
-            .chain(diags(uv).into_iter())
-            .any(|[nu, nv]| pixel_map.contains_key(&[nu, nv]));
-        any_isolated = any_isolated || !has_nbr;
-    }
-
-    if any_isolated {
-        out.v.truncate(start);
-        out.n.truncate(start);
-        out.vertex_attrs.truncate(start);
-        out.f.truncate(start_f);
-        face_labels.truncate(start_f);
+        assert_eq!(out.v.len(), start);
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
@@ -1329,33 +1287,46 @@ pub fn sample_exact(
             return false;
         }};
     }
+    let cardinal_dirs = |[u, v]: [i32; 2]| [[u + 1, v], [u, v + 1], [u - 1, v], [u, v - 1]];
+    let diags = |[u, v]: [i32; 2]| {
+        [
+            [u + 1, v + 1],
+            [u + 1, v - 1],
+            [u - 1, v + 1],
+            [u - 1, v - 1],
+        ]
+    };
     // sanity check
     // if there is ever a pixel which doesn't have a direct nbr, we just delete it.
-    if iaabb.area() > 1 {
-        for [u, v] in iaabb.iter_coords() {
-            if !pixel_map.contains_key(&[u, v]) {
-                continue;
-            }
-            let nbrs = [[u - 1, v], [u + 1, v], [u, v - 1], [u, v + 1]];
-            let diags = [
-                [u - 1, v - 1],
-                [u - 1, v + 1],
-                [u + 1, v - 1],
-                [u + 1, v + 1],
-            ];
-            let has_nbr = nbrs.iter().any(|nbr| pixel_map.contains_key(nbr));
-            let has_diag = diags.iter().any(|d| pixel_map.contains_key(d));
-            if !has_nbr && has_diag {
-                //save_bad_mesh!("Each pixel in a tri should have at least one direct nbr");
-                let pix_verts = FaceKind::Quad(pixel_map.remove(&[u, v]).unwrap());
-                // this is rare, so it's ok for it to be expensive
-                let del_f = out.f[start_f..]
-                    .iter()
-                    .position(|f| f == &pix_verts)
-                    .unwrap();
-                out.f[start_f..][del_f] = FaceKind::empty();
-                face_labels[start_f..][del_f] = FaceLabel::Deleted;
-            }
+    for [u, v] in iaabb.iter_coords() {
+        if !pixel_map.contains_key(&[u, v]) {
+            continue;
+        }
+        let has_nbr = cardinal_dirs([u, v])
+            .iter()
+            .any(|nbr| pixel_map.contains_key(nbr));
+        let has_diag = diags([u, v]).iter().any(|d| pixel_map.contains_key(d));
+
+        // if there are no neighboring faces just abort because the triangle is too thin
+        if !has_nbr && !has_diag {
+            out.v.truncate(start);
+            out.n.truncate(start);
+            out.vertex_attrs.truncate(start);
+            out.f.truncate(start_f);
+            face_labels.truncate(start_f);
+            return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        }
+
+        if !has_nbr && has_diag {
+            //save_bad_mesh!("Each pixel in a tri should have at least one direct nbr");
+            let pix_verts = FaceKind::Quad(pixel_map.remove(&[u, v]).unwrap());
+            // this is rare, so it's ok for it to be expensive
+            let del_f = out.f[start_f..]
+                .iter()
+                .position(|f| f == &pix_verts)
+                .unwrap();
+            out.f[start_f..][del_f] = FaceKind::empty();
+            face_labels[start_f..][del_f] = FaceLabel::Deleted;
         }
     }
 
@@ -1401,15 +1372,7 @@ pub fn sample_exact(
             (None, Some(b), Some(c)) => FaceKind::Tri([l, c[1], b[3]]),
             (Some(a), None, Some(c)) => FaceKind::Tri([l, c[1], a[2]]),
             (Some(a), Some(b), None) => FaceKind::Tri([l, a[2], b[3]]),
-            (Some(a), None, None) => {
-                FaceKind::Quad([l, a[2], a[1], r])
-                //face_labels.push(FaceLabel::BridgeCorner);
-                //out.f.push();
-                //face_labels.push(FaceLabel::BridgeCorner);
-                //out.f.push(FaceKind::Quad([l, ul, a[3], a[2]]));
-                //save_bad_mesh!("Corner weirdness");
-                //continue;
-            }
+            (Some(a), None, None) => FaceKind::Quad([l, a[2], a[1], r]),
 
             /* Definitely no faces to add */
             (None, None, None) => continue,
@@ -1752,6 +1715,8 @@ pub fn sample_approx(
         debug_assert_eq!(prev, None);
     }
 
+    /*
+    #[allow(unused)]
     macro_rules! triagram {
         () => {{
             print!("  ");
@@ -1776,6 +1741,7 @@ pub fn sample_approx(
             }
         }};
     }
+    */
     assert_eq!(start_f, out.f.len());
 
     macro_rules! truncate {
@@ -2008,7 +1974,7 @@ pub fn sample_approx(
     let check = vert_adj
         .values()
         .all(|&[a0, a1]| a0 != usize::MAX && a1 != usize::MAX);
-    debug_assert!(check);
+    assert!(check);
 
     let mut corner_verts = f.map_kind(|_| (usize::MAX, usize::MAX) /* (og, new) */);
     let corner_verts_s = corner_verts.as_mut_slice();
@@ -2018,8 +1984,8 @@ pub fn sample_approx(
         let [og_u, og_v] = mesh.uv[CHAN][og_vi];
         let u = (og_u.fract().abs() * w as F + 0.5).floor() as i32;
         let v = (og_v.fract().abs() * h as F + 0.5).floor() as i32;
-        assert!(u >= 0, "{og_u} {u} {v}");
-        assert!(v >= 0, "{og_u} {u} {v}");
+        debug_assert!(u >= 0, "{og_u} {u} {v}");
+        debug_assert!(v >= 0, "{og_u} {u} {v}");
 
         let mut nearest = 0;
         let mut best_dist = F::INFINITY;
@@ -2065,14 +2031,11 @@ pub fn sample_approx(
                 }
             }
         }
-        if best_dist == F::INFINITY {
-            triagram!();
-        }
         assert_ne!(best_dist, F::INFINITY);
 
         // check that each corner vert corresponds to a single original vertex
         let check = corner_verts_s.iter().any(|&(_, new_vi)| new_vi == nearest);
-        assert!(!check);
+        debug_assert!(!check);
 
         corner_verts_s[ci] = (og_vi, nearest);
     }
@@ -2117,7 +2080,7 @@ pub fn sample_approx(
     for &(og_vi, new_vi) in corner_verts.as_slice() {
         let og_pos = mesh.v[og_vi];
         let fv = corner_map.entry(og_pos.map(F::to_bits)).or_default();
-        assert!(!fv.iter().any(|fv| fv.0 == fi));
+        debug_assert!(!fv.iter().any(|fv| fv.0 == fi));
         fv.push((fi, new_vi));
 
         if args.debug_colors {
@@ -2134,18 +2097,18 @@ pub fn sample_approx(
     const INVALID_POS: [U; 3] = [U::MAX; 3];
     let corner_verts = corner_verts.as_slice();
     for &(og_vi, new_vi) in corner_verts {
-        assert!(vert_adj.contains_key(&new_vi), "{new_vi} {corner_verts:?}");
+        debug_assert!(vert_adj.contains_key(&new_vi), "{new_vi} {corner_verts:?}");
         let [l, r] = vert_adj[&new_vi];
-        assert_ne!(l, r);
-        assert_ne!(l, new_vi);
-        assert_ne!(r, new_vi);
+        debug_assert_ne!(l, r);
+        debug_assert_ne!(l, new_vi);
+        debug_assert_ne!(r, new_vi);
         let mut iter = |mut curr: usize, mut prev: usize| {
             let mut c = 1;
             while !corner_verts.iter().any(|v| v.1 == curr) {
                 let label = labels.entry(curr).or_insert([(0, INVALID_POS); 2]);
                 *label.iter_mut().find(|v| v.1 == INVALID_POS).unwrap() =
                     (c, mesh.v[og_vi].map(F::to_bits));
-                assert!(vert_adj[&curr].iter().any(|&v| v == prev));
+                debug_assert!(vert_adj[&curr].contains(&prev));
                 let next = *vert_adj[&curr].iter().find(|v| **v != prev).unwrap();
                 prev = curr;
                 curr = next;

@@ -151,7 +151,7 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
     }
 
     pub fn merged_vertices(&self, v: usize) -> impl Iterator<Item = usize> + Clone + '_ {
-        self.inv_map.merged(v).map(|v| v as usize)
+        self.inv_map.merged(v).map(|v| v)
     }
 
     /// Merges v0 into v1.
@@ -170,7 +170,7 @@ impl<T, UF: UnionFindOp> CollapsibleManifold<T, UF> {
         self.inv_map.merge(src, dst);
 
         let [data_dst, data_src] = unsafe { self.data.get_disjoint_unchecked_mut([src, dst]) };
-        let new_data = merge(&data_dst, &data_src);
+        let new_data = merge(data_dst, data_src);
         *data_src = new_data.clone();
         *data_dst = new_data;
         // data_src should no longer be accessed

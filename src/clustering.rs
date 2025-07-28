@@ -51,7 +51,7 @@ pub struct Args {
     pub no_delta_cost: bool,
 }
 
-pub fn face_clustering<'a, 'b>(
+pub fn face_clustering<'a>(
     vs: &'a [[F; 3]],
     vcs: &'a [[F; 3]],
     fs: &'a [pars3d::FaceKind],
@@ -63,7 +63,7 @@ pub fn face_clustering<'a, 'b>(
     BTreeMap<usize, Vec<usize>>,
 ) {
     // face normals
-    let f_n = (0..nf).map(|fi| fs[fi].normal(&vs)).collect::<Vec<_>>();
+    let f_n = (0..nf).map(|fi| fs[fi].normal(vs)).collect::<Vec<_>>();
 
     // vertex normals
     let mut v_ns = vec![[0.; 3]; vs.len()];

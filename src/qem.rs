@@ -501,7 +501,7 @@ pub fn simplify_range_colored(
                 all_adj_verts!(v0_adj, e0);
                 all_adj_verts!(v1_adj, e1);
 
-                let cnt = v1_adj.iter().filter(|v1a| v0_adj.contains(&v1a)).count();
+                let cnt = v1_adj.iter().filter(|v1a| v0_adj.contains(v1a)).count();
 
                 if is_bd && cnt != 1 {
                     continue;

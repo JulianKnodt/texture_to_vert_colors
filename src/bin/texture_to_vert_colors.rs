@@ -20,7 +20,7 @@ use union_find::UnionFind;
 use texture_to_vert_colors::aabb::AABB;
 use texture_to_vert_colors::qem::{Args as QEMArgs, QEMBuffers, simplify_range_colored};
 use texture_to_vert_colors::{
-    F, U, add, cross, dist, dot, kmul, len_sq, length, normalize, orthogonal, sub,
+    F, U, add, cross, dist, dist_sq, dot, kmul, len_sq, length, normalize, orthogonal, sub,
 };
 
 /// A utility for converting a mesh with texture into a mesh with vertex colors without
@@ -395,7 +395,13 @@ pub fn texture_to_vert_colors<'a>(
     args: &Args,
 ) -> Outputs {
     let mut out = Mesh::default();
+    // always at least as many faces as the input
+    out.f.reserve(mesh.f.len());
+    out.v.reserve(3 * mesh.f.len());
+    out.vert_colors.reserve(3 * mesh.f.len());
+
     let start = std::time::Instant::now();
+
     let surface_area = mesh.f.iter().map(|f| f.area(&mesh.v)).sum::<F>();
 
     let mut edge_map = Map::new();
@@ -968,25 +974,6 @@ pub fn texture_to_vert_colors<'a>(
         "[INFO]: Initial generated mesh has {init_f} faces (Tris = {num_tris}) & {init_v} vertices"
     );
 
-    // Remove faces which may make memory less coherent
-    /*
-    macro_rules! clean_faces {
-        () => {{
-            let mut i = 0;
-            while i < out.f.len() {
-                if out.f[i].is_empty() {
-                    out.f.swap_remove(i);
-                    face_labels.swap_remove(i);
-                    continue;
-                }
-                i += 1;
-            }
-        }};
-    }
-
-    clean_faces!();
-    */
-
     //canonicalize!();
 
     let simplify_start = std::time::Instant::now();
@@ -1001,7 +988,10 @@ pub fn texture_to_vert_colors<'a>(
         out.triangulate();
     }
 
-    if !args.no_final_qem && (args.target_tri_ratio < 1. || args.target_tri_num < out.num_tris()) {
+    let final_qem = !args.no_final_qem
+        && (args.target_tri_ratio < 1.
+            || (args.target_tri_num > 0 && args.target_tri_num < out.num_tris()));
+    if final_qem {
         let qem_args = QEMArgs {
             target_tri_ratio,
             target_tri_num: args.target_tri_num,
@@ -1696,18 +1686,24 @@ pub fn sample_approx(
     let mut pixel_map = BTreeMap::new();
 
     // if there is at most one line, just abort
-    if iaabb.width() <= 1 || iaabb.height() <= 1 {
+    assert_ne!(iaabb.width(), 0);
+    assert_ne!(iaabb.height(), 0);
+    if iaabb.width() == 1 || iaabb.height() == 1 {
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
 
-    let mut color_iter = iaabb.iter_coords().map(|c| {
-        let [u, v] = c.map(|v| v as F + 0.5);
-        let [u, v] = [u / w as F, v / h as F];
-        src.get_value(u, v)
-    });
-    let first_col = color_iter.next().unwrap();
-    if !args.no_adaptive && color_iter.all(|v| v == first_col) {
-        return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+    if !args.no_adaptive {
+        let mut color_iter = iaabb.iter_coords().map(|c| {
+            let [u, v] = c.map(|v| v as F + 0.5);
+            let [u, v] = [u / w as F, v / h as F];
+            src.get_value(u, v)
+        });
+        let Some(first_col) = color_iter.next() else {
+            return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        };
+        if color_iter.all(|v| dist_sq(v, first_col) < (1e-8 as F).sqrt()) {
+            return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+        }
     }
 
     let start = out.v.len();
@@ -1733,18 +1729,16 @@ pub fn sample_approx(
         }
 
         let bary = uv_f.barycentric(cf);
-        let rgb = src.get_value(cf[0], cf[1]);
         let (ti, bs) = bary.tri_idx_and_coords();
         let pos = v_f.from_barycentric(bary);
         let (p, rgb, bary) = if !bs.iter().any(|&b| b < 0.) {
-            (pos, rgb, bary)
+            (pos, src.get_value(cf[0], cf[1]), bary)
         } else {
-            let tri = v_f.as_triangle_fan().nth(ti).unwrap();
+            let tri = unsafe { v_f.as_triangle_fan().nth(ti).unwrap_unchecked() };
             let new_pos = nearest_point_on_tri(tri, pos);
             let new_bary = v_f.barycentric(new_pos);
             let [tu, tv] = uv_f.from_barycentric(new_bary);
-            let new_rgb = src.get_value(tu, tv);
-            (new_pos, new_rgb, new_bary)
+            (new_pos, src.get_value(tu, tv), new_bary)
         };
         let n = n_f.as_ref().map(|n_f| n_f.from_barycentric(bary));
 
@@ -1754,7 +1748,8 @@ pub fn sample_approx(
         if let Some(n) = n {
             out.n.push(n);
         }
-        assert!(pixel_map.insert(c, vi).is_none());
+        let prev = pixel_map.insert(c, vi);
+        debug_assert_eq!(prev, None);
     }
 
     macro_rules! triagram {
@@ -1808,7 +1803,7 @@ pub fn sample_approx(
         .vert_colors
         .iter()
         .skip(start + 1)
-        .all(|&vc| dist(first_color, vc) < 1e-8);
+        .all(|&vc| dist_sq(first_color, vc) < (1e-8 as F).sqrt());
     if !args.no_adaptive && all_same_color {
         truncate!();
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
@@ -1825,6 +1820,10 @@ pub fn sample_approx(
         has_width = has_width
             || pixel_map.contains_key(&[u, v + 1])
             || pixel_map.contains_key(&[u, v.wrapping_sub(1)]);
+
+        if has_width && has_height {
+            break;
+        }
     }
     if !has_width || !has_height {
         truncate!();
@@ -1832,7 +1831,7 @@ pub fn sample_approx(
     }
 
     // check that no vertex will become non-manifold
-    let mut any_nonmanifold_cnt = 0;
+    let mut any_non_manifold = false;
     for &[u, v] in pixel_map.keys() {
         let has_lr = pixel_map.contains_key(&[u + 1, v]) && pixel_map.contains_key(&[u - 1, v]);
         let has_one_ud = pixel_map.contains_key(&[u + 1, v + 1])
@@ -1843,7 +1842,8 @@ pub fn sample_approx(
             || pixel_map.contains_key(&[u, v - 1]);
         // if it has left-right, it must also have at least one up or down
         if has_lr && !has_one_ud {
-            any_nonmanifold_cnt += 1;
+            any_non_manifold = true;
+            break;
         }
 
         let has_ud = pixel_map.contains_key(&[u, v + 1]) && pixel_map.contains_key(&[u, v - 1]);
@@ -1854,13 +1854,14 @@ pub fn sample_approx(
             || pixel_map.contains_key(&[u + 1, v - 1])
             || pixel_map.contains_key(&[u - 1, v - 1]);
         if has_ud && !has_one_lr {
-            any_nonmanifold_cnt += 1;
+            any_non_manifold = true;
+            break;
         }
     }
     // if there is exactly one non-manifold item, possibly may be ok, but need to add a more
     // complex check.
-    if any_nonmanifold_cnt > 0 {
-        //return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
+    if any_non_manifold {
+        truncate!();
         return sample_exact(
             mesh,
             f,
@@ -1878,8 +1879,7 @@ pub fn sample_approx(
 
     // also check if a vertex only has collinear neighbors
 
-    let mut any_collinear = false;
-    for &uv in pixel_map.keys() {
+    let any_collinear = pixel_map.keys().any(|&uv| {
         let lr = |[u, v]: [i32; 2]| [[u + 1, v], [u - 1, v]];
         let above_below = |[u, v]: [i32; 2]| {
             [
@@ -1892,9 +1892,11 @@ pub fn sample_approx(
             ]
         };
 
-        any_collinear = any_collinear
-            || (lr(uv).iter().all(|v| pixel_map.contains_key(v))
-                && above_below(uv).iter().all(|v| !pixel_map.contains_key(v)));
+        let collinear = lr(uv).iter().all(|v| pixel_map.contains_key(v))
+            && above_below(uv).iter().all(|v| !pixel_map.contains_key(v));
+        if collinear {
+            return true;
+        }
 
         let ud = |[u, v]: [i32; 2]| [[u + 1, v], [u - 1, v]];
         let left_right = |[u, v]: [i32; 2]| {
@@ -1908,15 +1910,12 @@ pub fn sample_approx(
             ]
         };
 
-        any_collinear = any_collinear
-            || (ud(uv).iter().all(|v| pixel_map.contains_key(v))
-                && left_right(uv).iter().all(|v| !pixel_map.contains_key(v)));
-    }
+        ud(uv).iter().all(|v| pixel_map.contains_key(v))
+            && left_right(uv).iter().all(|v| !pixel_map.contains_key(v))
+    });
 
     if any_collinear {
-        out.v.truncate(start);
-        out.n.truncate(start);
-        out.vertex_attrs.truncate(start);
+        truncate!();
         // TODO may be better to use sample_exact for this one.
         return sample_direct(mesh, f, fi, src, out, face_labels, corner_map, edge_map);
     }
@@ -2314,8 +2313,9 @@ pub fn sample_direct(
         fv.push((fi, new_vi));
         new_vi
     });
+
     for og_e in f.edges() {
-        let [e0_key, e1_key] = og_e.map(|e| mesh.v[e].map(|v| v.to_bits()));
+        let [e0_key, e1_key] = og_e.map(|e| mesh.v[e].map(F::to_bits));
         let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
         if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
             fvs.push((fi, vec![]));

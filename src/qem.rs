@@ -433,7 +433,7 @@ pub fn simplify_range_colored(
 
     let mut curr_tris = mesh.f[face_range.clone()]
         .iter()
-        .map(|f| f.num_tris())
+        .map(FaceKind::num_tris)
         .sum::<usize>();
     let init_tris = curr_tris;
     let p = args
@@ -478,18 +478,17 @@ pub fn simplify_range_colored(
             macro_rules! all_adj_verts {
                 ($dst: expr, $v: expr) => {{
                     $dst.clear();
-                    for &adj_fi in &face_verts[$v] {
-                        let iter = unsafe { mesh.f.get_unchecked(adj_fi) }
+                    let adj_verts = face_verts[$v].iter().flat_map(|&adj_fi| {
+                        unsafe { mesh.f.get_unchecked(adj_fi) }
                             .as_triangle_fan()
-                            .map(|t| t.map(|vi| vi - offset))
-                            .map(|t| t.map(|vi| m.get_new_vertex(vi)))
+                            .map(|t| t.map(|vi| m.get_new_vertex(vi - offset)))
                             .filter(|t| t.contains(&$v))
                             // remove degenerate tris
                             .filter(|[t0, t1, t2]| t0 != t1 && t0 != t2 && t1 != t2)
                             .flat_map(|t| t.into_iter())
-                            .filter(|&v| v != $v);
-                        $dst.extend(iter);
-                    }
+                            .filter(|&v| v != $v)
+                    });
+                    $dst.extend(adj_verts);
                     $dst.sort_unstable();
                     $dst.dedup();
                 }};
@@ -710,15 +709,6 @@ pub fn simplify_range_colored(
 
     init_tris - curr_tris
 }
-
-/*
-fn sigmoid(x: F) -> F {
-    1. / (1. + (-x).exp())
-}
-fn inv_sigmoid(y: F) -> F {
-    y.ln() - (1. - y).ln()
-}
-*/
 
 fn approx_eq(a: F, b: F, abs_eps: F) -> bool {
     if a == b {

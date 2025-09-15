@@ -12,6 +12,7 @@ def arguments():
   a.add_argument("--uniform", action="store_true", help="Use uniform weighting instead")
   a.add_argument("--color-kind", choices=["max", "concat", "add", "color-only"], default="add")
   a.add_argument("--color-weight", default=1e-4, type=float, help="How much to weigh color")
+  a.add_argument("--stats", help="Unused")
   return a.parse_args()
 
 def main():

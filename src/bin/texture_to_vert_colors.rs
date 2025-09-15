@@ -243,7 +243,7 @@ pub fn main() {
 
         if args.triangulate_input {
             mesh.triangulate();
-        } else {
+        } else if args.sample_kind != SampleKind::Direct {
             let num_split = mesh.split_non_planar_faces(3e-3);
             if num_split > 0 {
                 println!("[WARN]: Split {num_split} non-planar polygonal faces");
@@ -404,7 +404,8 @@ pub fn texture_to_vert_colors<'a>(
 
     let surface_area = mesh.f.iter().map(|f| f.area(&mesh.v)).sum::<F>();
 
-    let mut edge_map = Map::new();
+    let mut edge_map: Map<[[U; 3]; 2], EdgeKind<(usize, Vec<usize>)>> = Map::new();
+
     let mut corner_map = Map::new();
     // This is required to be a BTreeMap for the range function.
     let mut labels = BTreeMap::new();
@@ -572,7 +573,7 @@ pub fn texture_to_vert_colors<'a>(
         assert!(!face_verts.is_empty());
 
         // Only add boundary edges here
-        let f0 = face_verts[0].0;
+        let f0 = face_verts.as_slice()[0].0;
 
         let e0 = e0_key.map(F::from_bits);
         let e1 = e1_key.map(F::from_bits);
@@ -772,6 +773,7 @@ pub fn texture_to_vert_colors<'a>(
         // for each face store, tangent direction orthogonal to e, and use winding around the
         // angle to order
         let mut angular_ord = face_verts
+            .as_slice()
             .iter()
             .enumerate()
             .map(|(i, fv)| {
@@ -791,17 +793,17 @@ pub fn texture_to_vert_colors<'a>(
         angular_ord.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         for i in 0..angular_ord.len() {
             handle_pair(
-                &face_verts[angular_ord[i].1],
-                &face_verts[angular_ord[(i + 1) % angular_ord.len()].1],
+                &face_verts.as_slice()[angular_ord[i].1],
+                &face_verts.as_slice()[angular_ord[(i + 1) % angular_ord.len()].1],
             );
         }
     }
 
     // ------------- Zip corner faces together
     'outer: for (_key, mut fvs) in corner_map.into_iter() {
-        assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
+        debug_assert!(fvs.iter().all(|fv| fv.1 < out.v.len()));
         if let Some(fv) = fvs.iter().find(|fv| !edge_adj.contains_key(&fv.1)) {
-            assert!(false, "{fv:?} {fvs:?}");
+            todo!("{fv:?} {fvs:?}");
         };
         if fvs.len() < 3 {
             continue;
@@ -1060,7 +1062,7 @@ pub fn sample_exact(
     // map from original vertex -> (original face idx, vertex)
     corner_map: &mut Map<[U; 3], Vec<(usize, usize)>>,
     // map from edge -> (original face idx, vertices on face)
-    edge_map: &mut Map<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
+    edge_map: &mut Map<[[U; 3]; 2], EdgeKind<(usize, Vec<usize>)>>,
     // map from new vertex index to original vertex position and distance
     labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
 
@@ -1561,10 +1563,10 @@ pub fn sample_exact(
             // add to the edge map here, to ensure that even if the edge doesn't have any
             // intermediate vertices it will be labeled.
             assert_ne!(e0_key, e1_key);
-            let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
-            if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
-                fvs.push((fi, vec![]));
-            }
+            let fvs = edge_map
+                .entry(minmax(e0_key, e1_key))
+                .or_insert_with(EdgeKind::empty);
+            fvs.get_mut_or_insert_with(fi, Vec::new);
             true
         };
 
@@ -1586,12 +1588,10 @@ pub fn sample_exact(
         }
         let [og0_key, og1_key] = ogs.map(|vi| vi.1);
         assert_ne!(og0_key, og1_key);
-        let fvs = edge_map.entry(minmax(og0_key, og1_key)).or_default();
-        if let Some(fv) = fvs.iter_mut().find(|fv| fv.0 == fi) {
-            fv.1.push(new_vi);
-        } else {
-            fvs.push((fi, vec![new_vi]));
-        }
+        let fvs = edge_map
+            .entry(minmax(og0_key, og1_key))
+            .or_insert_with(EdgeKind::empty);
+        fvs.get_mut_or_insert_with(fi, Vec::new).push(new_vi);
 
         let ogs = [og0_key, og1_key].map(|k| k.map(F::from_bits));
         let t = nearest_on_line(out.v[new_vi], ogs);
@@ -1615,10 +1615,10 @@ pub fn sample_approx(
     src: &SourceTextures,
     out: &mut Mesh,
 
-    // map from edge -> (original face idx, vertices), which stores vertices along every half edge
+    // map from vertex -> (original face idx, vertices), which stores vertices along every half edge
     corner_map: &mut Map<[U; 3], Vec<(usize, usize)>>,
     // map from edge -> (original face idx, vertices on face)
-    edge_map: &mut Map<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
+    edge_map: &mut Map<[[U; 3]; 2], EdgeKind<(usize, Vec<usize>)>>,
     // map from new vertex index to original vertex position and distance
     labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
     face_labels: &mut Vec<FaceLabel>,
@@ -1842,76 +1842,77 @@ pub fn sample_approx(
     }
 
     // compute faces for each new vertex (these are all pixels)
+    out.f.reserve(pixel_map.len());
     for (&[u, v], &vi) in pixel_map.iter() {
-        let up = pixel_map.get(&[u, v + 1]).copied();
-        let left = pixel_map.get(&[u + 1, v]).copied();
-        let upleft = pixel_map.get(&[u + 1, v + 1]).copied();
+        let nbrs = [
+            [u - 1, v - 1], // ul
+            [u, v - 1],     // u
+            [u + 1, v - 1], // ur
+            [u - 1, v],     //l
+            [u + 1, v],     // r
+            [u - 1, v + 1], // dl
+            [u, v + 1],     // d
+            [u + 1, v + 1], // dr
+        ];
+        let [ul, u, ur, l, /**/ r, dl, d, dr] = nbrs.map(|duv| pixel_map.get(&duv).copied());
 
         // handle case where vertex may be non-manifold
         // No vertex on left-right case
-        if !pixel_map.contains_key(&[u - 1, v]) && !pixel_map.contains_key(&[u + 1, v]) {
-            if let Some(&up) = pixel_map.get(&[u, v + 1]) {
-                if let Some(&dl) = pixel_map.get(&[u - 1, v - 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, up, dl]));
+        if l.is_none() && r.is_none() {
+            if let Some(d) = d {
+                if let Some(ul) = ul {
+                    out.f.push(FaceKind::Tri([vi, d, ul]));
                 }
-                if let Some(&dr) = pixel_map.get(&[u + 1, v - 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, dr, up]));
+                if let Some(ur) = ur {
+                    out.f.push(FaceKind::Tri([vi, ur, d]));
                 }
             }
-            if let Some(&down) = pixel_map.get(&[u, v - 1]) {
-                if let Some(&ul) = pixel_map.get(&[u - 1, v + 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, ul, down]));
+            if let Some(u) = u {
+                if let Some(dl) = dl {
+                    out.f.push(FaceKind::Tri([vi, dl, u]));
                 }
-                if let Some(&ur) = pixel_map.get(&[u + 1, v + 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, down, ur]));
+                if let Some(dr) = dr {
+                    out.f.push(FaceKind::Tri([vi, u, dr]));
                 }
             }
         }
 
-        if !pixel_map.contains_key(&[u, v - 1]) && !pixel_map.contains_key(&[u, v + 1]) {
-            if let Some(&r) = pixel_map.get(&[u + 1, v]) {
-                if let Some(&ul) = pixel_map.get(&[u - 1, v + 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, r, ul]));
+        if u.is_none() && d.is_none() {
+            if let Some(r) = r {
+                if let Some(dl) = dl {
+                    out.f.push(FaceKind::Tri([vi, r, dl]));
                 }
-                if let Some(&dl) = pixel_map.get(&[u - 1, v - 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, dl, r]));
+                if let Some(ul) = ul {
+                    out.f.push(FaceKind::Tri([vi, ul, r]));
                 }
             }
-            if let Some(&l) = pixel_map.get(&[u - 1, v]) {
-                if let Some(&ur) = pixel_map.get(&[u + 1, v + 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, ur, l]));
+            if let Some(l) = l {
+                if let Some(dr) = dr {
+                    out.f.push(FaceKind::Tri([vi, dr, l]));
                 }
-                if let Some(&dr) = pixel_map.get(&[u + 1, v - 1]) {
-                    face_labels.push(FaceLabel::Pixel);
-                    out.f.push(FaceKind::Tri([vi, l, dr]));
+                if let Some(ur) = ur {
+                    out.f.push(FaceKind::Tri([vi, l, ur]));
                 }
             }
         }
 
-        if !pixel_map.contains_key(&[u - 1, v - 1])
-            && let Some(&r) = pixel_map.get(&[u - 1, v])
-            && let Some(&d) = pixel_map.get(&[u, v - 1])
+        if ul.is_none()
+            && let Some(l) = l
+            && let Some(u) = u
         {
-            face_labels.push(FaceLabel::Pixel);
-            out.f.push(FaceKind::Tri([vi, r, d]));
+            out.f.push(FaceKind::Tri([vi, l, u]));
         }
-        let new_face = match (up, upleft, left) {
+        let new_face = match (d, dr, r) {
             (Some(u), Some(ul), Some(l)) => FaceKind::Quad([l, ul, u, vi]),
             (Some(u), None, Some(l)) => FaceKind::Tri([l, u, vi]),
             (Some(u), Some(ul), None) => FaceKind::Tri([ul, u, vi]),
             (None, Some(ul), Some(l)) => FaceKind::Tri([l, ul, vi]),
             _ => continue,
         };
-        face_labels.push(FaceLabel::Pixel);
         out.f.push(new_face);
     }
+
+    face_labels.resize(out.f.len(), FaceLabel::Pixel);
 
     // wind around the outer vertices, and connect them in boundary order
 
@@ -1919,16 +1920,20 @@ pub fn sample_approx(
     // compute adjacent boundary edges and trace from the corners
     for (fi, f) in out.f.iter().enumerate().skip(start_f) {
         for [e0, e1] in f.edges_ord() {
-            assert_ne!(e0, e1);
+            debug_assert_ne!(e0, e1);
             edge_face_adj
                 .entry([e0, e1])
                 .and_modify(|v| {
                     let did_ins = v.insert(fi);
-                    assert!(did_ins);
+                    debug_assert!(did_ins);
                 })
                 .or_insert(EdgeKind::Boundary(fi));
         }
     }
+
+    assert!(!edge_face_adj.values().any(EdgeKind::is_non_manifold));
+
+    /*
     if edge_face_adj.values().any(EdgeKind::is_non_manifold) {
         truncate!();
         return sample_exact(
@@ -1944,6 +1949,7 @@ pub fn sample_approx(
             args,
         );
     }
+    */
 
     // Compute adjacent vertices to each boundary vertex
     let mut vert_adj: BTreeMap<usize, [usize; 2]> = BTreeMap::new();
@@ -1987,11 +1993,16 @@ pub fn sample_approx(
         debug_assert!(u >= 0, "{og_u} {u} {v}");
         debug_assert!(v >= 0, "{og_u} {u} {v}");
 
+
         let mut nearest = 0;
         let mut best_dist = F::INFINITY;
+
         // TODO do this check more efficiently
         let range = [0, -1, 1, -2, 2, -3, 3];
         for i in range {
+            if best_dist == 0. {
+              break
+            }
             for j in range {
                 let nu = u + i;
                 let nu = if nu >= 0 { nu } else { w as i32 + nu };
@@ -2118,17 +2129,17 @@ pub fn sample_approx(
         };
         let mut fix_up_side = |v| {
             let end_pt = iter(v, new_vi);
-            assert_ne!(end_pt, new_vi, "{start_f} {}", out.f.len());
+            debug_assert_ne!(end_pt, new_vi, "{start_f} {}", out.f.len());
             let next_og_vi = corner_verts.iter().find(|v| v.1 == end_pt).unwrap().0;
             let [e0_key, e1_key] = [og_vi, next_og_vi].map(|vi| mesh.v[vi].map(F::to_bits));
 
             // add to the edge map here, to ensure that even if the edge doesn't have any
             // intermediate vertices it will be labeled.
-            assert_ne!(e0_key, e1_key);
-            let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
-            if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
-                fvs.push((fi, vec![]));
-            }
+            debug_assert_ne!(e0_key, e1_key);
+            let fvs = edge_map
+                .entry(minmax(e0_key, e1_key))
+                .or_insert_with(EdgeKind::empty);
+            fvs.get_mut_or_insert_with(fi, Vec::new);
             true
         };
 
@@ -2137,22 +2148,21 @@ pub fn sample_approx(
             return false;
         }
     }
+
     let check = labels
         .range(start..)
         .all(|(_, v)| v[0].1 != INVALID_POS && v[1].1 != INVALID_POS);
-    assert!(check);
+    debug_assert!(check);
 
     for (&new_vi, ogs) in labels.range(start..) {
         if args.debug_colors && out.vert_colors[new_vi] != [1.; 3] {
             out.vert_colors[new_vi] = [1., 0., 0.];
         }
         let [og0_key, og1_key] = ogs.map(|vi| vi.1);
-        let fvs = edge_map.entry(minmax(og0_key, og1_key)).or_default();
-        if let Some(fv) = fvs.iter_mut().find(|fv| fv.0 == fi) {
-            fv.1.push(new_vi);
-        } else {
-            fvs.push((fi, vec![new_vi]));
-        }
+        let fvs = edge_map
+            .entry(minmax(og0_key, og1_key))
+            .or_insert_with(EdgeKind::empty);
+        fvs.get_mut_or_insert_with(fi, Vec::new).push(new_vi);
 
         let ogs = [og0_key, og1_key].map(|k| k.map(F::from_bits));
         let t = nearest_on_line(out.v[new_vi], ogs);
@@ -2180,9 +2190,7 @@ pub fn sample_direct(
     // map from original vertex -> (original face idx, vertex)
     corner_map: &mut Map<[U; 3], Vec<(usize, usize)>>,
     // map from edge -> (original face idx, vertices on face)
-    edge_map: &mut Map<[[U; 3]; 2], Vec<(usize, Vec<usize>)>>,
-    // map from new vertex index to original vertex position and distance
-    //labels: &mut BTreeMap<usize, [(u32, [U; 3]); 2]>,
+    edge_map: &mut Map<[[U; 3]; 2], EdgeKind<(usize, Vec<usize>)>>,
 ) -> bool {
     let new_face = f.map_kind(|og_vi| {
         let og_pos = mesh.v[og_vi];
@@ -2202,10 +2210,10 @@ pub fn sample_direct(
 
     for og_e in f.edges() {
         let [e0_key, e1_key] = og_e.map(|e| mesh.v[e].map(F::to_bits));
-        let fvs = edge_map.entry(minmax(e0_key, e1_key)).or_default();
-        if fvs.iter_mut().find(|fv| fv.0 == fi).is_none() {
-            fvs.push((fi, vec![]));
-        }
+        let fvs = edge_map
+            .entry(minmax(e0_key, e1_key))
+            .or_insert_with(EdgeKind::empty);
+        fvs.get_mut_or_insert_with(fi, Vec::new);
     }
 
     face_labels.push(FaceLabel::Pixel);

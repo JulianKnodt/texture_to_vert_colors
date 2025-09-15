@@ -453,6 +453,7 @@ pub fn simplify_range_colored(
             if m.is_deleted(e0) || m.is_deleted(e1) {
                 continue;
             }
+
             if locked(e0 + offset) || locked(e1 + offset) {
                 continue;
             }
@@ -537,6 +538,10 @@ pub fn simplify_range_colored(
                     continue;
                 }
                 update_edge_face_adj!(e0, e1, adj);
+
+                let prev_e = std::cmp::minmax(e0, adj);
+                bufs.pq.remove(&prev_e);
+                bufs.snd_pq.remove(&prev_e);
             }
 
             m.merge(e0, e1, |_, _| {

@@ -7,6 +7,7 @@ from itertools import chain
 
 bin_file = "target/release/texture_to_vert_colors"
 tutte_bin = "target/release/tutte_param"
+tutte_py_bin = f"{sys.executable} bin/tutte_param.py"
 smooth_bin = "target/release/smoothing"
 clustering_bin = "target/release/clustering"
 
@@ -22,6 +23,7 @@ pars3d_dist_bin = "../pars3d/target/release/distance"
 color_smoothing = f"{sys.executable} bin/color_smoothing.py"
 gaussian_blur = "target/release/examples/smooth_image"
 stripe_pattern = f"{sys.executable} bin/stripes.py"
+color_csv = f"{sys.executable} bin/color_csv.py"
 pars3d_quad_remesh = f"../pars3d/target/release/examples/quad_remesh"
 
 args = None
@@ -59,12 +61,13 @@ def run(src, dst, flags, out_dir=abl_dir, src_dir="data", bin=bin_file, eval=Tru
     return cmds
   return cb
 
-def eval(src, dst, out_dir=abl_dir):
+def eval(src, dst, out_dir=abl_dir, missing_only=False):
   def cb():
     if "run" not in args.stages: return []
     if args.match_output is not None and args.match_output not in dst: return []
     out_json = f"{out_dir}/{dst[:-4]}.json"
     out_file = f"{out_dir}/{dst}"
+    if missing_only and os.path.exists(out_json) and not args.force: return []
     return [
       f"{sys.executable} bin/hausdorff.py -o data/{src} -n {out_file} \
         --stats {out_json}"
@@ -119,56 +122,60 @@ dataset = [
   #("cabbage.obj", "cabbage_diffuse.jpg", 500000, None),
   #("shiba.obj", "shiba_texture.png", 1000000, None),
   #("watercolor_girl.obj", "", 4000000, None),
-  ("watercolor_cake.obj", "watercolor_cake.jpg", 1000000, None),
-  ("silent_ash.obj", "silent_ash_texture.png", 10000000, None),
-  ("strawberry.obj", "strawberry_textures/diffuse.png", 1000000, None),
-  ("ding_censer.obj", "ding_censer_textures/diffuse.jpg", 2000000, 0.75),
-  ("musashi_panels.obj", "musashi_panels_textures/diffuse.jpg", 1000000, None),
-  ("tiger_lily.obj", "tiger_lily.jpeg", 2000000, None),
-  ("shiny_fish.fbx", "shiny_fish_textures/Fishka_2_G_Fish_BaseColor2.jpg", 1000000, None),
-  ("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 1000000, None),
-  ("jar_with_dragon_design.obj", "jar_with_dragon_design.png", 1000000, None),
-  ("japanese_tea_cup.obj", "japanese_tea_cup_texture.png", 500000, None),
-  ("eyeball.fbx", "eyeball_base_color.png", 200000, None),
+  #("watercolor_cake.obj", "watercolor_cake.jpg", 1000000, None),
+  #("silent_ash.obj", "silent_ash_texture.png", 10000000, None),
+  #("strawberry.obj", "strawberry_textures/diffuse.png", 1000000, None),
+  #("ding_censer.obj", "ding_censer_textures/diffuse.jpg", 2000000, 0.75),
+  #("musashi_panels.obj", "musashi_panels_textures/diffuse.jpg", 1000000, None),
+  #("tiger_lily.obj", "tiger_lily.jpeg", 2000000, None),
+  #("shiny_fish.fbx", "shiny_fish_textures/Fishka_2_G_Fish_BaseColor2.jpg", 1000000, None),
+  #("japanese_tray.obj", "japanese_tray_textures/diffuse.png", 1000000, None),
+  #("jar_with_dragon_design.obj", "jar_with_dragon_design.png", 1000000, None),
+  #("japanese_tea_cup.obj", "japanese_tea_cup_texture.png", 500000, None),
+  #("eyeball.fbx", "eyeball_base_color.png", 200000, None),
 
-  ("musk_melon.obj", "", 4000000, 0.27555/2),
-  ("fire_bellied_newt.obj", "fire_bellied_newt_diffuse.jpg", 1000000, 0.2733/2.),
-  ("lychee.obj", "lychee_textures/lychee.jpg", 500000, 0.25),
-  ("officebot.obj", "officebot_textures/diffuse.png", 1000000, 0.5),
-  ("spot_triangulated.obj", "spot_texture.png", 1000000, None),
+  #("musk_melon.obj", "", 4000000, 0.27555/2),
+  #("fire_bellied_newt.obj", "fire_bellied_newt_diffuse.jpg", 1000000, 0.2733/2.),
+  #("lychee.obj", "lychee_textures/lychee.jpg", 500000, 0.25),
+  #("officebot.obj", "officebot_textures/diffuse.png", 1000000, 0.5),
+  #("spot_triangulated.obj", "spot_texture.png", 1000000, None),
 
-  ("building_front.obj", "building_front.jpg", 2000000, None),
-  ("japanese_toro.obj", "japanese_toro_textures/japanese_toro_small.png", 900000, None),
-  ("breakfast_still_life.obj", "", 1000000, 0.5),
-  ("ibis.obj", "", 1000000, 0.5),
+  #("building_front.obj", "building_front.jpg", 2000000, None),
+  #("japanese_toro.obj", "japanese_toro_textures/japanese_toro_small.png", 900000, None),
+  #("breakfast_still_life.obj", "", 1000000, 0.5),
+  #("ibis.obj", "", 1000000, 0.5),
 
 
-  ("chozuya.obj", "", 4000000, None),
-  ("flowers_in_vase.obj", "flowers_in_vase.jpg", 2000000, None),
-  ("millers-falls-drill.fbx", "millers-falls-drill-textures/diffuse.png", 1000000, None),
-  ("garlic_knight.obj", "", 1000000, 0.5),
-  ("private_detective.obj", "", 2000000, 1024),
-  ("classic_detective_hat.obj", "", 1000000, 1024),
-  ("deku_mask.obj", "", 1000000, 0.75),
-  ("umbrella_gold.obj", "", 1000000, 0.5),
-  ("inari_mask.obj", "", 300000, 0.5),
-  ("longevity_buns.obj", "", 1000000, 0.5),
+  #("chozuya.obj", "", 4000000, None),
+  #("flowers_in_vase.obj", "flowers_in_vase.jpg", 2000000, None),
+  #("millers-falls-drill.fbx", "millers-falls-drill-textures/diffuse.png", 1000000, None),
+  #("garlic_knight.obj", "", 1000000, 0.5),
+  #("private_detective.obj", "", 2000000, 1024),
+  #("classic_detective_hat.obj", "", 1000000, 1024),
+  #("deku_mask.obj", "", 1000000, 0.75),
+  #("umbrella_gold.obj", "", 1000000, 0.5),
+  #("inari_mask.obj", "", 300000, 0.5),
+  #("longevity_buns.obj", "", 1000000, 0.5),
 
-  ("half_life_crate.obj", "", 1000000, 1.),
-  ("tiger_butterfly.obj", "tiger_butterfly_diffuse.jpg", 2000000, 2048),
+  #("half_life_crate.obj", "", 1000000, 1.),
+  #("tiger_butterfly.obj", "tiger_butterfly_diffuse.jpg", 2000000, 2048),
 
-  ("origami_crane.obj", "", 2000000, 0.75),
-  ("hot_air_balloon.obj", "", 1000000, 0.5),
-  ("dish_with_maple_leaves.obj", "", 2000000, 0.25),
-  ("milk_carton.obj", "", 1000000, None),
-  ("bag_with_floral_pattern.obj", "", 500000, 0.5),
-  ("old_teapot.obj", "", 500000, 0.4),
-  ("vase.obj", "vase_2k.png", 150000, 0.5),
-  ("teacup.obj", "", 1500000, 0.5),
-  ("juice_box.obj", "", 2000000, 0.75),
-  ("wet_floor_sign.obj", "", 1000000, 1),
-  ("gollyongpo.obj", "", 4000000, 1),
-  ("scan_vase.obj", "scan_vase_texture.jpg", 1000000, None),
+  #("origami_crane.obj", "", 2000000, 0.75),
+  #("hot_air_balloon.obj", "", 1000000, 0.5),
+  #("dish_with_maple_leaves.obj", "", 2000000, 0.25),
+  #("milk_carton.obj", "", 1000000, None),
+  #("bag_with_floral_pattern.obj", "", 500000, 0.5),
+  #("old_teapot.obj", "", 500000, 0.4),
+  #("vase.obj", "vase_2k.png", 150000, 0.5),
+  #("teacup.obj", "", 1500000, 0.5),
+  #("juice_box.obj", "", 2000000, 0.75),
+  #("wet_floor_sign.obj", "", 1000000, 1),
+  #("gollyongpo.obj", "", 4000000, 1),
+  #("yazd_dome", "", 2000000, 1),
+  #("scan_vase.obj", "scan_vase_texture.jpg", 1000000, None),
+  #("eye_of_ra.obj", "", 2000000, 0.5),
+  #("violin.obj", "", 2000000, 0.25),
+  ("momo-gata-teacup.obj", "", 2000000, 0.5),
 
   ## need to rerun this one and see what the problem is
   #("watermelon.obj", "watermelon.jpg", 2000000, 0.5),
@@ -298,6 +305,164 @@ experiments = {
         --sample-kind {k}",
       ) for k in ["direct", "exact"]
     ]
+  ],
+
+  "teaser2": [
+    #render(
+    #  f"data/space_suit_geometry.obj",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_geometry.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3 \
+    #  --wireframe-thickness 6e-3",
+    #  missing_only=True,
+    #),
+
+    #render(
+    #  f"ablations/space_suit.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_approx.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3 \
+    #  --wireframe-thickness 6e-3",
+    #  missing_only=True,
+    #),
+
+    #run(
+    #  "../ablations/space_suit.ply",
+    #  "space_suit_constant_color.ply",
+    #  f"-t 1000 --eigenvalue one --cluster-vis ablations/space_suit_clusters.ply \
+    #  --eigen-eps 1e-4 --color-eps 1e-6 --eigen-vis ablations/space_suit_eigen.ply \
+    #  --shape-metric max-manhattan-dist",
+    #  bin=clustering_bin, eval=False,
+    #),
+
+    #run(
+    #  "../ablations/space_suit.ply",
+    #  "space_suit_shape_only_colors.ply",
+    #  f"-t 1000 --eigenvalue one --cluster-vis ablations/space_suit_shape_only_clusters.ply \
+    #  --eigen-eps 1e-7 --color-eps 10000 --eigen-vis ablations/space_suit_shape_only_eigen.ply \
+    #  --shape-metric max-manhattan-dist",
+    #  bin=clustering_bin, eval=False,
+    #),
+
+    #render(
+    #  f"ablations/space_suit_shape_only_colors.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_shape_only_colors.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    #),
+    #render(
+    #  f"ablations/space_suit_shape_only_clusters.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_shape_only_clusters.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    #),
+
+    #render(
+    #  f"ablations/space_suit_constant_color.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_constant_color.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    #),
+    #render(
+    #  f"ablations/space_suit_clusters.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_clusters.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    #),
+
+    #run(
+    #  "../ablations/space_suit.ply",
+    #  "space_suit_edges.ply",
+    #  "--smoothing-iters 0 --min-val 2e-3 --max-val 3e-3 --cone-angle-degrees 30",
+    #  bin=edge_detection_bin, eval=False,
+    #),
+    #render(
+    #  f"ablations/space_suit_edges.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_edges.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    #),
+
+    #render(
+    #  "ablations/space_suit.ply",
+    #  3, -3, 3, 0, fy=-1000, rz=0, cx=0,lx=0,
+    #  out="ablations/space_suit_zoom.png",
+    #  extras="--flip-light --light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3 \
+    #  --wireframe-thickness 5e-3",
+    #  missing_only=True,
+    #),
+
+    #run(
+    #  "../ablations/space_suit.ply",
+    #  "space_suit_color_smoothed.ply",
+    #  "--weight 0.05 --color-weight 0.5 --color-kind add",
+    #  bin=color_smoothing, eval=False,
+    #),
+    #render(
+    #  f"ablations/space_suit_color_smoothed.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_color_smoothed.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    #),
+
+    # --- TUTTE PARAM
+    runnable_cmds([
+      f"{sys.executable} bin/tutte_param.py -i ablations/space_suit.ply \
+        -o ablations/space_suit_pos_only.ply \
+        --color-weight 0 --color-kind add",
+      f"{copy_mesh_to_uv} -i ablations/space_suit.ply \
+        -u ablations/space_suit_pos_only.ply \
+        -o ablations/space_suit_pos_only.ply",
+      f"{bake_vert_colors_to_tex} -i ablations/space_suit_pos_only.ply \
+      -o ablations/space_suit_pos_only.obj \
+      --bake-res 1200 \
+      --bake-texture space_suit_pos_only.png",
+      f"rm ablations/space_suit_pos_only.ply",
+    ], output_name=f"ablations/space_suit_pos_only.obj"),
+
+    render(
+      f"ablations/space_suit_pos_only.obj",
+      1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+      out=f"ablations/space_suit_pos_only_3d.png",
+      extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+
+    render(
+      f"ablations/space_suit_pos_only.obj",
+      0.3, -1., 0.3, 0, fy=-1000, rz=30, cx=0.75,lx=0.5,
+      out=f"ablations/space_suit_pos_only_zoom_3d.png",
+      extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+
+    runnable_cmds([
+      f"{sys.executable} bin/tutte_param.py -i ablations/space_suit.ply \
+        -o ablations/space_suit_color_tutte.ply \
+        --color-weight 2e-1 --color-kind add",
+      f"{copy_mesh_to_uv} -i ablations/space_suit.ply \
+        -u ablations/space_suit_color_tutte.ply \
+        -o ablations/space_suit_color_tutte.ply",
+      f"{bake_vert_colors_to_tex} -i ablations/space_suit_color_tutte.ply \
+      -o ablations/space_suit_color_tutte.obj \
+      --bake-res 1200 \
+      --bake-texture space_suit_color_tutte.png",
+      f"rm ablations/space_suit_color_tutte.ply",
+    ], output_name=f"ablations/space_suit_color_tutte.obj"),
+
+    render(
+      f"ablations/space_suit_color_tutte.obj",
+      1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+      out=f"ablations/space_suit_color_tutte_3d.png",
+      extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+
+    render(
+      f"ablations/space_suit_color_tutte.obj",
+      0.3, -1., 0.3, 0, fy=-1000, rz=30, cx=0.75,lx=0.5,
+      out=f"ablations/space_suit_color_tutte_zoom_3d.png",
+      extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3",
+    ),
+
+    # --- END TUTTE PARAM
   ],
 
   "teaser": [
@@ -676,7 +841,7 @@ experiments = {
       13.5, -15.5, 5.5, 0, fy=0, rz=-45, w=800, cx=0.5, lx=0.5,
       out="ablations/prestige_stool_input.png",
       extras="--light-z -60 --roughness 1 --ambient-light 0.1 --wireframe-thickness 3e-3",
-      #missing_only=True,
+      missing_only=True,
     ),
     *[
       render(
@@ -684,7 +849,7 @@ experiments = {
         13.5, -15.5, 5.5, 0, fy=0, rz=-45, w=800, cx=0.5, lx=0.5,
         out=f"ablations/prestige_stool_{lbl}_clusters.png",
         extras="--light-z -60 --roughness 1 --ambient-light 0.1",
-        #missing_only=True,
+        missing_only=True,
       )
       for lbl, _ in [
         ("bd", "boundary-length"),
@@ -696,7 +861,138 @@ experiments = {
         ("cvx", "convexity"),
         ("area", "area"),
       ]
-    ]
+    ],
+
+    render(
+      f"data/prestige_stool.obj",
+      7, -9, 7, 0, fy=0, rz=-90,h=512,
+      out=f"ablations/prestige_stool_inset.png",
+      extras="--light-z -60 --roughness 1 --ambient-light 0.1",
+      missing_only=True,
+    ),
+
+    *[
+      render(
+        f"ablations/prestige_stool_{lbl}_clusters.ply",
+        7, -9, 7, 0, fy=0, rz=-90,h=512,
+        out=f"ablations/prestige_stool_{lbl}_inset.png",
+        extras="--light-z -60 --roughness 1 --ambient-light 0.1",
+        missing_only=True,
+      )
+      for lbl, _ in [
+        ("bd", "boundary-length"),
+        ("mh", "max-manhattan-dist"),
+        ("none", "none"),
+      ]
+    ],
+  ],
+
+  "ablate-cluster-eigen": [
+    *[
+      run(
+        "terpsichore_lyran.obj",
+        f"terpsichore_lyran_{lbl}.ply",
+        f"-t 600 --eigenvalue {k} --cluster-vis ablations/terpsichore_lyran_{lbl}_clusters.ply \
+        --eigen-eps {3e-8 if k == 'two' else 5e-12} --color-eps 10000 --geometry-only --shape-metric max-manhattan-dist \
+        --eigen-vis ablations/terpsichore_lyran_{lbl}_eigens.ply",
+        bin=clustering_bin, eval=False,
+      ) for lbl, k in [
+        ("dev", "zero"),
+        ("planar", "one"),
+        ("equiareal", "two"),
+      ]
+    ],
+
+    render(
+      "data/terpsichore_lyran.obj",
+      10.5, -16, 6, 0, fy=-0.1, rz=150, w=512,
+      out="ablations/terpsichore_lyran_input.png",
+      extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+      missing_only=True,
+    ),
+
+    *[
+      render(
+        f"ablations/terpsichore_lyran_{lbl}_clusters.ply",
+        10.5, -16, 6, 0, fy=-0.1, rz=150, w=512,
+        out=f"ablations/terpsichore_lyran_{lbl}_clusters.png",
+        extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+        #missing_only=True,
+      ) for lbl in [ ("dev"), ("planar"), ("equiareal") ]
+    ],
+
+    # Insets
+    #render(
+    #  "data/terpsichore_lyran.obj",
+    #  18, -0.1, 1.2, 0, fy=0.15, rz=0, h=360, cx=-0.5, lx=-0.5,
+    #  out="ablations/terpsichore_lyran_input_inset.png",
+    #  extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+    #  missing_only=True,
+    #),
+
+    #*[
+    #  render(
+    #    f"ablations/terpsichore_lyran_{lbl}_clusters.ply",
+    #    18, -0.1, 1.2, 0, fy=0.15, rz=0, h=360, cx=-0.5, lx=-0.5,
+    #    out=f"ablations/terpsichore_lyran_{lbl}_clusters_inset.png",
+    #    extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+    #    #missing_only=True,
+    #  ) for lbl in [ ("dev"), ("planar"), ("equiareal") ]
+    #],
+  ],
+
+  "ablate-delta-cost": [
+    *[
+      run(
+        "stern_of_ss_rifle.obj",
+        f"stern_of_ss_rifle_{lbl}.ply",
+        f"-t 200 --eigenvalue one --cluster-vis ablations/stern_of_ss_rifle_{lbl}_clusters.ply \
+        --eigen-eps 1e-9 --color-eps 10000 --geometry-only --shape-metric max-manhattan-dist \
+        --eigen-vis ablations/stern_of_ss_rifle_{lbl}_eigens.ply {k}",
+        bin=clustering_bin, eval=False,
+      )
+      for lbl, k in [
+        ("delta_cost", ""),
+        ("no_delta_cost", "--no-delta-cost"),
+      ]
+    ],
+
+    render(
+      "data/stern_of_ss_rifle.obj",
+      10.5, -18.5, 1.2, 0, fy=0.15, rz=30, h=720, cx=1.8,lx=1.8,
+      out="ablations/stern_of_ss_rifle_input.png",
+      extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+      missing_only=True,
+    ),
+
+    *[
+      render(
+        f"ablations/stern_of_ss_rifle_{lbl}_clusters.ply",
+        10.5, -18.5, 1.2, 0, fy=0.15, rz=30, h=720, cx=1.8,lx=1.8,
+        out=f"ablations/stern_of_ss_rifle_{lbl}_clusters.png",
+        extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+        #missing_only=True,
+      ) for lbl in [ "delta_cost", "no_delta_cost" ]
+    ],
+
+    # Insets
+    render(
+      "data/stern_of_ss_rifle.obj",
+      18, -0.1, 1.2, 0, fy=0.15, rz=90, h=360, cx=-0.5, lx=-0.5,
+      out="ablations/stern_of_ss_rifle_input_inset.png",
+      extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+      missing_only=True,
+    ),
+
+    *[
+      render(
+        f"ablations/stern_of_ss_rifle_{lbl}_clusters.ply",
+        18, -0.1, 1.2, 0, fy=0.15, rz=90, h=360, cx=-0.5, lx=-0.5,
+        out=f"ablations/stern_of_ss_rifle_{lbl}_clusters_inset.png",
+        extras="--light-z -80 --roughness 1 --ambient-light 0.1",
+        #missing_only=True,
+      ) for lbl in [ "delta_cost", "no_delta_cost" ]
+    ],
   ],
 
   "clustering-dish-with-maple-leaves": [
@@ -777,6 +1073,40 @@ experiments = {
   "dense-sphere-smooth-boundaries": [
     #run("dense_sphere.obj", "dense_sphere.ply", "-d data/hokusai.jpg \
     #--sample-kind approx -t 500000")
+  ],
+
+  "ablate-diff-texture": [
+    *[
+      run(
+        "bust_of_roza_loewenfeld.obj",
+        f"bust_of_roza_loewenfeld_{lbl}.ply",
+        f"-d data/bust_of_roza_loewenfeld_textures/{tex} --sample-kind approx -t 1000000 \
+        --image-size-px 1500",
+        missing_only=True,
+        eval=False,
+      ) for (lbl, tex) in [
+        ("diffuse", "diffuse.jpg"),
+        ("normals", "normals.png"),
+        #("roughness", "roughness.png"),
+      ]
+    ],
+
+    render(
+      "data/bust_of_roza_loewenfeld.obj",
+      1.25, -30, 1.25, 0, fy=-8.7, rz=0, w=660, cx=-0.25,lx=-0.25,
+      out="ablations/bust_of_roza_loewenfeld_input.png",
+      extras="--light-z -80",
+      missing_only=True,
+    ),
+    *[
+      render(
+        f"ablations/bust_of_roza_loewenfeld_{lbl}.ply",
+        1.25, -30, 1.25, 0, fy=-8.7, rz=0, w=660, cx=-0.25,lx=-0.25,
+        out=f"ablations/bust_of_roza_loewenfeld_{lbl}.png",
+        extras="--light-z -80",
+        missing_only=True,
+      ) for lbl in ["diffuse", "normals"]
+    ]
   ],
 
   # Test case for smoothing
@@ -872,16 +1202,18 @@ experiments = {
       #("ogre.obj", 0.1, "approx", True, 0.5, 512, 5e-2),
       #("longevity_buns.obj", 0.09, "approx", True, 0.5, 512, 4e-1),
       #("japanese_lantern.obj", 0.025, "approx", True, 1., 512, 1.),
-      ("perfume_bottle.obj", 0.15, "approx", True, 0.25, 2048, 1),
+      #("perfume_bottle.obj", 0.15, "approx", True, 0.25, 1024, 1),
+      #("yazd_dome.obj", 0.4, "approx", True, 0.25, 1024, 0.1),
+      ("yongchok.obj", 0.05, "approx", True, 0.5, 2048, 0.01),
     ]
     for cmd in [
-      #run(
-      #  model, model[:-4] + ".ply",
-      #  f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
-      #  {'--triangulate' if triangulate else ''} \
-      #  --image-size-frac {img_frac}",
-      #  missing_only=True,
-      #),
+      run(
+        model, model[:-4] + ".ply",
+        f"--target-tri-ratio {ratio} --sample-kind {sample_kind} \
+        {'--triangulate' if triangulate else ''} \
+        --image-size-frac {img_frac}",
+        missing_only=True,
+      ),
       *[
         runnable_cmds([
           f"{sys.executable} bin/tutte_param.py -i ablations/{model[:-4]}.ply \
@@ -1061,23 +1393,71 @@ experiments = {
     # insets
     render(
       "data/perfume_bottle.obj",
-      1, -15, -1, 0, fy=-11, rz=0, h=512,
+      -1, -13, -1, 0, fy=-11, rz=0, h=512,
       out="ablations/perfume_bottle_inset.png",
       extras="--light-z -80 --roughness 1",
       missing_only=True,
     ),
     render(
       "ablations/perfume_bottle_pos_only.obj",
-      1, -15, -1, 0, fy=-11, rz=0, h=512,
+      -1, -13, -1, 0, fy=-11, rz=0, h=512,
       out="ablations/perfume_bottle_pos_only_3d_inset.png",
       extras="--light-z -80 --roughness 1",
       missing_only=True,
     ),
     render(
       "ablations/perfume_bottle_add_1e-01.obj",
-      1, -15, -1, 0, fy=-11, rz=0, h=512,
+      -1, -13, -1, 0, fy=-11, rz=0, h=512,
       out="ablations/perfume_bottle_add_1e-01_3d_inset.png",
       extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+  ],
+
+  "tutte-param-render-yazd-dome": [
+    render(
+      "data/yazd_dome.obj",
+      21.5, -23.5, -0.5, 0, fy=-0.05, rz=0,h=960,
+      out="ablations/yazd_dome_input.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      "ablations/yazd_dome_pos_only.obj",
+      21.5, -23.5, -0.5, 0, fy=-0.05, rz=0,h=960,
+      out="ablations/yazd_dome_pos_only_3d.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      "ablations/yazd_dome_add_3e-02.obj",
+      21.5, -23.5, -0.5, 0, fy=-0.05, rz=0,h=960,
+      out="ablations/yazd_dome_add_3e-02_3d.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+
+    # insets
+    render(
+      "data/yazd_dome.obj",
+      10.5, -13.5, -0.5, 0, fy=-0.05, rz=0,h=480,
+      out="ablations/yazd_dome_inset.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      "ablations/yazd_dome_pos_only.obj",
+      10.5, -13.5, -0.5, 0, fy=-0.05, rz=0,h=480,
+      out="ablations/yazd_dome_pos_only_3d_inset.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
+    ),
+    render(
+      "ablations/yazd_dome_add_3e-02.obj",
+      10.5, -13.5, -0.5, 0, fy=-0.05, rz=0,h=480,
+      out="ablations/yazd_dome_add_3e-02_3d_inset.png",
+      extras="--light-z -80 --roughness 1",
+      missing_only=True,
     ),
   ],
 
@@ -1391,6 +1771,22 @@ experiments = {
       #missing_only=True,
       eval=False,
     ),
+
+    run(
+      "momo-gata-teacup.obj",
+      "momo-gata-teacup-manifold.obj",
+      f"--triangulate-input --triangulate --target-tri-num 300000 --sample-kind direct \
+        --no-adaptive",
+      eval=False,
+    ),
+
+    run(
+      "striped_shirt.obj",
+      "striped_shirt_manifold.obj",
+      f"--triangulate --target-tri-num 400000 --sample-kind direct \
+        --no-adaptive",
+      eval=False,
+    ),
   ],
 
   "stripe-pattern-gen": [
@@ -1409,11 +1805,26 @@ experiments = {
     #  bin=stripe_pattern,
     #  eval=False,
     #),
+    #run(
+    #  "../ablations/gothic_armchair_manifold.obj",
+    #  "../../../oss/stripes/build/direction_field.csv",
+    #  "--thresh 5e-4",
+    #  bin=stripe_pattern,
+    #  eval=False,
+    #),
+    #run(
+    #  "../ablations/momo-gata-teacup-manifold.obj",
+    #  "../../../oss/stripes/build/color.csv",
+    #  "",
+    #  bin=color_csv,
+    #  eval=False,
+    #),
+
     run(
-      "../ablations/gothic_armchair_manifold.obj",
-      "../../../oss/stripes/build/direction_field.csv",
-      "--thresh 5e-4",
-      bin=stripe_pattern,
+      "../ablations/striped_shirt_manifold.obj",
+      "../../../oss/stripes/build/color.csv",
+      "",
+      bin=color_csv,
       eval=False,
     ),
   ],
@@ -1785,9 +2196,9 @@ experiments = {
     runnable_cmds([
       "cp -R data/takifugu* tmp/",
       f"{gaussian_blur} -i tmp/takifugu_textures/takifugu_1.jpeg \
-        -o tmp/takifugu_textures/takifugu_1.jpeg --sigma 8",
+        -o tmp/takifugu_textures/takifugu_1.jpeg --sigma 12",
       f"{gaussian_blur} -i tmp/takifugu_textures/takifugu_2.jpeg \
-        -o tmp/takifugu_textures/takifugu_2.jpeg --sigma 8"
+        -o tmp/takifugu_textures/takifugu_2.jpeg --sigma 12"
     ]),
     render(
       f"tmp/takifugu.obj",
@@ -1931,6 +2342,53 @@ experiments = {
     ),
   ],
 
+  "image-lod-comparison": [
+    *[
+      run(
+        "incense_burner.obj", f"incense_burner_res_{img_size_frac}.ply",
+        f"-t 2000000 --sample-kind approx --image-size-frac {img_size_frac}",
+        out_dir="ablations",
+        missing_only=True,
+      )
+      for img_size_frac in [1, 1/2, 1/4, 1/8, 1/16, 1/32, 1/64]
+    ],
+    render(
+      f"data/incense_burner.obj",
+      9.5, -18, 5.5, 0, fy=0, rz=0, w=840,
+      out=f"outputs/incense_burner_input.png",
+      extras="--light-z -155 --light-x -30 --roughness 1",
+      missing_only=True,
+    ),
+    *[
+      render(
+        f"ablations/incense_burner_res_{img_size_frac}.ply",
+        9.5, -18, 5.5, 0, fy=0, rz=0, w=840,
+        out=f"ablations/incense_burner_res_{img_size_frac}.png",
+        extras="--light-z -155 --light-x -30 --roughness 1",
+        missing_only=True,
+      ) for img_size_frac in [1, 1/2, 1/4, 1/8, 1/16]
+    ],
+
+    render(
+      f"data/incense_burner.obj",
+      9.3, 8, 9.3, 0, fy=0, rz=-22, h=512,
+      out=f"outputs/incense_burner_input_inset.png",
+      extras="--light-z -80 --light-x -30 --roughness 1 --wireframe-thickness 4e-3 \
+      --ambient-light 1",
+    ),
+    *[
+      render(
+        f"ablations/incense_burner_res_{img_size_frac}.ply",
+        9.3, 8, 9.3, 0, fy=0, rz=-22, h=512,
+        out=f"ablations/incense_burner_res_{img_size_frac}_inset.png",
+        extras="--light-z -80 --light-x -30 --roughness 1 --wireframe-thickness 4e-3 \
+        --ambient-light 1",
+        missing_only=True,
+      ) for img_size_frac in [1, 1/2, 1/4, 1/8, 1/16]
+    ],
+
+  ],
+
   "adaptive-eyeball": [
     run(
       "eyeball.fbx", "eyeball_adaptive.ply",
@@ -1977,6 +2435,39 @@ experiments = {
     ),
   ],
 
+  "violin-dithering": [
+    run(
+      "violin.obj",
+      "violin.ply",
+      "--sample-kind approx --image-size-frac 0.5 --target-tri-num 5000000 --no-adaptive",
+      missing_only=True,
+    ),
+    run(
+      "../ablations/violin.ply",
+      "violin_dithering.ply",
+      "--weighting laplacian --color-weight 5 --face --order index \
+        --error-diffused 0.35 --diffusion lut",
+      bin=dithering_bin, out_dir="ablations", eval=False
+    ),
+    render(
+      "data/violin.obj",
+      21, -3, 0, -3.5, fy=-1.5, rz=-90, cx=-3,lx=-3, w=480,
+      out="ablations/violin_input.png",
+      extras="--flip-light --light-z 200 --roughness 1",
+    ),
+    render(
+      "ablations/violin_dithering.ply",
+      21, -3, 0, -3.5, fy=-1.5, rz=-90, cx=-3,lx=-3, w=480,
+      out="ablations/violin_dithering.png",
+      extras="--flip-light --light-z 200 --roughness 1",
+    ),
+
+    runnable_cmds([
+      "cargo run --release --example dither_image -- -i ablations/violin_input.png \
+        -o ablations/violin_input_screen_dither.png"
+    ], output_name="screen_dither"),
+  ],
+
   "flat-dithering": [
     run(
       "plane.obj",
@@ -2021,43 +2512,79 @@ experiments = {
     ),
   ],
   "watercolor-girl-dithering": [
-    runnable_cmds([
-      "cp data/watercolor_girl.obj outputs/watercolor_girl_dithered.obj",
-      "cp data/watercolor_girl.mtl outputs",
-      "cargo run --release --example dither_texture -- -i data/watercolor-girl-albedo.jpg \
-        -o outputs/watercolor-girl-albedo.jpg"
-    ], output_name="watercolor-girl-albedo.jpg"),
     run(
-      "../outputs/watercolor_girl_approx.ply",
+      "watercolor_girl.obj",
+      "watercolor_girl_approx.ply",
+      "-t 3000000 --sample-kind approx --no-adaptive",
+      out_dir="ablations", eval=False,
+      missing_only=True,
+    ),
+
+    run(
+      "../ablations/watercolor_girl_approx.ply",
       "watercolor_girl_dithering.ply",
-      "--weighting laplacian --color-weight 0 --face --order nearest \
+      "--weighting laplacian --color-weight 0 --face --order random \
         --error-diffused 0.85 --diffusion lut",
       bin=dithering_bin, out_dir="outputs", eval=False
     ),
+
+    runnable_cmds([
+      "cp data/watercolor_girl.obj outputs/watercolor_girl_dithered.obj",
+      "cp data/watercolor_girl.mtl outputs",
+      "cargo run --release --example dither_image -- -i data/watercolor-girl-albedo.jpg \
+        -o outputs/watercolor-girl-albedo.jpg"
+    ], output_name="watercolor-girl-albedo.jpg"),
+
+    # render full distance
     render(
       "data/watercolor_girl.obj",
       6.5, -13, 6.5, 0, fy=0, cx=0,lx=0,rz=0, w=720,
-      out="outputs/watercolor_girl_input.png",
+      out="ablations/watercolor_girl_input.png",
       extras="--light-z 80 --roughness 1 --light-strength 8",
       missing_only=True,
     ),
     render(
       "outputs/watercolor_girl_dithering.ply",
       6.5, -13, 6.5, 0, fy=0, cx=0,lx=0,rz=0, w=720,
-      out="outputs/watercolor_girl_dithered.png",
+      out="ablations/watercolor_girl_dithered.png",
       extras="--light-z 80 --roughness 1 --light-strength 8",
     ),
     render(
       "outputs/watercolor_girl_dithered.obj",
       6.5, -13, 6.5, 0, fy=0, cx=0,lx=0,rz=0, w=720,
-      out="outputs/watercolor_girl_texture_dither.png",
+      out="ablations/watercolor_girl_texture_dither.png",
       extras="--light-z 80 --roughness 1 --light-strength 8",
     ),
     runnable_cmds([
-      "cargo run --release --example dither_texture -- -i outputs/watercolor_girl_input.png \
-        -o outputs/watercolor_girl_output_dither.png"
-    ]),
+      "cargo run --release --example dither_image -- -i ablations/watercolor_girl_input.png \
+        -o ablations/watercolor_girl_output_dither.png"
+    ], output_name="watercolor_girl_output_dither.png", stage_kind="render"),
+    # inset renders
+    render(
+      "data/watercolor_girl.obj",
+      8, -4, 8, 0, fy=0, cx=0,lx=0,rz=36, w=720, h=512,
+      out="ablations/watercolor_girl_input_inset.png",
+      extras="--light-z 80 --roughness 1 --light-strength 8",
+      missing_only=True,
+    ),
+    render(
+      "outputs/watercolor_girl_dithering.ply",
+      8, -4, 8, 0, fy=0, cx=0,lx=0,rz=36, w=720, h=512,
+      out="ablations/watercolor_girl_dithered_inset.png",
+      extras="--light-z 80 --roughness 1 --light-strength 8",
+    ),
+    render(
+      "outputs/watercolor_girl_dithered.obj",
+      8, -4, 8, 0, fy=0, cx=0,lx=0,rz=36, w=720, h=512,
+      out="ablations/watercolor_girl_texture_dither_inset.png",
+      extras="--light-z 80 --roughness 1 --light-strength 8",
+    ),
+    runnable_cmds([
+      "cargo run --release --example dither_image -- -i ablations/watercolor_girl_input_inset.png \
+        -o ablations/watercolor_girl_output_dither_inset.png"
+    ], output_name="watercolor_girl_output_dither_inset.png", stage_kind="render"),
   ],
+
   "classic-detective-hat-dithering": [
     run(
       "classic_detective_hat.obj",
@@ -2109,10 +2636,26 @@ experiments = {
     ),
 
     render(
+      "data/tiger_butterfly.obj",
+      5, -11, 3, 0, fy=-7, rz=0, h=360, cx=5.5,lx=5.5,
+      out="ablations/tiger_butterfly_input_inset.png",
+      extras="--roughness 0.8 --light-z -50",
+      missing_only=True,
+    ),
+
+    render(
       "ablations/tiger_butterfly_edges.ply",
       2, -27, 0, 0, fy=-7, rz=0, h=720,
       out="ablations/tiger_butterfly_edges.png",
       extras="--roughness 0.8 --light-z -50",
+    ),
+
+    render(
+      "ablations/tiger_butterfly_edges.ply",
+      5, -11, 3, 0, fy=-7, rz=0, h=360, cx=5.5,lx=5.5,
+      out="ablations/tiger_butterfly_edges_inset.png",
+      extras="--roughness 0.8 --light-z -50",
+      missing_only=True,
     ),
 
     runnable_cmds([
@@ -2128,11 +2671,77 @@ experiments = {
       extras="--roughness 0.8 --light-z -50",
     ),
 
+    render(
+      "tmp/tiger_butterfly.obj",
+      5, -11, 3, 0, fy=-7, rz=0, h=360, cx=5.5,lx=5.5,
+      out="ablations/tiger_butterfly_uv_space_inset.png",
+      extras="--roughness 0.8 --light-z -50",
+      missing_only=True,
+    ),
+
     runnable_cmds([
       f"{sys.executable} bin/canny_edge.py -i ablations/tiger_butterfly_input.png \
         -o ablations/tiger_butterfly_rendered_edges.png --min 80 --max 180"
     ]),
+
+    runnable_cmds([
+      f"{sys.executable} bin/canny_edge.py -i ablations/tiger_butterfly_input_inset.png \
+        -o ablations/tiger_butterfly_rendered_edges_inset.png --min 80 --max 180"
+    ],output_name="rendered_edges_inset.png", stage_kind="render"),
   ],
+
+  "edge-detection-eye-of-ra": [
+    run(
+      "../outputs/eye_of_ra_approx.ply",
+      "eye_of_ra_approx_edges.ply",
+      "--smoothing-iters 1 --min-val 80 --max-val 110 \
+        --cone-angle-degrees 30 --no-normalize-colors --cull-area-below 2e-7 --no-area-weight",
+      bin=edge_detection_bin, eval=False,
+    ),
+
+    render(
+      "data/eye_of_ra.obj",
+      28, -0.9, 0, -0.901, fy=-1, rz=180, cx=-0.5, lx=-0.5, h=840,
+      out="ablations/eye_of_ra_input.png",
+      extras="--roughness 1 --light-z -50 --wireframe-thickness 5e-3",
+      missing_only=True,
+    ),
+    render(
+      "data/eye_of_ra.obj",
+      28, -0.9, 0, -0.901, fy=-1, rz=180, cx=-0.5, lx=-0.5, h=840,
+      out="ablations/eye_of_ra_no_wireframe.png",
+      extras="--roughness 1 --light-z -50",
+      missing_only=True,
+    ),
+
+    render(
+      "ablations/eye_of_ra_approx_edges.ply",
+      28, -0.9, 0, -0.901, fy=-1, rz=180, cx=-0.5, lx=-0.5, h=840,
+      out="ablations/eye_of_ra_approx_edges.png",
+      extras="--roughness 1 --light-z -50",
+      missing_only=True,
+    ),
+
+    runnable_cmds([
+      "cp -r data/eye_of_ra* tmp/",
+      f"{sys.executable} bin/canny_edge.py -i tmp/eye_of_ra_textures/EyeOfRah_Diffuse_02.png \
+        -o tmp/eye_of_ra_textures/EyeOfRah_Diffuse_02.png --min 45 --max 70"
+    ], output_name="eye_of_ra_uv_space.png"),
+
+    render(
+      "tmp/eye_of_ra.obj",
+      28, -0.9, 0, -0.901, fy=-1, rz=180, cx=-0.5, lx=-0.5, h=840,
+      out="ablations/eye_of_ra_uv_space.png",
+      extras="--roughness 1 --light-z -50",
+    ),
+
+    runnable_cmds([
+      f"{sys.executable} bin/canny_edge.py -i ablations/eye_of_ra_no_wireframe.png \
+        -o ablations/eye_of_ra_rendered_edges.png --min 80 --max 180"
+    ], output_name="eye_of_ra_rendered_edges.png"),
+  ],
+
+  # ---
 
   "edge-detection-bag-with-floral-pattern": [
     run(
@@ -2267,6 +2876,115 @@ experiments = {
       extras="--roughness 0.8 --light-z -50",
     ),
 
+  ],
+
+  "vietnam-lantern-comparison": [
+    eval(
+      "vietnam_lantern.obj",
+      "vietnam_lantern_instant_mesh_240k.obj",
+      out_dir="data",
+      missing_only=True,
+    ),
+    eval(
+      "vietnam_lantern.obj",
+      "vietnam_lantern_instant_mesh_2m.obj",
+      out_dir="data",
+      missing_only=True,
+    ),
+
+    render(
+      "data/vietnam_lantern.obj",
+      -1, -16, -1, 0, fy=-11, rz=0, w=750,
+      out="ablations/vietnam_lantern_input.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+      missing_only=True,
+    ),
+
+    render(
+      "data/vietnam_lantern_instant_mesh_2m.obj",
+      -1, -16, -1, 0, fy=-11, rz=0, w=750,
+      out="ablations/vietnam_lantern_instant_mesh_2m.png",
+      extras="--roughness 1 --light-z -50 --light-x 20 --with-vertex-colors",
+      missing_only=True,
+    ),
+
+    render(
+      "data/vietnam_lantern_instant_mesh_240k.obj",
+      -1, -16, -1, 0, fy=-11, rz=0, w=750,
+      out="ablations/vietnam_lantern_instant_mesh_550k.png",
+      extras="--roughness 1 --light-z -50 --light-x 20 --with-vertex-colors",
+      missing_only=True,
+    ),
+    # inset
+    render(
+      "data/vietnam_lantern.obj",
+      -0.5, -6, -0.5, 0, fy=-11, rz=0, w=750, h=512,
+      out="ablations/vietnam_lantern_input_zoom.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+      missing_only=True,
+    ),
+
+    render(
+      "data/vietnam_lantern_instant_mesh_2m.obj",
+      -0.5, -6, -0.5, 0, fy=-11, rz=0, w=750, h=512,
+      out="ablations/vietnam_lantern_instant_mesh_2m_zoom.png",
+      extras="--roughness 1 --light-z -50 --light-x 20 --with-vertex-colors",
+      missing_only=True,
+    ),
+
+    render(
+      "data/vietnam_lantern_instant_mesh_240k.obj",
+      -0.5, -6, -0.5, 0, fy=-11, rz=0, w=750, h=512,
+      out="ablations/vietnam_lantern_instant_mesh_550k_zoom.png",
+      extras="--roughness 1 --light-z -50 --light-x 20 --with-vertex-colors",
+      missing_only=True,
+    ),
+    # comparison to instant meshes
+    run(
+      "vietnam_lantern.obj",
+      f"vietnam_lantern_2m.ply",
+      f"-t 2068000 --sample-kind approx --image-size-frac 0.75",
+      #missing_only=True,
+    ),
+    run(
+      "vietnam_lantern.obj",
+      f"vietnam_lantern_550k.ply",
+      f"-t 550000 --sample-kind approx --image-size-frac 0.75",
+      #missing_only=True,
+    ),
+
+    render(
+      "ablations/vietnam_lantern_2m.ply",
+      -1, -16, -1, 0, fy=-11, rz=0, w=750,
+      out="ablations/vietnam_lantern_2m.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+      missing_only=True,
+    ),
+
+    render(
+      "ablations/vietnam_lantern_550k.ply",
+      -1, -16, -1, 0, fy=-11, rz=0, w=750,
+      out="ablations/vietnam_lantern_550k.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+      missing_only=True,
+    ),
+
+    # inset
+    render(
+      "ablations/vietnam_lantern_2m.ply",
+      -0.5, -6, -0.5, 0, fy=-11, rz=0, w=750, h=512,
+      out="ablations/vietnam_lantern_2m_zoom.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+      missing_only=True,
+    ),
+
+    render(
+      "ablations/vietnam_lantern_550k.ply",
+      -0.5, -6, -0.5, 0, fy=-11, rz=0, w=750, h=512,
+      out="ablations/vietnam_lantern_550k_zoom.png",
+      extras="--roughness 1 --light-z -50 --light-x 20",
+      missing_only=True,
+    ),
   ],
 
   "uvatlas-clustering": [

@@ -48,7 +48,7 @@ faces = [
   r["input_num_tris"] for r in results
 ]
 times = [
-  sum(r["remesh_times_ms"]) for r in results
+  r["before_simplify_tris"] for r in results
 ]
 
 plt.style.use(['science','ieee', 'no-latex'])
@@ -59,12 +59,12 @@ ax.set_xscale("log")
 ax.set_yscale("log")
 ax.set_xlabel("Total #Pixels in Images")
 ax.set_ylabel("#Input Tris")
-plt.colorbar(sc, label="Time (ms)")
-plt.title(f"{v} Remeshing Timings")
+plt.colorbar(sc, label="Output Tris")
+plt.title(f"{v} Remeshing Output Tris")
 #ax.set_zlabel("Time (ms)")
 #ax.set_xticks(np.arange(0, int(1.1e6), int(2e5)), np.arange(0, int(1.1e6), int(2e5)))
 #ax.grid(True)
 #ax.ticklabel_format(useOffset=False, style="plain")
 fig.tight_layout()
 #plt.show()
-plt.savefig(f"plots/remesh_{v.lower()}_time.pdf")
+plt.savefig(f"plots/output_tris_{v.lower()}.pdf")

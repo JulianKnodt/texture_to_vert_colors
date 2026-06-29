@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
     let scene =
         pars3d::load(&args.input).expect(&format!("Failed to parse input from {}", args.input));
     let mut m = scene.into_flattened_mesh();
-    m.triangulate();
+    m.triangulate(0);
     m.f.retain_mut(|f| !f.canonicalize());
     m.normalize();
 

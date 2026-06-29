@@ -202,7 +202,7 @@ pub fn main() -> std::io::Result<()> {
         colored_mesh.append(&mut wireframe_mesh);
 
         let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.output, &out_scene)?;
+        pars3d::save(&args.output, &out_scene, true)?;
     }
 
     use texture_to_vert_colors::measure_flat as mf;
@@ -241,7 +241,7 @@ pub fn main() -> std::io::Result<()> {
             out_scene.materials.push(Default::default());
             out_scene.meshes.push(new_mesh);
         }
-        pars3d::save(&args.xatlas_output, &out_scene)?;
+        pars3d::save(&args.xatlas_output, &out_scene, true)?;
     }
 
     Ok(())

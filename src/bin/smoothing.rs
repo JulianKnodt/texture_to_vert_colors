@@ -62,9 +62,12 @@ fn main() {
             None
         };
         let mut new_edges = BTreeSet::new();
-        m.triangulate_with_new_edges(|[e0, e1]| {
-            new_edges.insert(std::cmp::minmax(e0, e1));
-        });
+        m.triangulate_with_new_edges(
+            |[e0, e1]| {
+                new_edges.insert(std::cmp::minmax(e0, e1));
+            },
+            0,
+        );
         let (s, t) = m.normalize();
         let (sc, tc) = m.normalize_colors();
         smoothing(m, new_edges, &args);
@@ -82,7 +85,7 @@ fn main() {
         args.input,
     );
 
-    pars3d::save(&args.output, &scene).expect("Failed to save output");
+    pars3d::save(&args.output, &scene, true).expect("Failed to save output");
 }
 
 pub fn smoothing(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) {
@@ -103,7 +106,7 @@ pub fn smoothing(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) 
     let vert_adj = vert_adj;
 
     // lock boundary positions
-    let (_, bd_loops) = vert_adj.boundary_loops(&mesh);
+    let (_, bd_loops) = vert_adj.boundary_loops(&mesh.f);
 
     let mut vs = &mut mesh.v;
     let mut buf = vs.clone();

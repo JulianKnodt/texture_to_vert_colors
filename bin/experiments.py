@@ -25,11 +25,21 @@ gaussian_blur = "target/release/examples/smooth_image"
 stripe_pattern = f"{sys.executable} bin/stripes.py"
 color_csv = f"{sys.executable} bin/color_csv.py"
 pars3d_quad_remesh = f"../pars3d/target/release/examples/quad_remesh"
+pars3d_per_face_texture = f"../pars3d/target/release/examples/per_face_texture"
+
+images_to_vid = f"{sys.executable} bin/images_to_vid.py"
+img_to_vid = f"{sys.executable} bin/single_img_to_vid.py"
+stack_2x2 = f"{sys.executable} bin/stack_2x2.py"
+stack_2 = f"{sys.executable} bin/stack_2.py"
+cap_vid = f"{sys.executable} bin/vid_add_bottom_text.py"
 
 args = None
 
 abl_dir = "ablations"
 cl_dir = "cluster_outputs"
+
+VW = 1920 // 2
+VH = 1080 // 2
 
 def run(src, dst, flags, out_dir=abl_dir, src_dir="data", bin=bin_file, eval=True, missing_only=False):
   if dst.endswith(".csv"): eval=False
@@ -91,7 +101,7 @@ def render(
       --cam-x {cx} --rot-z {rz} \
       --cam-y {cy} --cam-z {cz} --lookat-y {ly:f} --lookat-z {lz} \
       -o {out} --width {w} --floor-y {fy} --lookat-x {lx} --height {h} {extras} "
-    if not args.debug_render: cmd += " --final-render --samples 256"
+    if not args.debug_render: cmd += " --final-render --samples 128"
     return [cmd]
   return cb
 
@@ -314,7 +324,7 @@ experiments = {
     #  out=f"ablations/space_suit_geometry.png",
     #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3 \
     #  --wireframe-thickness 6e-3",
-    #  missing_only=True,
+    #  missing_only=true,
     #),
 
     #render(
@@ -323,7 +333,7 @@ experiments = {
     #  out=f"ablations/space_suit_approx.png",
     #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3 \
     #  --wireframe-thickness 6e-3",
-    #  missing_only=True,
+    #  missing_only=true,
     #),
 
     #run(
@@ -1204,7 +1214,12 @@ experiments = {
       #("japanese_lantern.obj", 0.025, "approx", True, 1., 512, 1.),
       #("perfume_bottle.obj", 0.15, "approx", True, 0.25, 1024, 1),
       #("yazd_dome.obj", 0.4, "approx", True, 0.25, 1024, 0.1),
-      ("yongchok.obj", 0.05, "approx", True, 0.5, 2048, 0.01),
+      #("yongchok.obj", 0.05, "approx", True, 0.5, 2048, 0.01),
+      #("plato.obj", 0.1, "approx", True, 0.3, 4096, 0.1)
+      #("marble_pillar.obj", 0.4, "approx", True, 0.3, 1024, 3),
+      #("marble_pillar_2.obj", 0.4, "approx", True, 1, 1024, 1),
+      #("noir_vase.obj", 0.1, "approx", True, 0.3, 1024, 1),
+      ("campbell_soup.obj", 0.1, "approx", True, 1, 1024, 1),
     ]
     for cmd in [
       run(
@@ -2081,6 +2096,154 @@ experiments = {
         --save-grid ablations/japanese_matcha_bowl_arrows_grid.ply",
       eval=False,
       bin=pars3d_quad_remesh,
+    ),
+  ],
+
+  "quad-remesh-hoodie-kikko": [
+    run(
+      "hoodie_kikko_2.obj",
+      "hoodie_kikko.obj",
+      f"--target-tri-ratio 1 --sample-kind approx --no-adaptive --triangulate-input",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/hoodie_kikko.obj",
+      "hoodie_kikko_remesh.obj",
+      "--color-field --scale 0.01 --subdivisions 0 --orient-iters 400 \
+      --save-grid ablations/hoodie_kikko_grid.ply",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+
+    run(
+      "../ablations/hoodie_kikko.obj",
+      "hoodie_kikko_geom_remesh.obj",
+      "--scale 0.01 --subdivisions 0 --orient-iters 400",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+
+    *[
+      render(
+        f"data/hoodie_kikko_2.obj",
+        10, 34, -1, 0, fy=-1000, rz=135 + d, w=VW, h=VH,
+        out=f"ablations/hoodie_kikko_input_{d:03}.png",
+        missing_only=True,
+      ) for d in range(0, 90)
+    ],
+
+    *[
+      render(
+        f"ablations/hoodie_kikko_remesh.obj",
+        5, 15, 2, 0, fy=-1000, rz=135 + d, w=VW, h=VH,
+        out=f"ablations/hoodie_kikko_remesh_{d:03}.png",
+        extras="--wireframe-thickness 1e-2",
+        missing_only=True,
+      ) for d in range(0, 90)
+    ],
+
+    *[
+      render(
+        f"ablations/hoodie_kikko_geom_remesh.obj",
+        5, 15, 2, 0, fy=-1000, rz=135 + d, w=VW, h=VH,
+        out=f"ablations/hoodie_kikko_geom_remesh_{d:03}.png",
+        extras="--wireframe-thickness 1e-2",
+        missing_only=True,
+      ) for d in range(0, 90)
+    ],
+
+    *[
+      render(
+        f"data/hoodie_kikko_2.obj",
+        5, 15, 2, 0, fy=-1000, rz=135 + d, w=VW, h=VH,
+        out=f"ablations/hoodie_kikko_overlay_{d:03}.png",
+        extras="--wireframe ablations/hoodie_kikko_grid.ply",
+        missing_only=True,
+      ) for d in range(0, 90)
+    ],
+  ],
+
+  "hoodie-video": [
+    runnable_cmds([
+      f"{images_to_vid} -i 'ablations/hoodie_kikko_input_*.png' -o ablations/hoodie_kikko_input.mp4",
+      f"{images_to_vid} -i 'ablations/hoodie_kikko_remesh_*.png' \
+        -o ablations/hoodie_kikko_remesh.mp4",
+      f"{images_to_vid} -i 'ablations/hoodie_kikko_geom_remesh_*.png' \
+        -o ablations/hoodie_kikko_geom_remesh.mp4",
+      f"{images_to_vid} -i 'ablations/hoodie_kikko_overlay_*.png' \
+        -o ablations/hoodie_kikko_overlay.mp4",
+
+      f"{stack_2x2} \
+        -tl ablations/hoodie_kikko_input.mp4 \
+        -tr ablations/hoodie_kikko_remesh.mp4 \
+        -bl ablations/hoodie_kikko_geom_remesh.mp4 \
+        -br ablations/hoodie_kikko_overlay.mp4 \
+        --tl-label 'Input' \
+        --tr-label 'Tex. Remesh' \
+        --br-label 'Pos. Field' \
+        --bl-label 'Geom. Remesh' \
+        -o hoodie_kikko_no_attr.mp4",
+      f"{cap_vid} -i hoodie_kikko_no_attr.mp4 -o fast-forward/hoodie_kikko.mp4 --caption 'CC-BY Cavity Studios'"
+    ]),
+  ],
+
+  "quad-remesh-dancheong": [
+    #run(
+    #  "plane.obj",
+    #  "dancheong.obj",
+    #  f"--target-tri-ratio 0.25 --sample-kind approx \
+    #    --image-size-frac 0.5 --diffuse-img data/dancheong_textures/dancheong.jpg",
+    #  missing_only=False,
+    #  eval=False,
+    #),
+    run(
+      "dancheong.obj",
+      "dancheong.obj",
+      f"--target-tri-ratio 0.75 --sample-kind approx \
+        --image-size-frac 0.5 --no-adaptive",
+      missing_only=False,
+      eval=False,
+    ),
+    run(
+      "../ablations/dancheong.obj",
+      "dancheong_remesh.obj",
+      "--color-field --orient-iters 40 --scale 0.009 --subdivisions 1",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+  ],
+
+  "quad-remesh-dancheong-plane": [
+    run(
+      "plane.obj",
+      "dancheong_plane.obj",
+      f"--target-tri-ratio 0.25 --sample-kind approx \
+        --image-size-frac 1 --diffuse-img data/dancheong_textures/dancheong.jpg",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/dancheong_plane.obj",
+      "dancheong_plane_remesh.obj",
+      "--color-field --orient-iters 50 --scale 0.01 --subdivisions 1",
+      eval=False,
+      missing_only=True,
+      bin=pars3d_quad_remesh,
+    ),
+    run(
+      "../ablations/dancheong_plane_remesh.obj",
+      "dancheong_plane_remesh.obj",
+      "--y-zero",
+      eval=False,
+      bin=copy_mesh_to_uv,
+    ),
+    run(
+      "../ablations/dancheong_plane_remesh.obj",
+      "dancheong_plane_remesh.obj",
+      "--image data/dancheong_textures/dancheong.jpg",
+      eval=False,
+      bin=pars3d_per_face_texture,
     ),
   ],
 
@@ -3458,7 +3621,482 @@ experiments = {
       for (model, texture, tri_num) in dataset_direct
     ],
   ],
+
+  # For fast forward
+  "quad-remesh-thin-vase": [
+    run(
+      "thin_vase.fbx",
+      #"plane.obj",
+      "thin-vase.obj",
+      f"--target-tri-ratio 1 --sample-kind approx --no-adaptive \
+        --diffuse-img data/shippo.jpg --image-size-frac 0.75",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/thin-vase.obj",
+      "thin-vase-remesh.obj",
+      #"--color-field --scale 0.008 --subdivisions 0 --orient-iters 400",
+      "--color-field --scale 0.013 --subdivisions 0 --orient-iters 200",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+  ],
+
+  "tuna-ff": [
+    run(
+      "tuna.obj",
+      "tuna.obj",
+      f"--target-tri-ratio 0.125 --sample-kind approx --image-size-frac 0.5",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/tuna.obj",
+      "tuna_constant_color.ply",
+      f"-t 600 --eigenvalue zero --cluster-vis ablations/tuna_clusters.ply \
+      --eigen-eps 1e-5 --color-eps 1e-10 --eigen-vis ablations/tuna_eigen.ply \
+      --shape-metric max-manhattan-dist",
+      bin=clustering_bin, eval=False,
+    ),
+
+    *[
+      render(
+        "data/tuna.obj",
+        16, 28, -3, 0, rz=-120-r, fy=-1000, w=VW, h=VH,
+        extras="--light-strength 2",
+        out=f"ablations/tuna_input_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 240, 2)
+    ],
+
+    *[
+      render(
+        "ablations/tuna_clusters.ply",
+        16, 28, -3, 0, rz=-120-r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/tuna_clusters_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 240, 2)
+    ],
+
+    *[
+      render(
+        "ablations/tuna_constant_color.ply",
+        16, 28, -3, 0, rz=-120-r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/tuna_constant_color_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 240, 2)
+    ],
+
+    *[
+      render(
+        "ablations/tuna_eigen.ply",
+        16, 28, -3, 0, rz=-120-r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/tuna_eigen_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 240, 2)
+    ],
+  ],
+
+  "katana-ff": [
+    run(
+      "katana.obj",
+      "katana.obj",
+      f"--target-tri-ratio 0.15 --sample-kind approx --image-size-px 1200",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/katana.obj",
+      "katana_constant_color.ply",
+      f"-t 2000 --eigenvalue zero --cluster-vis ablations/katana_clusters.ply \
+      --eigen-eps 1e-4 --color-eps 1e-6 --eigen-vis ablations/katana_eigen.ply \
+      --shape-metric max-manhattan-dist",
+      bin=clustering_bin, eval=False,
+    ),
+
+    *[
+      render(
+        "data/katana.obj",
+        9, 24, 1, 0, rz=r+135, fy=-1000,h=800,
+        out=f"ablations/katana_input_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90, 1)
+    ],
+
+    *[
+      render(
+        "ablations/katana_clusters.ply",
+        9, 24, 1, 0, rz=r+135, fy=-1000,h=800,
+        out=f"ablations/katana_clusters_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90, 1)
+    ],
+
+    *[
+      render(
+        "ablations/katana_constant_color.ply",
+        9, 24, 1, 0, rz=r+135, fy=-1000,h=800,
+        out=f"ablations/katana_constant_color_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90, 1)
+    ],
+
+    *[
+      render(
+        "ablations/katana_eigen.ply",
+        9, 24, 1, 0, rz=r+135, fy=-1000,h=800,
+        out=f"ablations/katana_eigen_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90, 1)
+    ],
+  ],
+
+  "mugo-ff": [
+    run(
+      "mugo.obj",
+      "mugo.ply",
+      f"--target-tri-ratio 0.5 --sample-kind exact --image-size-frac 0.5 \
+        --triangulate-input --triangulate",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/mugo.ply",
+      "mugo_edges.ply",
+      "--smoothing-iters 1 --min-val 2e-4 --max-val 4e-4 --cone-angle-degrees 20",
+      bin=edge_detection_bin, eval=False,
+    ),
+    *[
+      render(
+        "data/mugo.obj",
+        25, 12, 9, 0, rz=r+135, fy=-1000, w=VW, h=VH,
+        out=f"ablations/mugo_input_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90)
+    ],
+
+    *[
+      render(
+        "ablations/mugo_edges.ply",
+        25, 12, 9, 0, rz=r+135, fy=-1000, w=VW, h=VH,
+        out=f"ablations/mugo_edges_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90)
+    ],
+  ],
+
+  "plato-ff": [
+
+    #render(
+    #  f"data/space_suit_geometry.obj",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_geometry.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3 \
+    #  --wireframe-thickness 6e-3",
+    #  missing_only=true,
+    #),
+
+    #render(
+    #  f"ablations/space_suit.ply",
+    #  1.5, -10., 1.5, 0, fy=-1000, rz=30, cx=2.5,lx=-1,
+    #  out=f"ablations/space_suit_approx.png",
+    #  extras="--light-z -50 --roughness 0.8 --light-strength 18 --ambient-light 3 \
+    #  --wireframe-thickness 6e-3",
+    #  missing_only=true,
+    #),
+  ],
+
+  "korean-bakery-ff": [
+    *[
+      run(
+        "korean_bakery.obj",
+        f"korean_bakery_{r}.ply",
+        f"--target-tri-ratio 0.{r} --sample-kind approx --image-size-frac 0.3 \
+          --triangulate",
+        missing_only=True,
+        eval=False,
+      ) for r in ['25', '10', '05', '01']
+    ],
+
+    run(
+      "korean_bakery.obj",
+      "korean_bakery_exact.ply",
+      f"--target-tri-num 500000 --sample-kind exact --image-size-frac 0.3 \
+        --triangulate",
+      missing_only=True,
+      eval=False,
+    ),
+
+    run(
+      "korean_bakery_5_subdiv.obj",
+      "korean_bakery_5_subdiv.ply",
+      f"--target-tri-ratio 1 --sample-kind direct --image-size-frac 0.3",
+      missing_only=True,
+      eval=False,
+    ),
+
+    *[
+      render(
+        f"data/korean_bakery.obj",
+        11, -32, 4, 0, fy=-1000, rz=-20 + d, w=VW, h=VH,
+        out=f"ablations/korean_bakery_input_{d:03}.png",
+        extras="--light-z -50",
+        missing_only=True,
+      ) for d in range(0, 120)
+    ],
+
+    *[
+      render(
+        f"ablations/korean_bakery_25.ply",
+        11, -32, 4, 0, fy=-1000, rz=-20 + d, w=VW, h=VH,
+        out=f"ablations/korean_bakery_ply_{d:03}.png",
+        extras="--light-z -50",
+        missing_only=True,
+      ) for d in range(0, 120)
+    ],
+
+    *[
+      render(
+        f"ablations/korean_bakery_exact_cleaned.ply",
+        11, -32, 4, 0, fy=-1000, rz=-20 + d, w=VW, h=VH,
+        out=f"ablations/korean_bakery_exact_{d:03}.png",
+        extras="--light-z -50",
+        missing_only=True,
+      ) for d in range(0, 120)
+    ],
+
+    *[
+      render(
+        f"ablations/korean_bakery_5_subdiv.ply",
+        11, -32, 4, 0, fy=-1000, rz=-20 + d, w=VW, h=VH,
+        out=f"ablations/korean_bakery_subdiv_{d:03}.png",
+        extras="--light-z -50",
+        missing_only=True,
+      ) for d in range(0, 120)
+    ],
+
+  ],
+  "korean-bakery-video": [
+    runnable_cmds([
+      f"{images_to_vid} -i 'ablations/korean_bakery_input_*.png' -o ablations/korean_bakery_input.mp4",
+      f"{images_to_vid} -i 'ablations/korean_bakery_ply_*.png' -o ablations/korean_bakery_approx.mp4",
+      f"{images_to_vid} -i 'ablations/korean_bakery_exact_*.png' -o ablations/korean_bakery_exact.mp4",
+      f"{images_to_vid} -i 'ablations/korean_bakery_subdiv_*.png' -o ablations/korean_bakery_subdiv.mp4",
+      f"{stack_2x2} \
+        -tl ablations/korean_bakery_input.mp4 \
+        -tr ablations/korean_bakery_subdiv.mp4 \
+        -bl ablations/korean_bakery_approx.mp4 \
+        -br ablations/korean_bakery_exact.mp4 \
+        --tl-label 'Input Mesh & Texture' \
+        --tr-label '5x Subdiv + Bake' \
+        --bl-label 'Dual Remesh (Ours)' \
+        --br-label 'Exact Remesh (Ours)' \
+        -o korean_bakery_no_attr.mp4",
+      f"{cap_vid} -i korean_bakery_no_attr.mp4 -o fast-forward/korean_bakery.mp4 --caption 'CC-BY Bjarne Stokhof'"
+    ]),
+  ],
+
+  "quad-remesh-danghye": [
+    run(
+      "danghye.obj",
+      "danghye.ply",
+      f"--target-tri-ratio 0.15 --sample-kind approx \
+        --image-size-frac 0.5 --no-adaptive --triangulate-input",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/danghye.ply",
+      "danghye_remesh.obj",
+      # scale 0.005 works well but grid is sparse?
+      "--color-field --orient-iters 250 --scale 0.005 --subdivisions 0 \
+      --save-grid ablations/danghye_grid.ply",
+      eval=False,
+      bin=pars3d_quad_remesh,
+    ),
+  ],
+
+  "dragon-jar-ff": [
+    run(
+      "dragon_jar.obj",
+      "dragon_jar.ply",
+      f"--target-tri-ratio 0.2 --sample-kind approx --image-size-frac 0.25",
+      missing_only=True,
+      eval=False,
+    ),
+    run(
+      "../ablations/dragon_jar.ply",
+      "dragon_jar_edges.ply",
+      "--smoothing-iters 1 --min-val 6e-4 --max-val 2e-3 --cone-angle-degrees 20",
+      bin=edge_detection_bin, eval=False,
+    ),
+    *[
+      render(
+        "data/dragon_jar.obj",
+        8, 44, -2, 0, rz=r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/dragon_jar_input_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90)
+    ],
+    *[
+      render(
+        "ablations/dragon_jar_edges.ply",
+        8, 44, -2, 0, rz=r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/dragon_jar_edges_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 90)
+    ],
+  ],
+
+  "edge-detect-video": [
+    runnable_cmds([
+      f"{images_to_vid} -i 'ablations/dragon_jar_input_*.png' -o ablations/dragon_jar_input.mp4",
+      f"{images_to_vid} -i 'ablations/dragon_jar_edges_*.png' -o ablations/dragon_jar_edges.mp4",
+      f"{images_to_vid} -i 'ablations/mugo_input_*.png' -o ablations/mugo_input.mp4",
+      f"{images_to_vid} -i 'ablations/mugo_edges_*.png' -o ablations/mugo_edges.mp4",
+
+      f"{stack_2x2} \
+        -tl ablations/dragon_jar_input.mp4 \
+        -bl ablations/dragon_jar_edges.mp4 \
+        -tr ablations/mugo_input.mp4 \
+        -br ablations/mugo_edges.mp4 \
+        --tl-label 'Input' \
+        --bl-label 'Edges' \
+        -o edge_detect_no_attr.mp4",
+      f"{cap_vid} -i edge_detect_no_attr.mp4 -o fast-forward/edge_detect.mp4 -x 1300 --caption 'CC-BY KHS, CC0 Cleveland Museum of Art'"
+    ]),
+  ],
+
+  "tutte-noir-vase-ff": [
+    *[
+      render(
+        "data/noir_vase.obj",
+        15, 14, 7, 0, rz=r, fy=-1000, w=800,
+        out=f"ablations/noir_vase_input_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 361, 4)
+    ],
+    *[
+      render(
+        "ablations/noir_vase_pos_only.obj",
+        15, 14, 7, 0, rz=r, fy=-1000, w=800,
+        out=f"ablations/noir_vase_pos_only_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 361, 4)
+    ],
+    *[
+      render(
+        "ablations/noir_vase_concat_3e-02.obj",
+        15, 14, 7, 0, rz=r, fy=-1000, w=800,
+        out=f"ablations/noir_vase_ssp_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 361, 4)
+    ],
+  ],
+
+  "tutte-marble-pillar-2-ff": [
+    *[
+      render(
+        "data/marble_pillar_2.obj",
+        17, 26, 6, 0, rz=r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/marble_pillar_input_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 360, 4)
+    ],
+    *[
+      render(
+        "ablations/marble_pillar_2_pos_only.obj",
+        17, 26, 6, 0, rz=r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/marble_pillar_2_pos_only_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 360, 4)
+    ],
+    *[
+      render(
+        "ablations/marble_pillar_2_concat_3e-01.obj",
+        17, 26, 6, 0, rz=r, fy=-1000, w=VW, h=VH,
+        out=f"ablations/marble_pillar_2_ssp_{r:03}.png",
+        missing_only=True,
+      ) for r in range(0, 360, 4)
+    ],
+  ],
+
+  "uv-param-video": [
+    runnable_cmds([
+      f"{images_to_vid} -i 'ablations/marble_pillar_input_*.png' -o ablations/marble_pillar_2_input.mp4",
+      f"{images_to_vid} -i 'ablations/marble_pillar_2_pos_only_*.png' -o ablations/marble_pillar_2_pos_only.mp4",
+      f"{images_to_vid} -i 'ablations/marble_pillar_2_ssp_*.png' -o ablations/marble_pillar_2_ssp.mp4",
+
+      f"{img_to_vid} -i 'ablations/marble_pillar_2_pos_only.png' \
+        -o ablations/marble_pillar_2_pos_only_tex.mp4 --height {VH//2} --width {VH//2}",
+      f"{img_to_vid} -i 'ablations/marble_pillar_2_concat_3e-01.png' \
+        -o ablations/marble_pillar_2_ssp_tex.mp4 --height {VH//2} --width {VH//2}",
+      f"{stack_2} -l 'ablations/marble_pillar_2_pos_only_tex.mp4' \
+        -r 'ablations/marble_pillar_2_ssp_tex.mp4' \
+        --l-label 'Geometry Only' \
+        --r-label 'Texture-Aware' \
+        -o ablations/marble_pillar_2_tex_cmp.mp4",
+
+      f"{stack_2x2} \
+        -tl ablations/marble_pillar_2_input.mp4 \
+        -tr ablations/marble_pillar_2_pos_only.mp4 \
+        -bl ablations/marble_pillar_2_ssp.mp4 \
+        -br ablations/marble_pillar_2_tex_cmp.mp4 \
+        --tl-label 'Input' \
+        --tr-label 'Geom. Only' \
+        --bl-label 'Geom + Tex' \
+        -o marble_pillar_2_no_attr.mp4",
+      f"{cap_vid} -i marble_pillar_2_no_attr.mp4 -o fast-forward/marble_pillar_2.mp4 --caption 'CC-BY matousekfoto'"
+    ]),
+  ],
+
+  "segmentation-video": [
+    runnable_cmds([
+      f"{images_to_vid} -i 'ablations/tuna_input_*.png' -o ablations/tuna_input.mp4",
+      f"{images_to_vid} -i 'ablations/tuna_constant_color_*.png' -o ablations/tuna_constant_color.mp4",
+      f"{images_to_vid} -i 'ablations/tuna_eigen_*.png' -o ablations/tuna_eigen.mp4",
+      f"{images_to_vid} -i 'ablations/tuna_clusters_*.png' -o ablations/tuna_clusters.mp4",
+
+      f"{stack_2x2} \
+        -tl ablations/tuna_input.mp4 \
+        -tr ablations/tuna_constant_color.mp4 \
+        -bl ablations/tuna_eigen.mp4 \
+        -br ablations/tuna_clusters.mp4 \
+        --tl-label 'Input' \
+        --tr-label 'Similar Color' \
+        --bl-label 'Developability' \
+        --br-label 'Clusters' \
+        -o tuna_no_attr.mp4",
+      f"{cap_vid} -i tuna_no_attr.mp4 -o fast-forward/tuna.mp4 --caption 'CC-BYNCSA seirogan'"
+    ]),
+  ],
+
+  "explain-video": [
+    runnable_cmds([
+      f"{img_to_vid} -i 'explanation_img.png' --duration 3 -o explanation_unscaled.mp4",
+      "ffmpeg -i explanation_unscaled.mp4 -vf 'pad=width=1920:height=1080:x=337:y=120\
+:color=black' -y explanation.mp4",
+      f"{cap_vid} -i explanation.mp4 -o fast-forward/explanation.mp4 \
+      --caption 'Remeshing Projection' --font-size 48 -x 700 -y 980"
+    ]),
+  ],
+
+  "concat-videos": [
+    runnable_cmds([
+      'ffmpeg -i fast-forward/korean_bakery.mp4 -i fast-forward/explanation.mp4 \
+        -i fast-forward/tuna.mp4 -i fast-forward/marble_pillar_2.mp4 \
+        -i fast-forward/edge_detect.mp4 -i fast-forward/hoodie_kikko.mp4 \
+        -filter_complex "[0:v][1:v][2:v][3:v][4:v][5:v]concat=n=6:v=1[outv]" -map "[outv]" fast-forward/ff.mp4 -y'
+    ]),
+  ],
 }
+
+# ff experiments are
+# korean-bakery-ff tuna-ff tutte-marble-pillar-2-ff mugo-ff dragon-jar-ff quad-remesh-hoodie-kikko
+# videos are
+# korean-bakery-video segmentation-video uv-param-video edge-detect-video hoodie-video explain-video
+# and concat them all together
 
 
 def arguments():

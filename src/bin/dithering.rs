@@ -75,7 +75,7 @@ fn main() {
     assert_eq!(m.vert_colors.len(), m.v.len());
     let og_f = m.f.clone();
     if !args.face {
-        m.triangulate();
+        m.triangulate(0);
     }
     let (s, t) = m.normalize();
 
@@ -141,7 +141,7 @@ fn main() {
         m.f = og_f;
     }
     let s = m.into_scene();
-    pars3d::save(&args.output, &s).expect("Failed to save output");
+    pars3d::save(&args.output, &s, false).expect("Failed to save output");
     println!("[INFO]: Took {:?} for visualization", start.elapsed());
 }
 

@@ -35,7 +35,7 @@ fn main() {
         |[e0, e1]| {
             let delta = sub(m.vert_colors[e1], m.vert_colors[e0]);
             let sharp = delta.map(|v| v.abs().sqrt());
-            sharp
+            Some(sharp)
             //kmul(0.5, add(sharp, [1.; 3]))
         },
         1e-3,
@@ -43,6 +43,6 @@ fn main() {
 
     new_mesh.denormalize(s, t);
     let s = new_mesh.into_scene();
-    pars3d::save(&args.output, &s).expect("Failed to save output");
+    pars3d::save(&args.output, &s, false).expect("Failed to save output");
     println!("[INFO]: Took {:?} for visualization", start.elapsed());
 }

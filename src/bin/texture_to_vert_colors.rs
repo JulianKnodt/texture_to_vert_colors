@@ -242,7 +242,7 @@ pub fn main() {
         };
 
         if args.triangulate_input {
-            mesh.triangulate();
+            mesh.triangulate(0);
         } else if args.sample_kind != SampleKind::Direct {
             let num_split = mesh.split_non_planar_faces(3e-3);
             if num_split > 0 {
@@ -279,6 +279,7 @@ pub fn main() {
             },
             &args,
         );
+        assert_eq!(new_mesh.v.len(), new_mesh.vert_colors.len());
         new_mesh.denormalize(s, t);
         new_mesh.n.clear();
         out_scene.meshes[mi] = new_mesh;
@@ -306,7 +307,7 @@ pub fn main() {
     out_scene.materials.clear();
     out_scene.textures.clear();
 
-    pars3d::save(&args.output, &out_scene).expect("Failed to save output");
+    pars3d::save(&args.output, &out_scene, false).expect("Failed to save output");
     println!("[INFO]: Saved to {}", args.output);
 
     if !args.stats.is_empty() {
@@ -480,7 +481,8 @@ pub fn texture_to_vert_colors<'a>(
         // Add a simplification step here, as some faces are relatively similar, and we want to
         // delete degenerate faces.
         if !ok {
-            pars3d::save("curr_error.ply", &out.into_scene()).expect("Failed to save error scene");
+            pars3d::save("curr_error.ply", &out.into_scene(), false)
+                .expect("Failed to save error scene");
             eprintln!("Exiting after saved erroneous mesh");
             std::process::exit(1);
         }
@@ -987,7 +989,7 @@ pub fn texture_to_vert_colors<'a>(
         mesh_stats!("After deleting gap fill");
     }
     if args.triangulate {
-        out.triangulate();
+        out.triangulate(0);
     }
 
     let final_qem = !args.no_final_qem
@@ -1206,8 +1208,10 @@ pub fn sample_exact(
         // commit to this new pixel
         let new_verts = new_verts.map(|(new_vert, normal)| {
             let vi = out.v.len();
+            assert_eq!(out.v.len(), out.vert_colors.len());
             out.v.push(new_vert);
             out.vert_colors.push(center_rgb);
+            assert_eq!(out.v.len(), out.vert_colors.len());
             if let Some(normal) = normal {
                 out.n.push(normal);
             }
@@ -1272,7 +1276,8 @@ pub fn sample_exact(
             triagram!();
 
             tmp.uv[CHAN] = f_slice.iter().map(|vi| mesh.uv[CHAN][*vi]).collect();
-            pars3d::save("failing_tri.obj", &tmp.into_scene()).expect("Failed to save temp error");
+            pars3d::save("failing_tri.obj", &tmp.into_scene(), false)
+                .expect("Failed to save temp error");
 
             let error_verts = out.v[start..].to_vec();
             let error_colors = out.vert_colors[start..].to_vec();
@@ -1312,6 +1317,7 @@ pub fn sample_exact(
         // if there are no neighboring faces just abort because the triangle is too thin
         if !has_nbr && !has_diag {
             out.v.truncate(start);
+            out.vert_colors.truncate(start);
             out.n.truncate(start);
             out.vertex_attrs.truncate(start);
             out.f.truncate(start_f);
@@ -1605,6 +1611,7 @@ pub fn sample_exact(
         out.v[new_vi] = add(kmul(1. - t, out.v[new_vi]), kmul(t, tgt_pos));
     }
 
+    assert_eq!(out.v.len(), out.vert_colors.len());
     true
 }
 
@@ -1993,7 +2000,6 @@ pub fn sample_approx(
         debug_assert!(u >= 0, "{og_u} {u} {v}");
         debug_assert!(v >= 0, "{og_u} {u} {v}");
 
-
         let mut nearest = 0;
         let mut best_dist = F::INFINITY;
 
@@ -2001,7 +2007,7 @@ pub fn sample_approx(
         let range = [0, -1, 1, -2, 2, -3, 3];
         for i in range {
             if best_dist == 0. {
-              break
+                break;
             }
             for j in range {
                 let nu = u + i;

@@ -266,7 +266,7 @@ fn main() {
 
     m.denormalize(s, t);
     let s = m.into_scene();
-    pars3d::save(&args.output, &s).expect("Failed to save output");
+    pars3d::save(&args.output, &s, true).expect("Failed to save output");
     println!("[INFO]: Took {:?} for visualization", start.elapsed());
 }
 

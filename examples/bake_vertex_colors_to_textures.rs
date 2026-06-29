@@ -74,7 +74,7 @@ fn main() {
     for m in scene.meshes.iter_mut() {
         m.vert_colors.clear();
     }
-    pars3d::save(&args.output, &scene).expect("Failed to save output");
+    pars3d::save(&args.output, &scene, false).expect("Failed to save output");
     println!(
         "[INFO]: Baked vertex colors to textures for {}",
         args.output

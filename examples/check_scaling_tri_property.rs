@@ -16,7 +16,7 @@ fn main() {
     let scene =
         pars3d::load(&args.input).expect(&format!("Failed to parse input from {}", args.input));
     let mut m = scene.into_flattened_mesh();
-    m.triangulate();
+    m.triangulate(0);
 
     for f in m.f {
         let [v0, v1, v2] = f.as_tri().unwrap();

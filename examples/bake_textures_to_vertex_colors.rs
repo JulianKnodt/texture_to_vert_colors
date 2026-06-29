@@ -56,7 +56,7 @@ fn main() -> std::io::Result<()> {
         img.clone()
     };
 
-    m.triangulate();
+    m.triangulate(0);
     let in_num_v = m.v.len();
     let in_num_t = m.f.len();
     let mut tris =
@@ -107,7 +107,7 @@ fn main() -> std::io::Result<()> {
     let out_num_t = m.f.len();
     let out_num_v = m.v.len();
     let new_scene = m.into_scene();
-    pars3d::save(&args.output, &new_scene).expect("Failed to save scene");
+    pars3d::save(&args.output, &new_scene, true).expect("Failed to save scene");
 
     if args.stats.is_empty() {
         return Ok(());

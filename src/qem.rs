@@ -37,6 +37,9 @@ pub struct Args {
     pub check_bd: bool,
 
     pub check_manifold: bool,
+
+    /// Attempt to preserve quads (will slow down QEM)
+    pub preserve_quads: bool,
 }
 
 impl Default for Args {
@@ -59,6 +62,8 @@ impl Default for Args {
             check_bd: true,
 
             check_manifold: true,
+
+            preserve_quads: false,
         }
     }
 }
@@ -457,6 +462,7 @@ pub fn simplify_range_colored(
             if locked(e0 + offset) || locked(e1 + offset) {
                 continue;
             }
+
             if curr_tris <= target_num_tris {
                 break 'outer;
             }
@@ -574,21 +580,6 @@ pub fn simplify_range_colored(
                     remap_bd!(bd0s);
                     remap_bd!(bd1s);
 
-                    /* // Old version with allocation
-                    let mut new = vec![];
-                    for &bd0 in &bd0s {
-                        if !bd1s[0..og_bd1_len].contains(&bd0) {
-                            new.push(bd0);
-                        }
-                    }
-                    for &bd1 in &bd1s {
-                        if !bd0s.contains(&bd1) {
-                            new.push(bd1);
-                        }
-                    }
-                    new.sort_unstable();
-                    new.dedup();
-                    */
                     // new version no alloc
                     let og_bd1_len = bd1s.len();
                     for &bd0 in &bd0s {
@@ -647,14 +638,23 @@ pub fn simplify_range_colored(
                     normalize(f.normal_with(|vi| m.get(vi - offset).1));
             }
 
+            if let Some(ref p) = p {
+                p.set_position(curr_tris as u64);
+            }
+
             bufs.did_update.clear();
             let e_dst = m.get_new_vertex(e1);
             for adj in m.vertex_adj(e_dst) {
                 let prio = update_cost_of_edge!(e_dst, adj);
                 let adj_e = std::cmp::minmax(e_dst, adj);
+
                 bufs.snd_pq.remove(&adj_e);
                 bufs.pq.push(adj_e, prio);
                 bufs.did_update.push(adj_e);
+            }
+
+            if !args.preserve_quads {
+                continue;
             }
 
             for adj in m.vertex_adj(e_dst) {
@@ -687,10 +687,6 @@ pub fn simplify_range_colored(
             {
                 let rec = bufs.recency.get(&ne).copied().unwrap_or(0);
                 bufs.snd_pq.push(ne, (rec, nq_err));
-            }
-
-            if let Some(ref p) = p {
-                p.set_position(curr_tris as u64);
             }
         }
     }

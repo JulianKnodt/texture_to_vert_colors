@@ -1,6 +1,5 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
-#![feature(cmp_minmax)]
 #![feature(more_float_constants)]
 
 use clap::Parser;
@@ -92,7 +91,7 @@ fn main() {
         } else {
             None
         };
-        m.triangulate();
+        m.triangulate(0);
         let (s, t) = m.normalize();
         if !args.no_normalize_colors {
             m.normalize_colors();
@@ -110,7 +109,7 @@ fn main() {
         start.elapsed(),
         args.input,
     );
-    pars3d::save(&args.output, &scene).expect("Failed to save output");
+    pars3d::save(&args.output, &scene, true).expect("Failed to save output");
     println!("[INFO]: Saved to {}", args.output);
 }
 

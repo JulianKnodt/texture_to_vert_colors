@@ -1,7 +1,6 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 #![feature(cmp_minmax)]
-#![feature(array_windows)]
 
 pub type F = f64;
 pub type U = u64;

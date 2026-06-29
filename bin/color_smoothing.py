@@ -22,7 +22,7 @@ def arguments():
 
 def main():
   args = arguments()
-  print("Loading mesh")
+  print("[INFO] Loading mesh", args.input)
   mesh = trimesh.load_mesh(args.input, process=False)
   vert_colors = mesh.visual.vertex_colors.astype(float) / 255.
   vert_colors = vert_colors[:, :3]
@@ -111,6 +111,7 @@ def main():
   mesh.visual.vertex_colors = (np.clip(new_rgb, 0,1) * 255).astype(int)
 
   mesh.export(args.output, encoding="ascii")
+  print("[INFO]: Exported", args.output)
 
 def luma(rgb):
   return np.sum(np.array([0.299, 0.587, 0.114]) * rgb[:3])

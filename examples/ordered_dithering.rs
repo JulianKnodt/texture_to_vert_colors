@@ -25,7 +25,7 @@ fn main() {
     let mut m = scene.into_flattened_mesh();
     assert_eq!(m.vert_colors.len(), m.v.len());
     let og_f = m.f.clone();
-    m.triangulate();
+    m.triangulate(0);
     let (s, t) = m.normalize();
 
     let mut bary_areas = vec![];
@@ -76,7 +76,7 @@ fn main() {
     m.denormalize(s, t);
     m.f = og_f;
     let s = m.into_scene();
-    pars3d::save(&args.output, &s).expect("Failed to save output");
+    pars3d::save(&args.output, &s, true).expect("Failed to save output");
     println!("[INFO]: Took {:?} for visualization", start.elapsed());
 }
 

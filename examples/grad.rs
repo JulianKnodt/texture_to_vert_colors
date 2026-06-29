@@ -1,6 +1,5 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
-#![feature(cmp_minmax)]
 
 use clap::Parser;
 use texture_to_vert_colors::{F, add, dist, length};
@@ -31,7 +30,7 @@ fn main() {
     let scene =
         pars3d::load(&args.input).expect(&format!("Failed to parse input from {}", args.input));
     let mut m = scene.into_flattened_mesh();
-    m.triangulate();
+    m.triangulate(0);
     m.f.retain_mut(|f| !f.canonicalize());
     let (s, t) = m.normalize();
 
@@ -81,7 +80,7 @@ fn main() {
 
     new_mesh.denormalize(s, t);
     let s = new_mesh.into_scene();
-    pars3d::save(&args.output, &s).expect("Failed to save output");
+    pars3d::save(&args.output, &s, true).expect("Failed to save output");
     println!("[INFO]: Took {:?} for hatching", start.elapsed());
 }
 

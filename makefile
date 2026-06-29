@@ -1,7 +1,8 @@
 samply:
 	cargo build --release
 	samply record target/release/texture_to_vert_colors -i data/scan_vase.obj -o tmp.ply -d \
-    data/scan_vase_texture.jpg --target-tri-ratio 1 --sample-kind approx
+    data/scan_vase_texture.jpg --target-tri-ratio 1 --sample-kind exact \
+    --image-size-frac 0.25
 
 samply_clustering:
 	cargo build --release

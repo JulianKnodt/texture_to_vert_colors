@@ -89,7 +89,7 @@ pub fn main() {
     out_mesh.denormalize(s, t);
     out_mesh.repopulate_scene(&mut scene);
 
-    pars3d::save(&args.output, &scene).expect("Failed to save output mesh");
+    pars3d::save(&args.output, &scene, true).expect("Failed to save output mesh");
 }
 
 pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
@@ -428,6 +428,7 @@ pub fn simplify_colored(mesh: pars3d::Mesh, args: &Args) -> pars3d::Mesh {
         v: new_positions,
         uv: std::array::from_fn(|_| vec![]),
         n: vec![],
+        l: vec![],
         f: face_set,
         face_mesh_idx: og_mis,
         face_mat_idx: pars3d::mesh::convert_opt_usize(&og_mats),

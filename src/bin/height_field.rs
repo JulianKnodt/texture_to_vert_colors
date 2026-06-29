@@ -37,5 +37,6 @@ fn main() {
     }
 
     println!("Elapsed {:?}", start.elapsed());
-    pars3d::save(&args.output, &scene).expect(&format!("Failed to save output to {}", args.output));
+    pars3d::save(&args.output, &scene, true)
+        .expect(&format!("Failed to save output to {}", args.output));
 }

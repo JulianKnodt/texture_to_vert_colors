@@ -82,9 +82,12 @@ fn main() {
             None
         };
         let mut new_edges = BTreeSet::new();
-        m.triangulate_with_new_edges(|[e0, e1]| {
-            new_edges.insert(std::cmp::minmax(e0, e1));
-        });
+        m.triangulate_with_new_edges(
+            |[e0, e1]| {
+                new_edges.insert(std::cmp::minmax(e0, e1));
+            },
+            0,
+        );
         let (s, t) = m.normalize();
         let (sc, tc) = m.normalize_colors();
         tutte_param(m, new_edges, &args);
@@ -110,7 +113,8 @@ fn main() {
             args.uv_svg
         );
         let m0 = &scene.meshes[0];
-        if let Err(e) = pars3d::svg::save_uv(args.uv_svg, &m0.uv[args.target_uv], &m0.f, 0.1) {
+        if let Err(e) = pars3d::svg::save_uv(args.uv_svg, |i| m0.uv[args.target_uv][i], &m0.f, 0.1)
+        {
             eprintln!("Failed to save SVG due to {e:?}");
         }
     }
@@ -152,7 +156,7 @@ fn main() {
         scene.materials.push(new_mat);
         scene.meshes[0].face_mat_idx = vec![((0..nf), mi)];
     }
-    pars3d::save(&args.output, &scene).expect("Failed to save output");
+    pars3d::save(&args.output, &scene, false).expect("Failed to save output");
 }
 
 pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args) {
@@ -176,7 +180,7 @@ pub fn tutte_param(mesh: &mut Mesh, new_edges: BTreeSet<[usize; 2]>, args: &Args
         }
     }
     let vert_adj = vert_adj;
-    let (num_loops, bd_loops) = vert_adj.boundary_loops(&mesh);
+    let (num_loops, bd_loops) = vert_adj.boundary_loops(&mesh.f);
 
     let mut bd = vec![];
     let (first, [last, mut next]) = if num_loops == 1 {

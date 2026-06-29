@@ -73,10 +73,17 @@ pub fn measure_flat(
     };
 
     if !args.cluster_vis.is_empty() {
+        const EMPTY: &'static [usize] = &[];
         let face_coloring = pars3d::visualization::greedy_face_coloring(
             |i| face_charts(i),
             mesh.f.len(),
-            |gi| chart_adj.get(&gi).map_or(&[], Vec::as_slice),
+            |gi| {
+                chart_adj
+                    .get(&gi)
+                    .map_or(EMPTY, Vec::as_slice)
+                    .into_iter()
+                    .copied()
+            },
             &pars3d::coloring::HIGH_CONTRAST,
         );
 
@@ -84,7 +91,7 @@ pub fn measure_flat(
         colored_mesh.denormalize(s, t);
         colored_mesh.append(&mut wireframe_mesh.clone());
         let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.cluster_vis, &out_scene)?;
+        pars3d::save(&args.cluster_vis, &out_scene, true)?;
     }
 
     let planarity = per_chart_quadric
@@ -150,7 +157,7 @@ pub fn measure_flat(
         colored_mesh.append(&mut wireframe_mesh.clone());
 
         let out_scene = colored_mesh.into_scene();
-        pars3d::save(&args.eigen_vis, &out_scene)?;
+        pars3d::save(&args.eigen_vis, &out_scene, true)?;
     }
 
     if !args.stats.is_empty() {
